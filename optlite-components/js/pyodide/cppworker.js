@@ -45,6 +45,9 @@ async function createKernel(XEUS_CPP_BASE, cppStandard) {
   return { xkernel, xserver };
 }
 
+let isExecuting = false;
+let pendingMsg = null;
+
 self.onmessage = async (event) => {
   const msg = event.data;
 
@@ -52,6 +55,35 @@ self.onmessage = async (event) => {
   if (msg && msg.header && msg.header.msg_type && typeof msg.id !== 'number') {
     return;
   }
+
+  // ── Debug message from worker (forward to main thread) ──
+  if (msg && msg.type === 'debug') {
+    return;
+  }
+
+  // If already executing, queue this message (only keep the latest)
+  if (isExecuting) {
+    pendingMsg = msg;
+    return;
+  }
+
+  isExecuting = true;
+  await handleMessage(msg);
+  isExecuting = false;
+
+  // Process pending message if any
+  if (pendingMsg) {
+    const next = pendingMsg;
+    pendingMsg = null;
+    isExecuting = true;
+    await handleMessage(next);
+    isExecuting = false;
+  }
+};
+
+async function handleMessage(event) {
+  const msg = typeof event !== 'undefined' ? event : null;
+  if (!msg) return;
 
   // ── User message ──
   const { id, ...context } = msg;
@@ -106,12 +138,17 @@ self.onmessage = async (event) => {
       const lines = code.split('\n');
 
       // Recreate the kernel for a clean REPL state — avoids redefinition errors
+      const cppStandard = self.cppStandard || 'c++17';
+
+      // Try to delete old kernel; if delete() doesn't exist, create new anyway
       try {
-        self.xkernel.delete();  // clean up old kernel
+        if (self.xkernel && typeof self.xkernel.delete === 'function') {
+          self.xkernel.delete();
+        }
       } catch (e) {
         // delete() may not exist; just drop the reference
       }
-      const cppStandard = self.cppStandard || 'c++17';
+
       const { xkernel, xserver } = await createKernel(XEUS_CPP_BASE, cppStandard);
       self.xkernel = xkernel;
       self.xserver = xserver;
