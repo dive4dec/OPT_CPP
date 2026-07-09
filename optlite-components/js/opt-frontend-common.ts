@@ -205,8 +205,7 @@ export abstract class AbstractBaseFrontend {
       codcastFile: $.bbq.getState('codcast'), // load a codcast file created using ../recorder.html
       codeopticonSession: $.bbq.getState('cosession'),
       codeopticonUsername: $.bbq.getState('couser'),
-      testCasesLst: testCasesLstJSON ? $.parseJSON(testCasesLstJSON) : undefined,
-      cppStandard: $.bbq.getState('cppStandard')
+      testCasesLst: testCasesLstJSON ? $.parseJSON(testCasesLstJSON) : undefined
     };
   }
 
@@ -400,8 +399,7 @@ export abstract class AbstractBaseFrontend {
       //this.pyodideRunner.runCode(callbackWrapper);
       let call = async () => {
         try {
-          let cppStandard = (document.getElementById('cppStandardSelector') as HTMLSelectElement)?.value || 'c++17';
-          let result: any = await asyncRun(codeToExec, this.rawInputLst, { cppStandard });
+          let result: any = await asyncRun(codeToExec, this.rawInputLst, {});
           callbackWrapper(JSON.parse(result.results));
         } catch (err) {
           this.setFronendError(["Error: " + (err as Error).message]);

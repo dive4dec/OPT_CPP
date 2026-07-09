@@ -696,12 +696,6 @@ export class OptFrontend extends AbstractBaseFrontend {
       curInstr: this.myVisualizer ? this.myVisualizer.curInstr : undefined
     };
 
-    // Pass C++ standard through URL hash so it survives page navigation
-    var cppStd = $('#cppStandardSelector').val();
-    if (cppStd) {
-      (ret as any).cppStandard = cppStd;
-    }
-
     // keep this really clean by avoiding undefined values
     // if (ret.cumulative === undefined)
     //   delete ret.cumulative;
@@ -735,9 +729,6 @@ export class OptFrontend extends AbstractBaseFrontend {
     // ugh, ugly tristate due to the possibility of each being undefined
     if (dat.py !== undefined) {
       $('#pythonVersionSelector').val(dat.py);
-    }
-    if (dat.cppStandard !== undefined) {
-      $('#cppStandardSelector').val(dat.cppStandard);
     }
     // if (dat.cumulative !== undefined) {
     //   $('#cumulativeModeSelector').val(dat.cumulative);

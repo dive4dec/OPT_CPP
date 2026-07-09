@@ -10,7 +10,7 @@ const initPromise = new Promise((res, rej) => { initResolve = res; initReject = 
 let cachedSoData = null;
 
 // ── Create a fresh kernel from a clean module ──
-async function createKernel(XEUS_CPP_BASE, cppStandard) {
+async function createKernel(XEUS_CPP_BASE) {
   const M = self.xeusModule;
 
   // Write the .so into the FS (may already exist from a previous kernel)
@@ -28,14 +28,10 @@ async function createKernel(XEUS_CPP_BASE, cppStandard) {
     // may already be loaded
   }
 
-  // Build argv — pass -std=<standard> to clang-repl
-  const stdArg = cppStandard ? '-std=' + cppStandard : '-std=c++17';
-  let argv = ["xcpp", stdArg];
-
   // Create and start a fresh kernel
   let xkernel;
   try {
-    xkernel = new M.xkernel(argv);
+    xkernel = new M.xkernel(["xcpp"]);
   } catch (e) {
     xkernel = new M.xkernel();
   }
@@ -45,45 +41,8 @@ async function createKernel(XEUS_CPP_BASE, cppStandard) {
   return { xkernel, xserver };
 }
 
-let isExecuting = false;
-let pendingMsg = null;
-
 self.onmessage = async (event) => {
   const msg = event.data;
-
-  // ── Kernel iopub messages ──
-  if (msg && msg.header && msg.header.msg_type && typeof msg.id !== 'number') {
-    return;
-  }
-
-  // ── Debug message from worker (forward to main thread) ──
-  if (msg && msg.type === 'debug') {
-    return;
-  }
-
-  // If already executing, queue this message (only keep the latest)
-  if (isExecuting) {
-    pendingMsg = msg;
-    return;
-  }
-
-  isExecuting = true;
-  await handleMessage(msg);
-  isExecuting = false;
-
-  // Process pending message if any
-  if (pendingMsg) {
-    const next = pendingMsg;
-    pendingMsg = null;
-    isExecuting = true;
-    await handleMessage(next);
-    isExecuting = false;
-  }
-};
-
-async function handleMessage(event) {
-  const msg = typeof event !== 'undefined' ? event : null;
-  if (!msg) return;
 
   // ── User message ──
   const { id, ...context } = msg;
@@ -123,8 +82,8 @@ async function handleMessage(event) {
 
       self.xeusModule = await createXeusModule(Module);
 
-      // Create initial kernel (default C++17)
-      const { xkernel, xserver } = await createKernel(XEUS_CPP_BASE, 'c++17');
+      // Create initial kernel
+      const { xkernel, xserver } = await createKernel(XEUS_CPP_BASE);
       self.xkernel = xkernel;
       self.xserver = xserver;
 
@@ -138,9 +97,6 @@ async function handleMessage(event) {
       const lines = code.split('\n');
 
       // Recreate the kernel for a clean REPL state — avoids redefinition errors
-      const cppStandard = self.cppStandard || 'c++17';
-
-      // Try to delete old kernel; if delete() doesn't exist, create new anyway
       try {
         if (self.xkernel && typeof self.xkernel.delete === 'function') {
           self.xkernel.delete();
@@ -149,7 +105,7 @@ async function handleMessage(event) {
         // delete() may not exist; just drop the reference
       }
 
-      const { xkernel, xserver } = await createKernel(XEUS_CPP_BASE, cppStandard);
+      const { xkernel, xserver } = await createKernel(XEUS_CPP_BASE);
       self.xkernel = xkernel;
       self.xserver = xserver;
 
