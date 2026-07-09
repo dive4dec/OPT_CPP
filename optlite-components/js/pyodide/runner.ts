@@ -85,17 +85,13 @@ cppWorker.onmessage = async (event) => {
 
         if (kernelHasError) {
           // ── Error path: return a single-entry trace with uncaught_exception ──
-          // Extract the error line number from the compiler output
-          // Format: input_line_N:L:C: error: ...
           let errorLine = 1;
           const lineMatch = kernelErrorText.match(/input_line_\d+:(\d+):/);
           if (lineMatch) {
             errorLine = parseInt(lineMatch[1]);
           }
-          // Extract a clean error message (first "error:" line)
           let errorMsg = kernelErrorText.split('\n')
             .find(l => l.includes('error:')) || 'Compilation error';
-          // Remove the "input_line_N:" prefix for cleaner display
           errorMsg = errorMsg.replace(/^input_line_\d+:\d+:\d+:\s*/, '').trim();
 
           parsed.trace = [{
@@ -104,16 +100,23 @@ cppWorker.onmessage = async (event) => {
             func_name: 'main',
             globals: {},
             ordered_globals: [],
-            stack_to_render: [],
+            stack_to_render: [{
+              func_name: 'main',
+              frame_id: 1,
+              encoded_locals: {},
+              ordered_varnames: [],
+              unique_hash: 'f1',
+              is_parent: false,
+              parent_frame_id: [],
+              is_zombie: false,
+            }],
             heap: {},
             stdout: '',
             exception_msg: errorMsg,
           }];
-        } else if (parsed.trace && parsed.trace.length > 0) {
-          // ── Success path: inject stdout into last trace entry ──
-          const fullOutput = kernelOutput.join('');
-          parsed.trace[parsed.trace.length - 1].stdout = fullOutput || '(no output)';
         }
+        // Note: success path no longer needs stdout injection — the trace
+        // runtime (opt_trace.h) captures stdout per-step automatically.
 
         data.results = JSON.stringify(parsed);
       } catch (e) {

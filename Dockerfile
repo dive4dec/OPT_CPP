@@ -59,7 +59,10 @@ ENV SINGLE_MODE=${SINGLE_MODE}
 
 RUN npm run build:prod \
     && test -f build/index.html \
-    && test -f build/live.html
+    && test -f build/live.html \
+    && cp js/pyodide/instrument.js build/ \
+    && cp js/pyodide/opt_trace.h build/ \
+    && chmod 644 build/instrument.js build/opt_trace.h
 
 # ── Stage 4: nginx serving static files + xeus-cpp WASM ──
 FROM nginx:1.29-alpine3.23

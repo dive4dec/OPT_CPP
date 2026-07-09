@@ -2,12 +2,33 @@
 //
 // The kernel is recreated before each execution to ensure a clean REPL state,
 // avoiding "redefinition of 'main'" errors when the user re-runs code.
+//
+// Code instrumentation: user code is instrumented with __opt_trace__() calls
+// that capture variable state at each step, producing a Python Tutor-compatible
+// trace with globals, stack frames, heap, and stdout.
+
+// Load the code instrumenter (cache-busted to ensure latest version)
+importScripts('./instrument.js?v=' + Date.now());
 
 let initResolve, initReject;
 const initPromise = new Promise((res, rej) => { initResolve = res; initReject = rej; });
 
 // Cached .so data (fetched once, reused for every kernel recreation)
 let cachedSoData = null;
+
+// ── Load opt_trace.h content ──
+let optTraceHeader = null;
+async function loadTraceHeader() {
+  if (optTraceHeader) return optTraceHeader;
+  try {
+    const resp = await fetch(new URL('./opt_trace.h?v=' + Date.now(), self.location.href).href);
+    optTraceHeader = await resp.text();
+  } catch (e) {
+    console.error('[cppworker] Failed to load opt_trace.h:', e);
+    optTraceHeader = '';
+  }
+  return optTraceHeader;
+}
 
 // ── Create a fresh kernel from a clean module ──
 async function createKernel(XEUS_CPP_BASE) {
@@ -69,9 +90,7 @@ self.onmessage = async (event) => {
       const Module = {
         locateFile: (file) => XEUS_CPP_BASE + file,
 
-        // Suppress clang/LLVM diagnostic output (version info, include paths,
-        // "ignoring nonexistent directory" warnings) that floods the console.
-        // These are compiler-internal messages, not user code output.
+        // Suppress clang/LLVM diagnostic output that floods the console
         print: () => {},
         printErr: () => {},
 
@@ -93,6 +112,9 @@ self.onmessage = async (event) => {
       self.xkernel = xkernel;
       self.xserver = xserver;
 
+      // Pre-load the trace header
+      await loadTraceHeader();
+
       initResolve();
       results = { status: 'ready' };
     } else {
@@ -100,9 +122,8 @@ self.onmessage = async (event) => {
       await initPromise;
 
       const code = self.script;
-      const lines = code.split('\n');
 
-      // Recreate the kernel for a clean REPL state — avoids redefinition errors
+      // Recreate the kernel for a clean REPL state
       try {
         if (self.xkernel && typeof self.xkernel.delete === 'function') {
           self.xkernel.delete();
@@ -115,18 +136,35 @@ self.onmessage = async (event) => {
       self.xkernel = xkernel;
       self.xserver = xserver;
 
-      // Tell the main thread to flush any output from kernel init (e.g. "Core instantiated")
+      // Tell the main thread to flush any output from kernel init
       self.postMessage({ type: 'flush' });
 
-      // If the code defines int main(), append a call to main() at the end.
-      // xeus-cpp is a REPL (clang-repl) — it compiles function definitions
-      // but does NOT execute them. We need to explicitly call main().
-      let execCode = code;
-      if (/\bint\s+main\s*\(\s*\)/.test(code) || /\bvoid\s+main\s*\(\s*\)/.test(code)) {
-        execCode = code + '\nmain();';
+      // ── Instrument the user code ──
+      const header = optTraceHeader || '';
+      let instrumentedCode;
+      try {
+        instrumentedCode = self.instrumentCode(code);
+      } catch (e) {
+        // If instrumentation fails, use original code (no visualization)
+        instrumentedCode = code;
       }
 
-      // Send ALL code in a single execute_request
+      // Build the full code to execute:
+      // 1. Trace header (opt_trace.h)
+      // 2. Instrumented user code
+      // 3. If code has main(), append main() call
+      // 4. Finalize: print the trace JSON
+      let execCode = header + '\n' + instrumentedCode;
+
+      // If the code defines int main(), append a call to main()
+      if (/\bint\s+main\s*\(\s*\)/.test(code) || /\bvoid\s+main\s*\(\s*\)/.test(code)) {
+        execCode += '\nmain();';
+      }
+
+      // Finalize: write the trace JSON to a temp file
+      execCode += '\n{ FILE* __opt_f__ = fopen("/tmp/opt_trace.json", "w"); fprintf(__opt_f__, "%s", __opt_finalize__().c_str()); fclose(__opt_f__); }';
+
+      // Send execute request
       const msgId = 'opt-' + Date.now();
       const executeRequest = {
         channel: "shell",
@@ -153,40 +191,100 @@ self.onmessage = async (event) => {
 
       self.xserver.notify_listener(executeRequest);
 
-      // Wait for iopub messages to be processed on the main thread
-      await new Promise(r => setTimeout(r, 200));
+      // Wait for execution to complete
+      await new Promise(r => setTimeout(r, 300));
 
-      // Build trace — one entry per non-empty line
-      const trace = [];
-      let lastNonEmptyLine = 1;
+      // ── Extract trace JSON from kernel output ──
+      // The trace JSON is emitted between __OPT_TRACE_JSON_BEGIN__ and __OPT_TRACE_JSON_END__
+      // markers in stdout. We collected all stdout in runner.ts's kernelOutput.
+      // But since we're in the worker, we need to send it back.
+      // Actually, the iopub stream messages come back to the main thread.
+      // We need a different approach: use the kernel's stdout directly.
 
-      for (let i = 0; i < lines.length; i++) {
-        const lineNum = i + 1;
-        if (lines[i].trim() === '') continue;
-        lastNonEmptyLine = lineNum;
-        trace.push({
-          line: lineNum,
-          event: 'step_line',
-          func_name: 'main',
-          globals: {},
-          ordered_globals: [],
-          stack_to_render: [],
-          heap: {},
-          stdout: '',
-        });
+      // Actually, since Module.print is overridden to () => {}, stdout goes nowhere.
+      // We need to use printf which goes through the WASM's own stdout, not Module.print.
+      // Wait — printf in WASM goes through Module.print too.
+      //
+      // Alternative: write the trace to a file and read it back.
+      // Or: use a global variable to store the trace and retrieve it via a second execute_request.
+      //
+      // Best approach: execute __opt_finalize__() as a user_expression and get the result.
+      // But xeus-cpp's execute_request with user_expressions may not return results easily.
+      //
+      // Simplest: temporarily override Module.print to capture output, then execute
+      // a printf of the trace JSON.
+
+      // Let's use a different approach: store the trace in a global C++ variable
+      // and retrieve it via a second execute_request that prints it.
+
+      // Actually, the iopub stream messages DO come back to the worker via
+      // self.postMessage in xserver_emscripten. Let me check...
+      //
+      // The xserver_emscripten posts iopub messages via self.postMessage().
+      // These are received by runner.ts's onmessage handler.
+      // But we're in the worker — the messages go from worker to main thread.
+      //
+      // Wait for execution to complete
+      await new Promise(r => setTimeout(r, 300));
+
+      // ── Read trace JSON from WASM filesystem ──
+      const M = self.xeusModule;
+      let traceJson = null;
+      try {
+        const data = M.FS.readFile('/tmp/opt_trace.json', { encoding: 'utf8' });
+        traceJson = typeof data === 'string' ? data : new TextDecoder().decode(data);
+      } catch (e) {
+        // File doesn't exist — fall back
       }
 
-      if (trace.length > 0) {
-        trace[trace.length - 1].line = lastNonEmptyLine;
+      if (traceJson) {
+        // Validate it's proper JSON
+        try {
+          const parsed = JSON.parse(traceJson);
+          // Set the code field (opt_trace.h leaves it empty)
+          parsed.code = self.script;
+          results = JSON.stringify(parsed);
+        } catch (e) {
+          // JSON parse failed — fall back to fake trace
+          results = JSON.stringify({ code: self.script, trace: buildFallbackTrace(code) });
+        }
+      } else {
+        // No trace found — fall back to fake trace
+        results = JSON.stringify({ code: self.script, trace: buildFallbackTrace(code) });
       }
-
-      results = JSON.stringify({
-        code: self.script,
-        trace: trace,
-      });
     }
     self.postMessage({ results, id });
   } catch (error) {
     self.postMessage({ error: 'Failed to run code: ' + error.message, id });
   }
 };
+
+// ── Fallback trace builder (when instrumentation fails or no trace is generated) ──
+function buildFallbackTrace(code) {
+  const lines = code.split('\n');
+  const trace = [];
+  for (let i = 0; i < lines.length; i++) {
+    const lineNum = i + 1;
+    if (lines[i].trim() === '') continue;
+    trace.push({
+      line: lineNum,
+      event: 'step_line',
+      func_name: 'main',
+      globals: {},
+      ordered_globals: [],
+      stack_to_render: [{
+        func_name: 'main',
+        frame_id: 1,
+        encoded_locals: {},
+        ordered_varnames: [],
+        unique_hash: 'f1',
+        is_parent: false,
+        parent_frame_id: [],
+        is_zombie: false,
+      }],
+      heap: {},
+      stdout: '',
+    });
+  }
+  return trace;
+}
