@@ -57,6 +57,13 @@ jobs:
         test -f build/index.html
         test -f build/live.html
 
+    - name: Copy static files to build
+      run: |
+        cd optlite-components
+        cp js/pyodide/instrument.js build/
+        cp js/pyodide/opt_trace.h build/
+        cp sw.js build/
+
     - name: Verify build output
       run: |
         cd optlite-components

@@ -27,6 +27,28 @@
                 <% } %>
               <!-- TEMP_HIDE_TEMPERATURE: delete this comment + the next line to show the slider again (Ask AI unchanged) -->
               <style>#temperature-control{display:none!important}</style>
+
+      <!-- Service Worker: injects COOP/COEP headers on GitHub Pages for SharedArrayBuffer -->
+      <script>
+        if ('serviceWorker' in navigator) {
+          window.addEventListener('load', function() {
+            navigator.serviceWorker.register('./sw.js').then(function(reg) {
+              console.log('[sw] Registered, scope:', reg.scope);
+              // If the SW is newly activated, reload so the page gets COOP/COEP headers
+              if (!navigator.serviceWorker.controller) {
+                // First registration — wait for activation then reload
+                reg.addEventListener('statechange', function() {
+                  if (reg.active && reg.active.state === 'activated') {
+                    window.location.reload();
+                  }
+                });
+              }
+            }).catch(function(err) {
+              console.error('[sw] Registration failed:', err);
+            });
+          });
+        }
+      </script>
     </head>
 
     <body>

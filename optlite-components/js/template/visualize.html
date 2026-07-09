@@ -21,6 +21,26 @@
   <% for (var css in htmlWebpackPlugin.files.css) { %>
   <link href="<%= htmlWebpackPlugin.files.css[css] %>" rel="stylesheet">
   <% } %>
+
+  <!-- Service Worker: injects COOP/COEP headers on GitHub Pages for SharedArrayBuffer -->
+  <script>
+    if ('serviceWorker' in navigator) {
+      window.addEventListener('load', function() {
+        navigator.serviceWorker.register('./sw.js').then(function(reg) {
+          console.log('[sw] Registered, scope:', reg.scope);
+          if (!navigator.serviceWorker.controller) {
+            reg.addEventListener('statechange', function() {
+              if (reg.active && reg.active.state === 'activated') {
+                window.location.reload();
+              }
+            });
+          }
+        }).catch(function(err) {
+          console.error('[sw] Registration failed:', err);
+        });
+      });
+    }
+  </script>
 </head>
 
 <body>
