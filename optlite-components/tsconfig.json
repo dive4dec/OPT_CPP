@@ -1,0 +1,23 @@
+{
+  "compilerOptions": {
+    "target": "es5",
+    "sourceMap": true,
+    "noImplicitAny": false,
+    "allowJs": true,
+    "esModuleInterop": true,
+    "allowSyntheticDefaultImports": true,
+    "lib":["ES2018","DOM"],
+    "module":"ES2020",
+    "downlevelIteration": true,
+    "moduleResolution": "node"
+  },
+  "exclude": [
+    "node_modules",
+    "build",
+    "js/**/__tests__"
+  ],
+  "include": [
+    "js/**/*.ts",
+    "js/**/*.tsx",
+  ]
+}

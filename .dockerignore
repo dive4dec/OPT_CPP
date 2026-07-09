@@ -1,0 +1,14 @@
+node_modules/
+**/node_modules/
+**/build/
+**/dist/
+**/.git/
+**/docs/
+**/tests/
+**/site/
+**/*.md
+**/.DS_Store
+**/licenses/
+**/scripts/
+**/utils/
+**/website/

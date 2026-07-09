@@ -1,0 +1,248 @@
+.curLineStepGutter {
+  background-image: url("redarrow.png");
+}
+
+.prevLineStepGutter {
+  background-image: url("lightgreenarrow.png");
+}
+
+.curPrevOverlapLineStepGutter {
+  background-image: url("redgreenarrow.png");
+}
+
+.errorLine {
+  position: absolute;
+  z-index: 20;
+  border-top: 1px solid #e93f34;
+  border-bottom: 1px solid #e93f34;
+  /*background: rgba(200, 0, 0, 0.15);*/
+}
+
+#sliderStuff {
+  padding-top: 3px;
+}
+
+/* copied from pytutor.css - TODO: integrate and merge together */
+/* VCR control buttons for stepping through execution */
+#vcrControls {
+  margin-top: 15px;
+  margin-bottom: 6px;
+  /*width: 100%;*/
+  text-align: center;
+}
+
+#vcrControls button {
+  margin-left: 2px;
+  margin-right: 2px;
+}
+
+#curInstr {
+  /*
+  margin-left: 4px;
+  margin-right: 4px;
+  */
+  text-align: center;
+}
+
+div#rawUserInputDiv {
+  padding: 5px;
+  width: 95%;
+  margin: 5px auto;
+  text-align: center;
+  border: 1px #e93f34 solid;
+}
+
+
+button.surveyBtn {
+  font-size: 8pt;
+  margin-top: 8px;
+}
+
+button.surveyBtnBig {
+  font-size: 11pt;
+  padding: 5px;
+  margin-top: 0px;
+}
+
+
+/* keep it a fixed min height so that footer below it doesn't jiggle up
+   and down */
+#frontendErrorOutput {
+  width: 550px;
+  min-height: 20pt;
+  overflow-wrap: break-word;
+}
+
+#liveModeHeader {
+  margin-left: 3px;
+  margin-bottom: 12px;
+  margin-top: 10px;
+  color: #888;
+  /*width: 600px;*/
+}
+
+/* copied from pytutor.css */
+div#legendDiv {
+  margin-top: 8px;
+  padding: 0px;
+  text-align: left;
+  color: #666;
+  font-size: 9pt;
+  width: 500px;
+}
+
+#prevLegendArrowSVG, #curLegendArrowSVG {
+  width: 18px;
+  height: 10px;
+}
+
+
+/* translucent dimmed div: http://stackoverflow.com/a/21457838 */
+.dimmed {
+  position: relative;
+}
+
+.dimmed:after {
+  content: " ";
+  z-index: 10;
+  display: block;
+  position: absolute;
+  height: 100%;
+  top: 0;
+  left: 0;
+  right: 0;
+  background: rgba(200, 0, 0, 0.12);
+}
+
+/* augment */
+div.ExecutionVisualizer #dataViz {
+  padding-right: 20px;
+}
+
+/* override Ace defaults */
+.ace_gutter {
+}
+
+.ace_gutter-cell {
+}
+
+.ace_gutter-layer {
+  background-color: white;
+  margin-right: 2px;
+  color: #aaa;
+}
+
+#aichatbox{
+  width: 550px;
+}
+
+#aichatbox #message-out{
+  color:blue;
+}
+
+
+#aichatbox div.download-container {
+  display: flex;
+  justify-content: space-between;
+  margin-bottom: 20px;
+}
+
+#aichatbox #download-status {
+  border: solid 1px black;
+  box-shadow:
+    0 10px 15px -3px rgba(0, 0, 0, 0.1),
+    0 4px 6px -2px rgba(0, 0, 0, 0.05);
+  padding: 10px;
+}
+
+#aichatbox .chat-container {
+  height: 400px;
+  width: 100%;
+  border: 2px solid black;
+  display: flex;
+  flex-direction: column;
+}
+
+#aichatbox #chat-box {
+  overflow-y: scroll;
+  background-color: #c3c3c3;
+  border: 1px solid #ccc;
+  padding: 5px;
+  flex: 1 1;
+}
+
+#aichatbox #chat-stats {
+  background-color: #d3eceb;
+  flex: 0 0;
+  padding: 10px;
+  font-size: 0.75rem;
+}
+
+#aichatbox .message-container {
+  width: 100%;
+  display: flex;
+}
+
+#aichatbox .message {
+  padding: 10px;
+  margin: 10px 0;
+  border-radius: 10px;
+  width: fit-content;
+}
+
+#aichatbox .message-container.user {
+  justify-content: end;
+}
+
+#aichatbox .message-container.assistant {
+  justify-content: start;
+}
+
+#aichatbox .message-container.user .message {
+  background: #007bff;
+  color: #fff;
+}
+
+#aichatbox .message-container.assistant .message {
+  background: #f1f0f0;
+  color: #333;
+}
+
+#aichatbox .chat-input-container {
+  min-height: 40px;
+  flex: 0 0;
+  display: flex;
+}
+
+#aichatbox #user-input {
+  width: 70%;
+  padding: 10px;
+  border: 1px solid #ccc;
+}
+
+#aichatbox button {
+  width: 25%;
+  padding: 10px;
+  border: none;
+  background-color: #007bff;
+  color: white;
+  cursor: pointer;
+}
+
+#aichatbox button:disabled {
+  background-color: lightgray;
+  cursor: not-allowed;
+}
+
+#aichatbox button:hover:not(:disabled) {
+  background-color: #0056b3;
+}
+
+#aichatbox .hidden {
+  display: none;
+}
+
+/* Make the API mode toggle button wider so long labels fit */
+#toggle-api {
+  min-width: 160px; /* fits "Switch to Local Mode" comfortably */
+}
