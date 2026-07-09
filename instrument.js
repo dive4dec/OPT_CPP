@@ -170,8 +170,9 @@ function parseDeclaration(line) {
 
   const result = [];
   for (let v of vars) {
-    // Parse: name [= value] or name[size] or name[] = {...}
-    let nameMatch = v.match(/^(\w+)\s*(\[[^\]]*\])?\s*(=.*)?$/);
+    // Parse: name [= value] or name[size] or name[] = {...} or name[M][N] = {...}
+    // Capture multiple array dimensions: name[2][3]
+    let nameMatch = v.match(/^(\w+)\s*((?:\[[^\]]*\])*)\s*(=.*)?$/);
     if (!nameMatch) continue;
 
     let name = nameMatch[1];
@@ -180,9 +181,14 @@ function parseDeclaration(line) {
 
     let isArray = !!arrayPart;
     let arraySize = null;
+    let arrayDims = [];
     if (isArray) {
-      let sizeMatch = arrayPart.match(/\[(\d+)\]/);
-      if (sizeMatch) arraySize = parseInt(sizeMatch[1]);
+      // Extract all dimensions: [2][3] → [2, 3]
+      let dimMatches = arrayPart.match(/\[(\d+)\]/g);
+      if (dimMatches) {
+        arrayDims = dimMatches.map(d => parseInt(d.match(/\d+/)[0]));
+        arraySize = arrayDims[0];
+      }
     }
 
     let isPointer = pointerRef.includes('*') || baseType.includes('*');
@@ -196,6 +202,7 @@ function parseDeclaration(line) {
       name: name,
       isArray: isArray,
       arraySize: arraySize,
+      arrayDims: arrayDims,
       isPointer: isPointer,
       isReference: isReference,
     });
@@ -270,7 +277,33 @@ function instrumentCode(sourceCode) {
     // Only instrument inside function bodies
     if (!inFunctionBody) {
       output.push(line);
-      // But still track declarations at file scope for include tracking
+      continue;
+    }
+
+    // Check for for-loop header: extract variable declarations from inside for(...)
+    let forMatch = stripped.match(/^\s*for\s*\(([^;]*);([^;]*);([^)]*)\)\s*\{?\s*$/);
+    if (forMatch) {
+      // Parse the init part: e.g., "int i = 0" or "int i = 0, j = 5"
+      let initPart = forMatch[1].trim();
+      if (initPart) {
+        let declared = parseDeclaration(initPart);
+        for (let d of declared) {
+          knownVars.set(d.name, d);
+          scopeStack[scopeStack.length-1].vars.add(d.name);
+        }
+      }
+      // Output the original for line
+      output.push(line);
+      // Inject a trace call right after the for header to capture loop variable state
+      let captures = [];
+      for (let [name, info] of knownVars) {
+        captures.push(`__t__.cap("${name}", ${name});`);
+      }
+      if (captures.length > 0) {
+        output.push(`__opt_trace__(${lineNum}, [&](auto& __t__) { ${captures.join(' ')} });`);
+      } else {
+        output.push(`__opt_trace__(${lineNum});`);
+      }
       continue;
     }
 

@@ -1,6 +1,12 @@
 // opt_trace.h — C++ trace runtime for OPT_CPP visualization
 // Prepended to user code by cppworker.js.
 // Produces JSON trace in Python Tutor C++ format.
+//
+// Type support:
+//   C_DATA:                   bool, char, std::string, arithmetic, pointer
+//   C_ARRAY:                  T arr[N] (1-D arrays)
+//   C_MULTIDIMENSIONAL_ARRAY: T arr[M][N] (2-D+ arrays)
+//   C_STRUCT:                 user-defined structs (via opt-in cap method)
 
 #include <cstdio>
 #include <cstdlib>
@@ -10,47 +16,19 @@
 #include <typeinfo>
 #include <cxxabi.h>
 #include <iostream>
-#include <streambuf>
 
 // ── Persistent trace state via Meyers singleton ──
-// In clang-repl, static/local variables in functions persist across
-// top-level statements, unlike file-scope statics which get re-initialized.
 struct __opt_state__ {
   std::string trace_output;
   int step = 0;
-  std::string stdout_buffer;
 
-  // stdout redirect
-  std::streambuf* old_buf;
-  std::ostringstream oss;
-
-  void redirect() {
-    old_buf = std::cout.rdbuf(oss.rdbuf());
-  }
-  void unredirect() {
-    std::cout.rdbuf(old_buf);
-  }
-  std::string drain() {
-    std::string s = oss.str();
-    oss.str("");
-    oss.clear();
-    return s;
-  }
-
-  // Reset for a new execution
   void reset() {
-    trace_output.clear();
-    step = 0;
-    stdout_buffer.clear();
-    oss.str("");
-    oss.clear();
+    trace_output.clear(); step = 0;
   }
 };
 
 __opt_state__& __opt_get_state__() {
-  // Meyers singleton — persists across REPL statements
-  static __opt_state__ s;
-  return s;
+  static __opt_state__ s; return s;
 }
 
 // ── Address formatting ──
@@ -78,6 +56,42 @@ std::string __opt_esc__(const std::string& s) {
 // ── Frame address (constant) ──
 const char* __opt_frame_id__ = "0xFFF000BE0";
 
+// ── Helper: encode a single element as C_DATA ──
+// Used by array capture to encode each element
+template<typename T>
+std::string __opt_encode_data__(const T& v) {
+  if constexpr (std::is_same_v<T, bool>) {
+    return "[\"C_DATA\",\""+__opt_addr__(&v)+"\",\"bool\","+(v?"true":"false")+",{\"bytes\":1}]";
+  } else if constexpr (std::is_same_v<T, char>) {
+    // Encode char as a string value, properly escaped for JSON
+    std::string charStr;
+    if(v>=32&&v<127) { charStr=std::string("'")+v+"'"; }
+    else if(v=='\n') { charStr="'\\n'"; }
+    else if(v=='\t') { charStr="'\\t'"; }
+    else if(v==0) { charStr="'\\0'"; }
+    else { char b[8]; snprintf(b,8,"'\\x%02x'",(unsigned char)v); charStr=b; }
+    return "[\"C_DATA\",\""+__opt_addr__(&v)+"\",\"char\",\""+__opt_esc__(charStr)+"\",{\"bytes\":1}]";
+  } else if constexpr (std::is_same_v<T, std::string>) {
+    return "[\"C_DATA\",\""+__opt_addr__(v.c_str())+"\",\"string\",\""+__opt_esc__(v)+"\",{\"bytes\":"+std::to_string(v.size()+1)+"}]";
+  } else if constexpr (std::is_arithmetic_v<T>) {
+    std::ostringstream os; os<<v;
+    std::string typeName = __opt_demangle__(typeid(v).name());
+    return "[\"C_DATA\",\""+__opt_addr__(&v)+"\",\""+__opt_esc__(typeName)+"\","+os.str()+",{\"bytes\":"+std::to_string(sizeof(T))+"}]";
+  } else if constexpr (std::is_pointer_v<T>) {
+    std::string ptr = v ? __opt_addr__((void*)v) : "0x0";
+    return "[\"C_DATA\",\""+__opt_addr__(&v)+"\",\"pointer\",\""+ptr+"\",{\"bytes\":"+std::to_string(sizeof(T))+"}]";
+  } else {
+    return "[\"C_DATA\",\""+__opt_addr__(&v)+"\",\""+
+        __opt_esc__(__opt_demangle__(typeid(v).name()))+"\",\"<unknown>\",{\"bytes\":"+std::to_string(sizeof(T))+"}]";
+  }
+}
+
+// ── Helper: get element type name for arrays ──
+template<typename T>
+std::string __opt_type_name__() {
+  return __opt_demangle__(typeid(T).name());
+}
+
 // ── Tracer object — accumulates captured variables ──
 struct __opt_tracer__ {
   std::string locals;
@@ -85,33 +99,38 @@ struct __opt_tracer__ {
   int ln;
   __opt_tracer__(int line) : ln(line), locals("{") {}
 
-  // Unified cap() using if-constexpr for type dispatch
-  // C_DATA format: ["C_DATA", address, typeName, value, {"bytes": N}]
+  // ── cap() for all types — uses if constexpr for type dispatch ──
   template<typename T>
   void cap(const std::string& n, const T& v) {
-    if constexpr (std::is_same_v<T, bool>) {
-      add(n, "[\"C_DATA\",\""+__opt_addr__(&v)+"\",\"bool\","+(v?"true":"false")+",{\"bytes\":1}]");
-    } else if constexpr (std::is_same_v<T, char>) {
-      char b[8];
-      if(v>=32&&v<127) snprintf(b,8,"'%c'",v);
-      else if(v=='\n') snprintf(b,8,"'\\n'");
-      else if(v=='\t') snprintf(b,8,"'\\t'");
-      else if(v=='\0') snprintf(b,8,"'\\0'");
-      else snprintf(b,8,"'\\x%02x'",(unsigned char)v);
-      add(n, std::string("[\"C_DATA\",\"")+__opt_addr__(&v)+"\",\"char\",\""+b+"\",{\"bytes\":1}]");
-    } else if constexpr (std::is_same_v<T, std::string>) {
-      add(n, "[\"C_DATA\",\""+__opt_addr__(v.c_str())+"\",\"string\",\""+__opt_esc__(v)+"\",{\"bytes\":"+std::to_string(v.size()+1)+"}]");
-    } else if constexpr (std::is_arithmetic_v<T>) {
-      std::ostringstream os; os<<v;
-      std::string typeName = __opt_demangle__(typeid(v).name());
-      int bytes = sizeof(T);
-      add(n, "[\"C_DATA\",\""+__opt_addr__(&v)+"\",\""+__opt_esc__(typeName)+"\","+os.str()+",{\"bytes\":"+std::to_string(bytes)+"}]");
-    } else if constexpr (std::is_pointer_v<T>) {
-      std::string ptr = v ? __opt_addr__((void*)v) : "0x0";
-      add(n, "[\"C_DATA\",\""+__opt_addr__(&v)+"\",\"pointer\",\""+ptr+"\",{\"bytes\":"+std::to_string(sizeof(T))+"}]");
+    if constexpr (std::is_array_v<T>) {
+      // Array: T is ElemType[N] (or ElemType[M][N] for 2D)
+      using InnerType = std::remove_extent_t<T>;
+      if constexpr (std::is_array_v<InnerType>) {
+        // 2-D array: T is ElemType[M][N]
+        constexpr std::size_t M = std::extent_v<T>;
+        constexpr std::size_t N = std::extent_v<InnerType>;
+        const auto* ptr = &v[0][0];
+        std::string s = "[\"C_MULTIDIMENSIONAL_ARRAY\",\""+__opt_addr__(ptr)+"\",["+std::to_string(M)+","+std::to_string(N)+"]";
+        for(std::size_t i=0; i<M; i++) {
+          for(std::size_t j=0; j<N; j++) {
+            s += "," + __opt_encode_data__(ptr[i*N+j]);
+          }
+        }
+        s += "]";
+        add(n, s);
+      } else {
+        // 1-D array: T is ElemType[N]
+        constexpr std::size_t N = std::extent_v<T>;
+        const auto* ptr = &v[0];
+        std::string s = "[\"C_ARRAY\",\""+__opt_addr__(ptr)+"\"";
+        for(std::size_t i=0; i<N; i++) {
+          s += "," + __opt_encode_data__(ptr[i]);
+        }
+        s += "]";
+        add(n, s);
+      }
     } else {
-      add(n, "[\"C_DATA\",\""+__opt_addr__(&v)+"\",\""+
-          __opt_esc__(__opt_demangle__(typeid(v).name()))+"\",\"<unknown>\",{\"bytes\":"+std::to_string(sizeof(T))+"}]");
+      add(n, __opt_encode_data__(v));
     }
   }
 
@@ -123,12 +142,7 @@ struct __opt_tracer__ {
 
   std::string finish() {
     locals+="}";
-    auto& st = __opt_get_state__();
-    // Drain stdout captured since last trace point
-    std::string out = st.drain();
-    st.stdout_buffer += out;
 
-    // Build ordered_varnames array
     std::string varnames="[";
     for(size_t i=0;i<names.size();i++){if(i)varnames+=",";varnames+="\""+__opt_esc__(names[i])+"\"";}
     varnames+="]";
@@ -151,7 +165,7 @@ struct __opt_tracer__ {
       "\"unique_hash\":\""+hash+"\","
       "\"encoded_locals\":"+locals+
       "}],"
-      "\"heap\":{},\"stdout\":\""+__opt_esc__(st.stdout_buffer)+"\"}";
+      "\"heap\":{},\"stdout\":\"\"}";
     return e;
   }
 };
@@ -159,10 +173,23 @@ struct __opt_tracer__ {
 // ── Trace macro ──
 #define __opt_trace__(...) __opt_trace_impl__(__VA_ARGS__)
 
+// ── Sentinel for per-step stdout capture ──
+// Emitted to std::cout after each trace step. runner.ts splits the kernel's
+// iopub stream output on this sentinel to reconstruct per-step cumulative stdout.
+// Uses a unique string unlikely to appear in normal program output.
+static const char* __OPT_SENTINEL__ = "\x01\x02__OPT_STEP__\x02\x01";
+
 template<typename F>
 void __opt_trace_impl__(int line, F&& lambda) {
   __opt_tracer__ __t__(line);
-  lambda(__t__);
+  try {
+    lambda(__t__);
+  } catch (...) {
+    // If cap() throws, still emit the trace entry with whatever was captured
+  }
+  // Emit sentinel — runner.ts splits on this to get per-step stdout
+  std::cout << __OPT_SENTINEL__;
+  std::cout.flush();
   std::string entry = __t__.finish();
   auto& st = __opt_get_state__();
   if(st.step>0) st.trace_output+=",\n";
@@ -172,6 +199,8 @@ void __opt_trace_impl__(int line, F&& lambda) {
 
 void __opt_trace_impl__(int line) {
   __opt_tracer__ __t__(line);
+  std::cout << __OPT_SENTINEL__;
+  std::cout.flush();
   std::string entry = __t__.finish();
   auto& st = __opt_get_state__();
   if(st.step>0) st.trace_output+=",\n";
