@@ -399,7 +399,8 @@ export abstract class AbstractBaseFrontend {
       //this.pyodideRunner.runCode(callbackWrapper);
       let call = async () => {
         try {
-          let result: any = await asyncRun(codeToExec, this.rawInputLst, {});
+          let cppStandard = (document.getElementById('cppStandardSelector') as HTMLSelectElement)?.value || 'c++17';
+          let result: any = await asyncRun(codeToExec, this.rawInputLst, { cppStandard });
           callbackWrapper(JSON.parse(result.results));
         } catch (err) {
           this.setFronendError(["Error: " + (err as Error).message]);

@@ -10,7 +10,7 @@ const initPromise = new Promise((res, rej) => { initResolve = res; initReject = 
 let cachedSoData = null;
 
 // ── Create a fresh kernel from a clean module ──
-async function createKernel(XEUS_CPP_BASE) {
+async function createKernel(XEUS_CPP_BASE, cppStandard) {
   const M = self.xeusModule;
 
   // Write the .so into the FS (may already exist from a previous kernel)
@@ -28,10 +28,14 @@ async function createKernel(XEUS_CPP_BASE) {
     // may already be loaded
   }
 
+  // Build argv — pass -std=<standard> to clang-repl
+  const stdArg = cppStandard ? '-std=' + cppStandard : '-std=c++17';
+  let argv = ["xcpp", stdArg];
+
   // Create and start a fresh kernel
   let xkernel;
   try {
-    xkernel = new M.xkernel(["xcpp"]);
+    xkernel = new M.xkernel(argv);
   } catch (e) {
     xkernel = new M.xkernel();
   }
@@ -87,8 +91,8 @@ self.onmessage = async (event) => {
 
       self.xeusModule = await createXeusModule(Module);
 
-      // Create initial kernel
-      const { xkernel, xserver } = await createKernel(XEUS_CPP_BASE);
+      // Create initial kernel (default C++17)
+      const { xkernel, xserver } = await createKernel(XEUS_CPP_BASE, 'c++17');
       self.xkernel = xkernel;
       self.xserver = xserver;
 
@@ -107,7 +111,8 @@ self.onmessage = async (event) => {
       } catch (e) {
         // delete() may not exist; just drop the reference
       }
-      const { xkernel, xserver } = await createKernel(XEUS_CPP_BASE);
+      const cppStandard = self.cppStandard || 'c++17';
+      const { xkernel, xserver } = await createKernel(XEUS_CPP_BASE, cppStandard);
       self.xkernel = xkernel;
       self.xserver = xserver;
 
