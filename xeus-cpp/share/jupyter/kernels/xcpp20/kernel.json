@@ -1,0 +1,16 @@
+{
+  "display_name": "C++20",
+  "argv": [
+      "/home/runner/work/recipes/recipes/output/bld/rattler-build_xeus-cpp_1737621162/host_env_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placeho/bin/xcpp",
+      "-f",
+      "{connection_file}",
+      "-std=c++20"
+  ],
+  "language": "cpp",
+  "metadata": {
+    "debugger": false,
+    "shared": {
+      "libclangCppInterOp.so": "lib/libclangCppInterOp.so"
+    }
+  }
+}

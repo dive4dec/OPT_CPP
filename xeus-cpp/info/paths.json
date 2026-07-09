@@ -1,0 +1,73 @@
+{
+  "paths": [
+    {
+      "_path": "bin/xcpp.data",
+      "path_type": "hardlink",
+      "sha256": "8ef84fa6eb7d493697d445a70f02e1cce737ae2d5633ecfa086d016a541363e7",
+      "size_in_bytes": 14977396
+    },
+    {
+      "_path": "bin/xcpp.js",
+      "path_type": "hardlink",
+      "sha256": "cedb3d13d1a5b1804b8e3eaa0c1da6fff613b35325c1bf4beb83740527206a82",
+      "size_in_bytes": 4077287
+    },
+    {
+      "_path": "bin/xcpp.wasm",
+      "path_type": "hardlink",
+      "sha256": "f39c49a64ca989a4c63d868e717287782f2412c5c274840c3cf236f7f9539ef5",
+      "size_in_bytes": 2553907
+    },
+    {
+      "_path": "etc/xeus-cpp/tags.d/stl.json",
+      "path_type": "hardlink",
+      "sha256": "86e97b716d861128d420c5eb015586f0ea4f21797fbde91c465299c60b4d3243",
+      "size_in_bytes": 94
+    },
+    {
+      "_path": "lib/cmake/xeus-cpp/xeus-cppConfig.cmake",
+      "path_type": "hardlink",
+      "sha256": "488c55ed5c9d3a4cde138660931d73d91b011efc975ee1af4116cdfdd0038ef8",
+      "size_in_bytes": 2795
+    },
+    {
+      "_path": "lib/cmake/xeus-cpp/xeus-cppConfigVersion.cmake",
+      "path_type": "hardlink",
+      "sha256": "9536effabef4b173ad1321a6052dfeaf18d187f4489b0f0f7110fe108c518712",
+      "size_in_bytes": 1864
+    },
+    {
+      "_path": "share/jupyter/kernels/xcpp20/kernel.json",
+      "path_type": "hardlink",
+      "file_mode": "text",
+      "prefix_placeholder": "/home/runner/work/recipes/recipes/output/bld/rattler-build_xeus-cpp_1737621162/host_env_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placeho",
+      "sha256": "535526729cd261511c1f6242623d665ea1e3f71697fccb972a062015409e941c",
+      "size_in_bytes": 525
+    },
+    {
+      "_path": "share/jupyter/kernels/xcpp20/logo-32x32.png",
+      "path_type": "hardlink",
+      "sha256": "4791f59b4d00e1bb09dfaed8707d6a20f047f9ec3a1b9c653039b8d31aeab622",
+      "size_in_bytes": 1520
+    },
+    {
+      "_path": "share/jupyter/kernels/xcpp20/logo-64x64.png",
+      "path_type": "hardlink",
+      "sha256": "4752a7f40d08d9dded322f4feef5ceef3558d5597f0903b72ef1f83bfea795bf",
+      "size_in_bytes": 3113
+    },
+    {
+      "_path": "share/jupyter/kernels/xcpp20/logo-svg.svg",
+      "path_type": "hardlink",
+      "sha256": "bb5916d91e28675dd19e73b1e8a63bc8a3a29ded26c3e28068c945299a9886e6",
+      "size_in_bytes": 1894
+    },
+    {
+      "_path": "share/xeus-cpp/tagfiles/cppreference-doxygen-web.tag",
+      "path_type": "hardlink",
+      "sha256": "2a098d425027153a091a6748053deaccd74a173d1516c4b7f64beba4b4e4a8c0",
+      "size_in_bytes": 1726240
+    }
+  ],
+  "paths_version": 1
+}

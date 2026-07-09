@@ -1,0 +1,14 @@
+{
+  "channels": [
+    "https://repo.mamba.pm/emscripten-forge/",
+    "https://conda.anaconda.org/microsoft/",
+    "https://conda.anaconda.org/conda-forge/"
+  ],
+  "description": "xeus-cpp is a Jupyter kernel for cpp based on the native implementation\nof the Jupyter protocol xeus.",
+  "dev_url": "https://github.com/compiler-research/xeus-cpp",
+  "doc_url": "https://github.com/compiler-research/xeus-cpp",
+  "home": "https://github.com/compiler-research/xeus-cpp",
+  "license": "BSD-3-Clause",
+  "license_family": "BSD-3",
+  "summary": "xeus-cpp is a Jupyter kernel for C++"
+}

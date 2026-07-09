@@ -1,0 +1,16 @@
+{
+  "arch": "wasm32",
+  "build": "h18da88b_1",
+  "build_number": 1,
+  "depends": [
+    "cppinterop",
+    "emscripten-abi >=3.1.45,<3.1.46.0a0"
+  ],
+  "license": "BSD-3-Clause",
+  "license_family": "BSD-3",
+  "name": "xeus-cpp",
+  "platform": "emscripten",
+  "subdir": "emscripten-wasm32",
+  "timestamp": 1737621162595,
+  "version": "0.6.0"
+}
