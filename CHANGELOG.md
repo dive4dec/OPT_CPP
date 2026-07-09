@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **Array visualization** — 1-D arrays (`int arr[3] = {10,20,30}`) render as `C_ARRAY` with index headers and element values. 2-D arrays (`int matrix[2][3]`) render as `C_MULTIDIMENSIONAL_ARRAY` with row,column headers.
+- **`for` loop variable capture** — `instrument.js` now extracts variable declarations from `for` loop headers (e.g., `int i` from `for (int i = 0; ...)`) and injects trace calls inside the loop body, enabling step-by-step loop iteration visualization.
+- **`char` array support** — `char str[] = "hello"` renders as a `C_ARRAY` of `char` elements, including the null terminator.
+
+### Fixed
+- **Char encoding with null bytes** — `__opt_encode_data__` for `char` type now uses `std::string` with `__opt_esc__` instead of `snprintf` into a `char[]` buffer, preventing null byte corruption in trace JSON.
+- **SFINAE overload resolution for arrays** — replaced multiple `cap()` template overloads (scalar, 1-D array, 2-D array, 3-D array) with a single `cap()` template using nested `if constexpr` and `std::extent_v` / `std::remove_extent_t` for dimension detection. This fixes ambiguous overload errors and ensures `char[6]` arrays are correctly handled.
+
 ## [0.2.1] - 2026-07-09
 
 ### Added
