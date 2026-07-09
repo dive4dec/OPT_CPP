@@ -111,8 +111,9 @@ function parseDeclaration(line) {
                          'break', 'continue', 'return', 'goto', 'throw', 'try', 'catch',
                          'using', 'namespace', 'typedef', 'template', 'class', 'struct',
                          'enum', 'union', 'static_cast', 'dynamic_cast', 'reinterpret_cast',
-                         'const_cast', 'sizeof', 'alignof', 'decltype', 'auto', 'new',
+                         'const_cast', 'sizeof', 'alignof', 'decltype', 'new',
                          'delete', 'operator'];
+  // NOTE: 'auto' is NOT in skipKeywords — it's a valid type specifier (auto x = 1;)
   const firstWord = line.split(/[\s<>*&\[\]()=,{]/)[0];
   if (skipKeywords.includes(firstWord)) return [];
 
