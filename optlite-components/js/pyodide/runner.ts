@@ -89,14 +89,61 @@ cppWorker.onmessage = async (event) => {
         if (kernelHasError) {
           // ── Error path: return a single-entry trace with uncaught_exception ──
           let errorLine = 1;
-          const lineMatch = kernelErrorText.match(/input_line_\d+:(\d+):/);
-          if (lineMatch) {
-            errorLine = parseInt(lineMatch[1]);
+          
+          // Try multiple patterns for error line extraction:
+          // 1. user_code.cpp:line:col: error: (from #line directives)
+          // 2. input_line_N:line:col: error:
+          // 3. <unknown>:line:col: error:
+          // 4. line:col: error:
+          const patterns = [
+            /user_code\.cpp:(\d+):(\d+:)?\s*error:/,
+            /input_line_\d+:(\d+):(\d+:)?\s*error:/,
+            /<unknown>:(\d+):(\d+:)?\s*error:/,
+            /^(\d+):(\d+:)?\s*error:/,
+            /:(\d+):(\d+:)?\s*error:/,
+          ];
+          for (const p of patterns) {
+            const m = kernelErrorText.match(p);
+            if (m) { errorLine = parseInt(m[1]); break; }
           }
+          
+          // If we still don't have a line, try to find it from the error message
+          // by searching for the error token in the source code
           let errorMsg = kernelErrorText.split('\n')
             .find(l => l.includes('error:')) || 'Compilation error';
           errorMsg = errorMsg.replace(/^input_line_\d+:\d+:\d+:\s*/, '').trim();
-
+          errorMsg = errorMsg.replace(/^.*?error:\s*/, 'error: ');
+          
+          // If errorLine is still 1 (default) or too large (line in full code),
+          // try to find the error line by searching the user's source code.
+          // The kernel error text may contain identifiers from the error message
+          // that we can search for in the source.
+          // Also, if errorLine > 100, it's probably a line in the full code
+          // (header + instrumented), not the user's source.
+          
+          // If no line found from patterns, try to search the user's source code
+          // for the error. The kernel often strips line numbers from error messages.
+          // We extract identifiers from the error message and search for them.
+          if (errorLine === 1 && parsed.code) {
+            // Extract potential identifiers from the error message
+            // e.g., "no member named 'cut'" → search for "cut"
+            const memberMatch = errorMsg.match(/no member named '([^']+)'/);
+            const undeclaredMatch = errorMsg.match(/undeclared identifier '([^']+)'/);
+            const useOfUndeclared = errorMsg.match(/use of undeclared identifier '([^']+)'/);
+            const identifier = (memberMatch || undeclaredMatch || useOfUndeclared)?.[1];
+            if (identifier) {
+              const codeLines = parsed.code.split('\n');
+              for (let i = 0; i < codeLines.length; i++) {
+                // Search for the identifier as a whole word
+                const regex = new RegExp('\\b' + identifier.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '\\b');
+                if (regex.test(codeLines[i]) && !codeLines[i].trim().startsWith('//')) {
+                  errorLine = i + 1;
+                  break;
+                }
+              }
+            }
+          }
+          
           parsed.trace = [{
             line: errorLine,
             event: 'uncaught_exception',

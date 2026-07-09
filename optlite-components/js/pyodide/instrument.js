@@ -248,14 +248,18 @@ function instrumentCode(sourceCode) {
     // Skip empty lines and preprocessor directives
     if (stripped === '' || stripped.startsWith('#')) {
       output.push(line);
-      // After the last preprocessor directive, ensure main frame is pushed
-      // (detected by next line being non-preprocessor)
       continue;
     }
 
+    // Add #line directive to map instrumented code back to user's source
+    // This ensures compiler errors report the correct user line number
+    output.push(`#line ${lineNum} "user_code.cpp"`);
+
     // First non-preprocessor line — ensure main frame is pushed
-    if (output.length > 0 && !inFunctionBody && !mainFrameEnsured) {
+    if (!inFunctionBody && !mainFrameEnsured) {
+      // Push ensure_frame as a separate statement that doesn't affect line numbers
       output.push('__opt_ensure_frame__("main", 0);');
+      output.push(`#line ${lineNum} "user_code.cpp"`);
       mainFrameEnsured = true;
     }
 
@@ -272,7 +276,13 @@ function instrumentCode(sourceCode) {
         functionDefs.push({name: funcName, startLine: lineNum, params: params});
 
         // Output the function signature line
+        output.push(`#line ${lineNum} "user_code.cpp"`);
         output.push(line);
+        // Inject a trace call at function entry (the opening brace line)
+        // This creates a trace step showing "line that just executed" = function entry
+        // matching Python Tutor's behavior
+        let entryFnArg = `"${funcName}", `;
+        output.push(`__opt_trace_fn__(${entryFnArg}${lineNum});`);
         // Note: __opt_push_frame__ inside function body doesn't work in clang-repl.
         // Instead, trace calls inside the function use __opt_trace_fn__("funcName", ...)
         // which calls __opt_ensure_frame__ to push the frame at trace time.
@@ -356,6 +366,7 @@ function instrumentCode(sourceCode) {
         }
       }
       // Output the original for line
+      output.push(`#line ${lineNum} "user_code.cpp"`);
       output.push(line);
       // Inject a trace call right after the for header to capture loop variable state
       let fnArg = `"${currentFunc}", `;
@@ -368,6 +379,7 @@ function instrumentCode(sourceCode) {
       } else {
         output.push(`__opt_trace_fn__(${fnArg}${lineNum});`);
       }
+      output.push(`#line ${lineNum + 1} "user_code.cpp"`);
       continue;
     }
 
@@ -379,6 +391,7 @@ function instrumentCode(sourceCode) {
     }
 
     // Output the original line
+    output.push(`#line ${lineNum} "user_code.cpp"`);
     output.push(line);
 
     // Check if this line ends a statement (has a semicolon at the top level)
@@ -422,12 +435,16 @@ function instrumentCode(sourceCode) {
           captures.push(`__t__.cap("${name}", ${name});`);
         }
         if (captures.length > 0) {
-          output.pop();
+          output.pop(); // remove the return line
+          output.pop(); // remove the #line directive
           output.push(`__opt_trace_fn__(${fnArg}${lineNum}, [&](auto& __t__) { ${captures.join(' ')} });`);
-          output.push(line);
+          output.push(`#line ${lineNum} "user_code.cpp"`);
+          output.push(line); // re-add the return line
         } else {
           output.pop();
+          output.pop();
           output.push(`__opt_trace_fn__(${fnArg}${lineNum});`);
+          output.push(`#line ${lineNum} "user_code.cpp"`);
           output.push(line);
         }
       } else {
@@ -440,6 +457,8 @@ function instrumentCode(sourceCode) {
         } else {
           output.push(`__opt_trace_fn__(${fnArg}${lineNum});`);
         }
+        // Restore line mapping for subsequent code
+        output.push(`#line ${lineNum + 1} "user_code.cpp"`);
       }
     }
   }
