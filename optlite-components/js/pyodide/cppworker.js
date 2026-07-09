@@ -150,11 +150,14 @@ self.onmessage = async (event) => {
       }
 
       // Build the full code to execute:
-      // 1. Trace header (opt_trace.h)
-      // 2. Instrumented user code
-      // 3. If code has main(), append main() call
-      // 4. Finalize: print the trace JSON
-      let execCode = header + '\n' + instrumentedCode;
+      // 1. Trace header (opt_trace.h) — defines singleton, tracer, etc.
+      // 2. Reset trace state + start stdout redirect
+      // 3. Instrumented user code
+      // 4. If code has main(), append main() call
+      // 5. Finalize: write the trace JSON to temp file
+      let execCode = header + '\n';
+      execCode += '{ auto& __s__ = __opt_get_state__(); __s__.reset(); __s__.redirect(); }\n';
+      execCode += instrumentedCode;
 
       // If the code defines int main(), append a call to main()
       if (/\bint\s+main\s*\(\s*\)/.test(code) || /\bvoid\s+main\s*\(\s*\)/.test(code)) {

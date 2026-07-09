@@ -62,8 +62,11 @@ cppWorker.onmessage = async (event) => {
       const streamName = msg.content.name || '';
       const streamText = msg.content.text || '';
       if (streamName === 'stderr') {
-        // Compiler errors come through as stderr streams
-        kernelHasError = true;
+        // Only treat as error if it contains "error:" — clang warnings/diagnostics
+        // are also sent via stderr but don't indicate failure
+        if (streamText.includes('error:')) {
+          kernelHasError = true;
+        }
         kernelErrorText += streamText;
       } else {
         kernelOutput.push(streamText);

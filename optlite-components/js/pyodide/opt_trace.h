@@ -1,7 +1,6 @@
 // opt_trace.h — C++ trace runtime for OPT_CPP visualization
 // Prepended to user code by cppworker.js.
 // Produces JSON trace in Python Tutor C++ format.
-// See: https://pythontutor.com C++ backend trace format
 
 #include <cstdio>
 #include <cstdlib>
@@ -13,34 +12,60 @@
 #include <iostream>
 #include <streambuf>
 
-// ── Global trace state ──
-static std::string __opt_trace_output__;
-static int __opt_trace_step__ = 0;
-static std::string __opt_stdout_buffer__;
+// ── Persistent trace state via Meyers singleton ──
+// In clang-repl, static/local variables in functions persist across
+// top-level statements, unlike file-scope statics which get re-initialized.
+struct __opt_state__ {
+  std::string trace_output;
+  int step = 0;
+  std::string stdout_buffer;
 
-// ── stdout redirect ──
-struct __opt_cout_redirect__ {
+  // stdout redirect
   std::streambuf* old_buf;
   std::ostringstream oss;
-  __opt_cout_redirect__() : old_buf(std::cout.rdbuf(oss.rdbuf())) {}
-  ~__opt_cout_redirect__() { std::cout.rdbuf(old_buf); }
-  std::string drain() { std::string s = oss.str(); oss.str(""); oss.clear(); return s; }
+
+  void redirect() {
+    old_buf = std::cout.rdbuf(oss.rdbuf());
+  }
+  void unredirect() {
+    std::cout.rdbuf(old_buf);
+  }
+  std::string drain() {
+    std::string s = oss.str();
+    oss.str("");
+    oss.clear();
+    return s;
+  }
+
+  // Reset for a new execution
+  void reset() {
+    trace_output.clear();
+    step = 0;
+    stdout_buffer.clear();
+    oss.str("");
+    oss.clear();
+  }
 };
-static __opt_cout_redirect__ __opt_redir__;
+
+__opt_state__& __opt_get_state__() {
+  // Meyers singleton — persists across REPL statements
+  static __opt_state__ s;
+  return s;
+}
 
 // ── Address formatting ──
-static std::string __opt_addr__(const void* p) {
+std::string __opt_addr__(const void* p) {
   char buf[32]; snprintf(buf, sizeof(buf), "0x%lx", (unsigned long)p); return buf;
 }
 
 // ── Demangling ──
-static std::string __opt_demangle__(const char* n) {
+std::string __opt_demangle__(const char* n) {
   int st=0; char* d=abi::__cxa_demangle(n,nullptr,nullptr,&st);
   std::string r=(st==0&&d)?d:n; free(d); return r;
 }
 
 // ── JSON escape ──
-static std::string __opt_esc__(const std::string& s) {
+std::string __opt_esc__(const std::string& s) {
   std::string o; o.reserve(s.size()+8);
   for(char c: s) { switch(c){
     case '"': o+="\\\""; break; case '\\': o+="\\\\"; break;
@@ -50,8 +75,8 @@ static std::string __opt_esc__(const std::string& s) {
   }} return o;
 }
 
-// ── Fake frame address (constant for main) ──
-static const char* __opt_frame_id__ = "0xFFF000BE0";
+// ── Frame address (constant) ──
+const char* __opt_frame_id__ = "0xFFF000BE0";
 
 // ── Tracer object — accumulates captured variables ──
 struct __opt_tracer__ {
@@ -67,7 +92,6 @@ struct __opt_tracer__ {
     if constexpr (std::is_same_v<T, bool>) {
       add(n, "[\"C_DATA\",\""+__opt_addr__(&v)+"\",\"bool\","+(v?"true":"false")+",{\"bytes\":1}]");
     } else if constexpr (std::is_same_v<T, char>) {
-      // char value is a quoted string in the trace
       char b[8];
       if(v>=32&&v<127) snprintf(b,8,"'%c'",v);
       else if(v=='\n') snprintf(b,8,"'\\n'");
@@ -78,9 +102,7 @@ struct __opt_tracer__ {
     } else if constexpr (std::is_same_v<T, std::string>) {
       add(n, "[\"C_DATA\",\""+__opt_addr__(v.c_str())+"\",\"string\",\""+__opt_esc__(v)+"\",{\"bytes\":"+std::to_string(v.size()+1)+"}]");
     } else if constexpr (std::is_arithmetic_v<T>) {
-      // Numeric types: value is unquoted number in JSON
       std::ostringstream os; os<<v;
-      // Determine type name and byte size
       std::string typeName = __opt_demangle__(typeid(v).name());
       int bytes = sizeof(T);
       add(n, "[\"C_DATA\",\""+__opt_addr__(&v)+"\",\""+__opt_esc__(typeName)+"\","+os.str()+",{\"bytes\":"+std::to_string(bytes)+"}]");
@@ -101,17 +123,16 @@ struct __opt_tracer__ {
 
   std::string finish() {
     locals+="}";
+    auto& st = __opt_get_state__();
     // Drain stdout captured since last trace point
-    std::string out = __opt_redir__.drain();
-    __opt_stdout_buffer__ += out;
+    std::string out = st.drain();
+    st.stdout_buffer += out;
 
     // Build ordered_varnames array
     std::string varnames="[";
     for(size_t i=0;i<names.size();i++){if(i)varnames+=",";varnames+="\""+__opt_esc__(names[i])+"\"";}
     varnames+="]";
 
-    // Frame structure matching pythontutor.com format exactly:
-    // frame_id is a string address, unique_hash is "main_{frame_id}"
     std::string fid = __opt_frame_id__;
     std::string hash = std::string("main_")+fid;
 
@@ -130,7 +151,7 @@ struct __opt_tracer__ {
       "\"unique_hash\":\""+hash+"\","
       "\"encoded_locals\":"+locals+
       "}],"
-      "\"heap\":{},\"stdout\":\""+__opt_esc__(__opt_stdout_buffer__)+"\"}";
+      "\"heap\":{},\"stdout\":\""+__opt_esc__(st.stdout_buffer)+"\"}";
     return e;
   }
 };
@@ -139,24 +160,27 @@ struct __opt_tracer__ {
 #define __opt_trace__(...) __opt_trace_impl__(__VA_ARGS__)
 
 template<typename F>
-static void __opt_trace_impl__(int line, F&& lambda) {
+void __opt_trace_impl__(int line, F&& lambda) {
   __opt_tracer__ __t__(line);
   lambda(__t__);
   std::string entry = __t__.finish();
-  if(__opt_trace_step__>0) __opt_trace_output__+=",\n";
-  __opt_trace_output__+=entry;
-  __opt_trace_step__++;
+  auto& st = __opt_get_state__();
+  if(st.step>0) st.trace_output+=",\n";
+  st.trace_output+=entry;
+  st.step++;
 }
 
-static void __opt_trace_impl__(int line) {
+void __opt_trace_impl__(int line) {
   __opt_tracer__ __t__(line);
   std::string entry = __t__.finish();
-  if(__opt_trace_step__>0) __opt_trace_output__+=",\n";
-  __opt_trace_output__+=entry;
-  __opt_trace_step__++;
+  auto& st = __opt_get_state__();
+  if(st.step>0) st.trace_output+=",\n";
+  st.trace_output+=entry;
+  st.step++;
 }
 
 // ── Finalizer ──
-static std::string __opt_finalize__() {
-  return "{\"code\":\"\",\"trace\":[" + __opt_trace_output__ + "]}";
+std::string __opt_finalize__() {
+  auto& st = __opt_get_state__();
+  return "{\"code\":\"\",\"trace\":[" + st.trace_output + "]}";
 }
