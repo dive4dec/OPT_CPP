@@ -75,12 +75,6 @@ cppWorker.onmessage = async (event) => {
     return;
   }
 
-  // ── Debug messages (id: -999) ──
-  if (id === -999) {
-    console.log('[cppworker]', JSON.stringify(data.results));
-    return;
-  }
-
   const cb = callbacks[id];
   if (cb) {
     delete callbacks[id];

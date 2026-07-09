@@ -69,6 +69,12 @@ self.onmessage = async (event) => {
       const Module = {
         locateFile: (file) => XEUS_CPP_BASE + file,
 
+        // Suppress clang/LLVM diagnostic output (version info, include paths,
+        // "ignoring nonexistent directory" warnings) that floods the console.
+        // These are compiler-internal messages, not user code output.
+        print: () => {},
+        printErr: () => {},
+
         preRun: [
           function() {
             const M = self.xeusModule || Module;
