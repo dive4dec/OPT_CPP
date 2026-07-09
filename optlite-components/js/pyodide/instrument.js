@@ -230,6 +230,9 @@ function instrumentCode(sourceCode) {
   let inFunctionBody = false;
   let mainFunctionDepth = -1;
 
+  // Track all function definitions: name → {startLine, endLine, params}
+  let functionDefs = [];
+
   // Track multiline statements
   let inMultilineStatement = false;
   let statementStartLine = 0;
@@ -250,11 +253,31 @@ function instrumentCode(sourceCode) {
     // Check for opening brace — entering a new scope
     if (stripped.includes('{')) {
       // Check if this is a function body opening
-      // e.g., "int main() {"
-      let funcMatch = stripped.match(/(\w+)\s+main\s*\([^)]*\)\s*\{/);
-      if (funcMatch) {
+      // e.g., "int main() {" or "void foo(int x) {"
+      let funcMatch = stripped.match(/(\w[\w:]*)\s+(\w+)\s*\(([^)]*)\)\s*\{/);
+      if (funcMatch && !['if','for','while','switch','else','do','catch','try'].includes(funcMatch[2])) {
+        let funcName = funcMatch[2];
+        let params = funcMatch[3].trim();
         inFunctionBody = true;
         mainFunctionDepth = getBraceDepth(sourceCode, sourceCode.indexOf(line));
+        functionDefs.push({name: funcName, startLine: lineNum, params: params});
+
+        // Output the function signature line
+        output.push(line);
+        // Push a trace frame entry for this function
+        output.push(`__opt_push_frame__("${funcName}", ${lineNum});`);
+        // Push new scope
+        scopeStack.push({ depth: scopeStack[scopeStack.length-1].depth + 1, vars: new Set() });
+
+        // Parse function parameters and add to knownVars
+        if (params) {
+          let declared = parseDeclaration(params);
+          for (let d of declared) {
+            knownVars.set(d.name, d);
+            scopeStack[scopeStack.length-1].vars.add(d.name);
+          }
+        }
+        continue;
       }
       // Push new scope
       scopeStack.push({ depth: scopeStack[scopeStack.length-1].depth + 1, vars: new Set() });
@@ -269,8 +292,15 @@ function instrumentCode(sourceCode) {
           knownVars.delete(v);
         }
       }
+      // Check if we're leaving a function body
       if (inFunctionBody && scopeStack.length <= 1) {
         inFunctionBody = false;
+        // Note: __opt_pop_frame__() is NOT emitted here because in clang-repl,
+        // code after 'return' inside a function is unreachable and causes
+        // "UNSUPPORTED FEATURES" errors. Instead, frames are popped implicitly
+        // by __opt_trace_impl__ which detects when the call stack depth changes.
+        output.push(line);
+        continue;
       }
     }
 
@@ -278,6 +308,12 @@ function instrumentCode(sourceCode) {
     if (!inFunctionBody) {
       output.push(line);
       continue;
+    }
+
+    // Determine current function name for frame management
+    let currentFunc = 'main';
+    for (let fd of functionDefs) {
+      if (fd.startLine <= lineNum) currentFunc = fd.name;
     }
 
     // Check for for-loop header: extract variable declarations from inside for(...)
@@ -348,17 +384,31 @@ function instrumentCode(sourceCode) {
     // Only inject trace after statement-ending lines (with semicolons)
     // Skip if the line is a for-loop header (e.g., "for (int i = 0; i < 10; i++)")
     if (stmtComplete && !stripped.match(/^\s*(for|while|if|else|switch|do)\b/)) {
-      // Inject trace call with all known variables
-      let captures = [];
-      for (let [name, info] of knownVars) {
-        captures.push(`__t__.cap("${name}", ${name});`);
-      }
-
-      if (captures.length > 0) {
-        output.push(`__opt_trace__(${lineNum}, [&](auto& __t__) { ${captures.join(' ')} });`);
+      // For return statements, inject trace BEFORE the return
+      if (stripped.match(/^\s*return\b/)) {
+        let captures = [];
+        for (let [name, info] of knownVars) {
+          captures.push(`__t__.cap("${name}", ${name});`);
+        }
+        if (captures.length > 0) {
+          output.pop();
+          output.push(`__opt_trace__(${lineNum}, [&](auto& __t__) { ${captures.join(' ')} });`);
+          output.push(line);
+        } else {
+          output.pop();
+          output.push(`__opt_trace__(${lineNum});`);
+          output.push(line);
+        }
       } else {
-        // Even with no variables, emit a trace point for step navigation
-        output.push(`__opt_trace__(${lineNum});`);
+        let captures = [];
+        for (let [name, info] of knownVars) {
+          captures.push(`__t__.cap("${name}", ${name});`);
+        }
+        if (captures.length > 0) {
+          output.push(`__opt_trace__(${lineNum}, [&](auto& __t__) { ${captures.join(' ')} });`);
+        } else {
+          output.push(`__opt_trace__(${lineNum});`);
+        }
       }
     }
   }

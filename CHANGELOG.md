@@ -5,7 +5,21 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.2.2] - 2026-07-10
+## [Unreleased]
+
+### Added
+- **C_STRUCT visualization** — user-defined structs/classes are now encoded as `C_STRUCT` entries in the trace. The struct appears in the stack frame with its type name (e.g., `object Point`). Fields are empty (C++ lacks reflection; future versions may support an opt-in `__opt_cap__` method).
+- **Function call stack** — user-defined functions are instrumented with `__opt_push_frame__` calls. When a function is called from `main()`, a new stack frame is pushed with the function name and parameters. The frontend renders multiple frames with parent-child relationships (`is_parent`, `parent_frame_id_list`).
+- **Heap object support** — pointers (`int* p = &x`) are now encoded with their pointee address. Non-null pointers create heap entries in the trace's `heap` field. The frontend renders heap objects in the Heap section.
+
+### Changed
+- **`opt_trace.h`** — `__opt_state__` now tracks `heap_entries` (address → JSON) and `call_stack` (vector of `frame_info` with `func_name`, `frame_id`, `line`, `locals`, `names`). `finish()` builds `stack_to_render` from the call stack and `heap` from `heap_entries`. The top frame uses the current tracer's locals/names; parent frames use their last-updated values.
+- **`instrument.js`** — detects all function definitions (not just `main`), pushes/pops trace frames, parses function parameters. `return` statements now have trace calls injected BEFORE the return (code after `return` is unreachable).
+
+### Known Limitations
+- **C_STRUCT fields** — struct fields are empty because C++ lacks reflection. An opt-in `__opt_cap__` method would allow structs to self-report their fields.
+- **Function frame popping** — frames are pushed when functions are called but not explicitly popped when they return. The `add` frame persists in the stack after the function returns. This is a cosmetic issue (the frame shows but with stale data).
+- **Parameter parsing** — `parseDeclaration("int a, int b")` only parses the first parameter. Multi-parameter functions will have some parameters missing from the trace.
 
 ### Added
 - **Array visualization** — 1-D arrays (`int arr[3] = {10,20,30}`) render as `C_ARRAY` with index headers and element values. 2-D arrays (`int matrix[2][3]`) render as `C_MULTIDIMENSIONAL_ARRAY` with row,column headers.
