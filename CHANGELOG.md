@@ -15,6 +15,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 - **Char encoding with null bytes** — `__opt_encode_data__` for `char` type now uses `std::string` with `__opt_esc__` instead of `snprintf` into a `char[]` buffer, preventing null byte corruption in trace JSON.
 - **SFINAE overload resolution for arrays** — replaced multiple `cap()` template overloads (scalar, 1-D array, 2-D array, 3-D array) with a single `cap()` template using nested `if constexpr` and `std::extent_v` / `std::remove_extent_t` for dimension detection. This fixes ambiguous overload errors and ensures `char[6]` arrays are correctly handled.
+- **Print output desync** — `std::cout` output was buffered, so when a trace step called `drain()` to capture stdout, the output hadn't been flushed to the `ostringstream` yet, causing the Print output to appear stale or missing at certain steps. Fixed by setting `std::ios::unitbuf` (unbuffered mode) on `std::cout` during redirect and calling `std::cout.flush()` before `drain()`.
 
 ## [0.2.1] - 2026-07-09
 
