@@ -256,6 +256,13 @@ export class OptFrontend extends AbstractBaseFrontend {
     assert(!this.pyInputAceEditor);
     this.pyInputAceEditor = ace.edit('codeInputPane');
     var s = this.pyInputAceEditor.getSession();
+
+    // Add name attribute to ace's internal textarea to satisfy browser autofill audit
+    var aceTextarea = document.querySelector('#codeInputPane .ace_text-input');
+    if (aceTextarea) {
+      aceTextarea.setAttribute('name', 'ace_code_input');
+    }
+
     // tab -> 4 spaces
     s.setTabSize(4);
     s.setUseSoftTabs(true);
