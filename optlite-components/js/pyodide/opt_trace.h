@@ -15,6 +15,7 @@
 #include <sstream>
 #include <typeinfo>
 #include <cxxabi.h>
+#include <iostream>
 
 // ── Persistent trace state via Meyers singleton ──
 struct __opt_state__ {
@@ -172,6 +173,12 @@ struct __opt_tracer__ {
 // ── Trace macro ──
 #define __opt_trace__(...) __opt_trace_impl__(__VA_ARGS__)
 
+// ── Sentinel for per-step stdout capture ──
+// Emitted to std::cout after each trace step. runner.ts splits the kernel's
+// iopub stream output on this sentinel to reconstruct per-step cumulative stdout.
+// Uses a unique string unlikely to appear in normal program output.
+static const char* __OPT_SENTINEL__ = "\x01\x02__OPT_STEP__\x02\x01";
+
 template<typename F>
 void __opt_trace_impl__(int line, F&& lambda) {
   __opt_tracer__ __t__(line);
@@ -180,6 +187,9 @@ void __opt_trace_impl__(int line, F&& lambda) {
   } catch (...) {
     // If cap() throws, still emit the trace entry with whatever was captured
   }
+  // Emit sentinel — runner.ts splits on this to get per-step stdout
+  std::cout << __OPT_SENTINEL__;
+  std::cout.flush();
   std::string entry = __t__.finish();
   auto& st = __opt_get_state__();
   if(st.step>0) st.trace_output+=",\n";
@@ -189,6 +199,8 @@ void __opt_trace_impl__(int line, F&& lambda) {
 
 void __opt_trace_impl__(int line) {
   __opt_tracer__ __t__(line);
+  std::cout << __OPT_SENTINEL__;
+  std::cout.flush();
   std::string entry = __t__.finish();
   auto& st = __opt_get_state__();
   if(st.step>0) st.trace_output+=",\n";

@@ -118,19 +118,26 @@ cppWorker.onmessage = async (event) => {
             exception_msg: errorMsg,
           }];
         }
-        // Note: success path no longer needs stdout injection — the trace
-        // runtime (opt_trace.h) captures stdout per-step automatically.
-        // BUT: the rdbuf redirect may fail after kernel recreation, leaving
-        // stale stdout from a previous run. As a safety net, always replace
-        // the trace's stdout with kernelOutput (cumulative, last step only).
-        if (!kernelHasError) {
-          const kernelStdout = kernelOutput.join('');
-          if (kernelStdout) {
-            // Set the last step's stdout to the full kernel output.
-            // Earlier steps get empty string (we can't do per-step from JS).
-            for (let i = 0; i < parsed.trace.length; i++) {
-              parsed.trace[i].stdout = (i === parsed.trace.length - 1) ? kernelStdout : '';
+        // Per-step stdout reconstruction via sentinel markers.
+        // opt_trace.h emits "\x00__OPT_STEP__\x00" to std::cout after each
+        // trace step. The kernel's iopub stream captures all stdout including
+        // these sentinels. We split on the sentinel to get the user's actual
+        // output between each pair of trace steps, then build cumulative stdout.
+        if (!kernelHasError && parsed.trace && parsed.trace.length > 0) {
+          const rawStdout = kernelOutput.join('');
+          const SENTINEL = '\x01\x02__OPT_STEP__\x02\x01';
+          const segments = rawStdout.split(SENTINEL);
+          // segments[0] = output before first trace step (should be empty)
+          // segments[1] = output between step 0 and step 1
+          // segments[N] = output between step N-1 and step N
+          // segments[N+1] = output after last trace step (should be empty)
+          let cumulative = '';
+          for (let i = 0; i < parsed.trace.length; i++) {
+            // Output produced BEFORE this trace step's sentinel
+            if (i < segments.length) {
+              cumulative += segments[i];
             }
+            parsed.trace[i].stdout = cumulative;
           }
         }
 
