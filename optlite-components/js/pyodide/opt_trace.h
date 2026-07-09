@@ -26,8 +26,14 @@ struct __opt_state__ {
   std::streambuf* old_buf;
   std::ostringstream oss;
 
-  void redirect() { old_buf = std::cout.rdbuf(oss.rdbuf()); }
-  void unredirect() { std::cout.rdbuf(old_buf); }
+  void redirect() {
+    old_buf = std::cout.rdbuf(oss.rdbuf());
+    std::cout.setf(std::ios::unitbuf); // unbuffered — flush after every output
+  }
+  void unredirect() {
+    std::cout.rdbuf(old_buf);
+    std::cout.unsetf(std::ios::unitbuf);
+  }
   std::string drain() {
     std::string s = oss.str(); oss.str(""); oss.clear(); return s;
   }
@@ -153,6 +159,8 @@ struct __opt_tracer__ {
   std::string finish() {
     locals+="}";
     auto& st = __opt_get_state__();
+    // Flush std::cout to ensure all output reaches our ostringstream
+    std::cout.flush();
     std::string out = st.drain();
     st.stdout_buffer += out;
 
