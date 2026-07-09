@@ -229,6 +229,7 @@ function instrumentCode(sourceCode) {
   // Track if we're inside a function body (to skip instrumentation at file scope)
   let inFunctionBody = false;
   let mainFunctionDepth = -1;
+  let mainFrameEnsured = false;
 
   // Track all function definitions: name → {startLine, endLine, params}
   let functionDefs = [];
@@ -247,7 +248,15 @@ function instrumentCode(sourceCode) {
     // Skip empty lines and preprocessor directives
     if (stripped === '' || stripped.startsWith('#')) {
       output.push(line);
+      // After the last preprocessor directive, ensure main frame is pushed
+      // (detected by next line being non-preprocessor)
       continue;
+    }
+
+    // First non-preprocessor line — ensure main frame is pushed
+    if (output.length > 0 && !inFunctionBody && !mainFrameEnsured) {
+      output.push('__opt_ensure_frame__("main", 0);');
+      mainFrameEnsured = true;
     }
 
     // Check for opening brace — entering a new scope
@@ -264,17 +273,35 @@ function instrumentCode(sourceCode) {
 
         // Output the function signature line
         output.push(line);
-        // Push a trace frame entry for this function
-        output.push(`__opt_push_frame__("${funcName}", ${lineNum});`);
+        // Note: __opt_push_frame__ inside function body doesn't work in clang-repl.
+        // Instead, trace calls inside the function use __opt_trace_fn__("funcName", ...)
+        // which calls __opt_ensure_frame__ to push the frame at trace time.
         // Push new scope
         scopeStack.push({ depth: scopeStack[scopeStack.length-1].depth + 1, vars: new Set() });
 
         // Parse function parameters and add to knownVars
         if (params) {
-          let declared = parseDeclaration(params);
-          for (let d of declared) {
-            knownVars.set(d.name, d);
-            scopeStack[scopeStack.length-1].vars.add(d.name);
+          // Parameters are comma-separated declarations: "int a, int b"
+          // parseDeclaration only handles "type name, name" not "type name, type name"
+          // So split by comma and parse each as a separate declaration
+          let paramParts = [];
+          let depth = 0;
+          let current = '';
+          for (let j = 0; j < params.length; j++) {
+            const c = params[j];
+            if (c === '<' || c === '(' || c === '[') depth++;
+            if (c === '>' || c === ')' || c === ']') depth--;
+            if (c === ',' && depth === 0) { paramParts.push(current.trim()); current = ''; }
+            else current += c;
+          }
+          if (current.trim()) paramParts.push(current.trim());
+          
+          for (let p of paramParts) {
+            let declared = parseDeclaration(p);
+            for (let d of declared) {
+              knownVars.set(d.name, d);
+              scopeStack[scopeStack.length-1].vars.add(d.name);
+            }
           }
         }
         continue;
@@ -331,14 +358,15 @@ function instrumentCode(sourceCode) {
       // Output the original for line
       output.push(line);
       // Inject a trace call right after the for header to capture loop variable state
+      let fnArg = `"${currentFunc}", `;
       let captures = [];
       for (let [name, info] of knownVars) {
         captures.push(`__t__.cap("${name}", ${name});`);
       }
       if (captures.length > 0) {
-        output.push(`__opt_trace__(${lineNum}, [&](auto& __t__) { ${captures.join(' ')} });`);
+        output.push(`__opt_trace_fn__(${fnArg}${lineNum}, [&](auto& __t__) { ${captures.join(' ')} });`);
       } else {
-        output.push(`__opt_trace__(${lineNum});`);
+        output.push(`__opt_trace_fn__(${fnArg}${lineNum});`);
       }
       continue;
     }
@@ -384,7 +412,10 @@ function instrumentCode(sourceCode) {
     // Only inject trace after statement-ending lines (with semicolons)
     // Skip if the line is a for-loop header (e.g., "for (int i = 0; i < 10; i++)")
     if (stmtComplete && !stripped.match(/^\s*(for|while|if|else|switch|do)\b/)) {
-      // For return statements, inject trace BEFORE the return
+      // Always use __opt_trace_fn__ with the current function name
+      // __opt_ensure_frame__ handles pushing/popping frames as needed
+      let fnArg = `"${currentFunc}", `;
+      
       if (stripped.match(/^\s*return\b/)) {
         let captures = [];
         for (let [name, info] of knownVars) {
@@ -392,11 +423,11 @@ function instrumentCode(sourceCode) {
         }
         if (captures.length > 0) {
           output.pop();
-          output.push(`__opt_trace__(${lineNum}, [&](auto& __t__) { ${captures.join(' ')} });`);
+          output.push(`__opt_trace_fn__(${fnArg}${lineNum}, [&](auto& __t__) { ${captures.join(' ')} });`);
           output.push(line);
         } else {
           output.pop();
-          output.push(`__opt_trace__(${lineNum});`);
+          output.push(`__opt_trace_fn__(${fnArg}${lineNum});`);
           output.push(line);
         }
       } else {
@@ -405,9 +436,9 @@ function instrumentCode(sourceCode) {
           captures.push(`__t__.cap("${name}", ${name});`);
         }
         if (captures.length > 0) {
-          output.push(`__opt_trace__(${lineNum}, [&](auto& __t__) { ${captures.join(' ')} });`);
+          output.push(`__opt_trace_fn__(${fnArg}${lineNum}, [&](auto& __t__) { ${captures.join(' ')} });`);
         } else {
-          output.push(`__opt_trace__(${lineNum});`);
+          output.push(`__opt_trace_fn__(${fnArg}${lineNum});`);
         }
       }
     }

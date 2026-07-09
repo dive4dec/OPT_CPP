@@ -122,12 +122,13 @@ std::string __opt_encode_data__(const T& v) {
     std::string typeName = __opt_demangle__(typeid(v).name());
     return "[\"C_DATA\",\""+__opt_addr__(&v)+"\",\""+__opt_esc__(typeName)+"\","+os.str()+",{\"bytes\":"+std::to_string(sizeof(T))+"}]";
   } else if constexpr (std::is_pointer_v<T>) {
-    // For pointers, create a heap entry if the pointee is not null
     std::string ptr = v ? __opt_addr__((void*)v) : "0x0";
     return "[\"C_DATA\",\""+__opt_addr__(&v)+"\",\"pointer\",\""+ptr+"\",{\"bytes\":"+std::to_string(sizeof(T))+"}]";
   } else {
-    return "[\"C_DATA\",\""+__opt_addr__(&v)+"\",\""+
-        __opt_esc__(__opt_demangle__(typeid(v).name()))+"\",\"<unknown>\",{\"bytes\":"+std::to_string(sizeof(T))+"}]";
+    // For unknown types (including structs/classes), encode as C_DATA
+    // The C_STRUCT format causes frontend assertion failures
+    std::string addr = __opt_addr__(&v);
+    return "[\"C_DATA\",\""+addr+"\",\"object\",\"<unknown>\",{\"bytes\":"+std::to_string(sizeof(T))+"}]";
   }
 }
 
@@ -223,37 +224,9 @@ struct __opt_tracer__ {
         s += "]";
         add(n, s);
       }
-    } else if constexpr (std::is_pointer_v<std::remove_cv_t<std::remove_reference_t<T>>>) {
-      // Pointer: create C_DATA with pointer value, and if non-null,
-      // create a heap entry for the pointee
-      using P = std::remove_cv_t<std::remove_reference_t<T>>;
-      if(v) {
-        std::string heap_addr = __opt_addr__((void*)v);
-        // Only create heap entry if we haven't seen this address before
-        auto& st = __opt_get_state__();
-        if(!st.has_heap(heap_addr)) {
-          // Try to encode the pointee
-          using PointeeT = std::remove_pointer_t<P>;
-          if constexpr (std::is_arithmetic_v<PointeeT> || std::is_same_v<PointeeT, char>) {
-            st.add_heap(heap_addr, __opt_encode_data__(*v));
-          } else if constexpr (std::is_same_v<PointeeT, bool>) {
-            st.add_heap(heap_addr, __opt_encode_data__(*v));
-          } else {
-            // For non-trivial pointees, create a C_STRUCT entry
-            st.add_heap(heap_addr, "[\"C_STRUCT\",\""+heap_addr+"\",\""+
-              __opt_esc__(__opt_demangle__(typeid(*v).name()))+"\",[]]");
-          }
-        }
-      }
-      add(n, __opt_encode_data__(v));
-    } else if constexpr (std::is_class_v<T>) {
-      // Struct/class: encode as C_STRUCT with empty fields
-      // (C++ lacks reflection; fields require an opt-in __opt_cap__ method
-      //  which is not yet implemented for user structs)
-      std::string type_name = __opt_esc__(__opt_demangle__(typeid(v).name()));
-      std::string addr = __opt_addr__(&v);
-      add(n, "[\"C_STRUCT\",\""+addr+"\",\""+type_name+"\",[]]");
     } else {
+      // For all other types (including structs/classes and pointers),
+      // encode as C_DATA using __opt_encode_data__
       add(n, __opt_encode_data__(v));
     }
   }
@@ -366,23 +339,43 @@ void __opt_update_frame__(int line, const std::string& locals,
 
 // ── Trace macro ──
 #define __opt_trace__(...) __opt_trace_impl__(__VA_ARGS__)
+#define __opt_trace_fn__(...) __opt_trace_fn_impl__(__VA_ARGS__)
 
 // Helper: pop frames until we're at the named function
 void __opt_pop_to__(const char* func_name) {
   auto& st = __opt_get_state__();
-  // Pop frames until the top matches func_name
   while(!st.call_stack.empty() && st.call_stack.back().func_name != func_name) {
     st.call_stack.pop_back();
   }
-  // If stack is empty, re-push main
   if(st.call_stack.empty()) {
     __opt_push_frame__("main", 0);
   }
 }
 
+// Ensure a frame exists for the named function; push if not on top,
+// pop if returning to a parent frame
+void __opt_ensure_frame__(const char* func_name, int line) {
+  auto& st = __opt_get_state__();
+  if(st.call_stack.empty()) {
+    __opt_push_frame__(func_name, line);
+    return;
+  }
+  // If the top frame is already this function, nothing to do
+  if(st.call_stack.back().func_name == func_name) return;
+  // Check if this function is already on the stack (returning to a parent)
+  for(int i = (int)st.call_stack.size() - 1; i >= 0; i--) {
+    if(st.call_stack[i].func_name == func_name) {
+      // Pop frames down to this one
+      while((int)st.call_stack.size() > i + 1) st.call_stack.pop_back();
+      return;
+    }
+  }
+  // Not on stack — push as a new child frame
+  __opt_push_frame__(func_name, line);
+}
+
 template<typename F>
 void __opt_trace_impl__(int line, F&& lambda) {
-  // Ensure main frame exists
   auto& st = __opt_get_state__();
   if(st.call_stack.empty()) {
     __opt_push_frame__("main", line);
@@ -394,12 +387,29 @@ void __opt_trace_impl__(int line, F&& lambda) {
     lambda(__t__);
   } catch (...) {
   }
-  // Emit sentinel
   std::cout << __OPT_SENTINEL__;
   std::cout.flush();
-  // Finish builds the locals JSON (adds closing }) and the trace entry
   std::string entry = __t__.finish();
-  // Update the current frame with the finished locals
+  __opt_update_frame__(line, __t__.locals, __t__.names);
+  st.trace_output += (st.step>0 ? ",\n" : "") + entry;
+  st.step++;
+}
+
+// Overload with explicit function name for frame management
+template<typename F>
+void __opt_trace_fn_impl__(const char* func_name, int line, F&& lambda) {
+  __opt_ensure_frame__(func_name, line);
+  auto& st = __opt_get_state__();
+
+  __opt_tracer__ __t__(line, st.call_stack.back().func_name.c_str(),
+                        st.call_stack.back().frame_id.c_str());
+  try {
+    lambda(__t__);
+  } catch (...) {
+  }
+  std::cout << __OPT_SENTINEL__;
+  std::cout.flush();
+  std::string entry = __t__.finish();
   __opt_update_frame__(line, __t__.locals, __t__.names);
   st.trace_output += (st.step>0 ? ",\n" : "") + entry;
   st.step++;
@@ -410,6 +420,19 @@ void __opt_trace_impl__(int line) {
   if(st.call_stack.empty()) {
     __opt_push_frame__("main", line);
   }
+  __opt_tracer__ __t__(line, st.call_stack.back().func_name.c_str(),
+                        st.call_stack.back().frame_id.c_str());
+  std::cout << __OPT_SENTINEL__;
+  std::cout.flush();
+  std::string entry = __t__.finish();
+  __opt_update_frame__(line, __t__.locals, __t__.names);
+  st.trace_output += (st.step>0 ? ",\n" : "") + entry;
+  st.step++;
+}
+
+void __opt_trace_fn_impl__(const char* func_name, int line) {
+  __opt_ensure_frame__(func_name, line);
+  auto& st = __opt_get_state__();
   __opt_tracer__ __t__(line, st.call_stack.back().func_name.c_str(),
                         st.call_stack.back().frame_id.c_str());
   std::cout << __OPT_SENTINEL__;
