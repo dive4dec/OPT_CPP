@@ -246,7 +246,12 @@ self.onmessage = async (event) => {
           const parsed = JSON.parse(traceJson);
           // Set the code field (opt_trace.h leaves it empty)
           parsed.code = self.script;
-          results = JSON.stringify(parsed);
+          // If trace is empty (no statements to instrument), use fallback
+          if (!parsed.trace || parsed.trace.length === 0) {
+            results = JSON.stringify({ code: self.script, trace: buildFallbackTrace(code) });
+          } else {
+            results = JSON.stringify(parsed);
+          }
         } catch (e) {
           // JSON parse failed — fall back to fake trace
           results = JSON.stringify({ code: self.script, trace: buildFallbackTrace(code) });
@@ -266,6 +271,8 @@ self.onmessage = async (event) => {
 function buildFallbackTrace(code) {
   const lines = code.split('\n');
   const trace = [];
+  const fid = "0xFFF000BE0";
+  const fhash = "main_" + fid;
   for (let i = 0; i < lines.length; i++) {
     const lineNum = i + 1;
     if (lines[i].trim() === '') continue;
@@ -276,14 +283,16 @@ function buildFallbackTrace(code) {
       globals: {},
       ordered_globals: [],
       stack_to_render: [{
+        frame_id: fid,
         func_name: 'main',
-        frame_id: 1,
-        encoded_locals: {},
-        ordered_varnames: [],
-        unique_hash: 'f1',
+        is_highlighted: true,
         is_parent: false,
-        parent_frame_id: [],
         is_zombie: false,
+        line: lineNum,
+        ordered_varnames: [],
+        parent_frame_id_list: [],
+        unique_hash: fhash,
+        encoded_locals: {},
       }],
       heap: {},
       stdout: '',
