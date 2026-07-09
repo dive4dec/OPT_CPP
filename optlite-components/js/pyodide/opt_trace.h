@@ -15,31 +15,14 @@
 #include <sstream>
 #include <typeinfo>
 #include <cxxabi.h>
-#include <iostream>
-#include <streambuf>
 
 // ── Persistent trace state via Meyers singleton ──
 struct __opt_state__ {
   std::string trace_output;
   int step = 0;
-  std::string stdout_buffer;
-  std::streambuf* old_buf;
-  std::ostringstream oss;
 
-  void redirect() {
-    old_buf = std::cout.rdbuf(oss.rdbuf());
-    std::cout.setf(std::ios::unitbuf); // unbuffered — flush after every output
-  }
-  void unredirect() {
-    std::cout.rdbuf(old_buf);
-    std::cout.unsetf(std::ios::unitbuf);
-  }
-  std::string drain() {
-    std::string s = oss.str(); oss.str(""); oss.clear(); return s;
-  }
   void reset() {
-    trace_output.clear(); step = 0; stdout_buffer.clear();
-    oss.str(""); oss.clear();
+    trace_output.clear(); step = 0;
   }
 };
 
@@ -158,11 +141,6 @@ struct __opt_tracer__ {
 
   std::string finish() {
     locals+="}";
-    auto& st = __opt_get_state__();
-    // Flush std::cout to ensure all output reaches our ostringstream
-    std::cout.flush();
-    std::string out = st.drain();
-    st.stdout_buffer += out;
 
     std::string varnames="[";
     for(size_t i=0;i<names.size();i++){if(i)varnames+=",";varnames+="\""+__opt_esc__(names[i])+"\"";}
@@ -186,7 +164,7 @@ struct __opt_tracer__ {
       "\"unique_hash\":\""+hash+"\","
       "\"encoded_locals\":"+locals+
       "}],"
-      "\"heap\":{},\"stdout\":\""+__opt_esc__(st.stdout_buffer)+"\"}";
+      "\"heap\":{},\"stdout\":\"\"}";
     return e;
   }
 };

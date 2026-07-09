@@ -91,6 +91,7 @@ self.onmessage = async (event) => {
         locateFile: (file) => XEUS_CPP_BASE + file,
 
         // Suppress clang/LLVM diagnostic output that floods the console
+        // (stdout from user code goes through iopub stream, captured by runner.ts)
         print: () => {},
         printErr: () => {},
 
@@ -156,7 +157,7 @@ self.onmessage = async (event) => {
       // 4. If code has main(), append main() call
       // 5. Finalize: write the trace JSON to temp file
       let execCode = header + '\n';
-      execCode += '{ auto& __s__ = __opt_get_state__(); __s__.reset(); __s__.redirect(); }\n';
+      execCode += '{ auto& __s__ = __opt_get_state__(); __s__.reset(); }\n';
       execCode += instrumentedCode;
 
       // If the code defines int main(), append a call to main()

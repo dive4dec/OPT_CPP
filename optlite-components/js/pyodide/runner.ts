@@ -120,6 +120,19 @@ cppWorker.onmessage = async (event) => {
         }
         // Note: success path no longer needs stdout injection — the trace
         // runtime (opt_trace.h) captures stdout per-step automatically.
+        // BUT: the rdbuf redirect may fail after kernel recreation, leaving
+        // stale stdout from a previous run. As a safety net, always replace
+        // the trace's stdout with kernelOutput (cumulative, last step only).
+        if (!kernelHasError) {
+          const kernelStdout = kernelOutput.join('');
+          if (kernelStdout) {
+            // Set the last step's stdout to the full kernel output.
+            // Earlier steps get empty string (we can't do per-step from JS).
+            for (let i = 0; i < parsed.trace.length; i++) {
+              parsed.trace[i].stdout = (i === parsed.trace.length - 1) ? kernelStdout : '';
+            }
+          }
+        }
 
         data.results = JSON.stringify(parsed);
       } catch (e) {

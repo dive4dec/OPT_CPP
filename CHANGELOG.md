@@ -15,7 +15,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 - **Char encoding with null bytes** — `__opt_encode_data__` for `char` type now uses `std::string` with `__opt_esc__` instead of `snprintf` into a `char[]` buffer, preventing null byte corruption in trace JSON.
 - **SFINAE overload resolution for arrays** — replaced multiple `cap()` template overloads (scalar, 1-D array, 2-D array, 3-D array) with a single `cap()` template using nested `if constexpr` and `std::extent_v` / `std::remove_extent_t` for dimension detection. This fixes ambiguous overload errors and ensures `char[6]` arrays are correctly handled.
-- **Print output desync** — `std::cout` output was buffered, so when a trace step called `drain()` to capture stdout, the output hadn't been flushed to the `ostringstream` yet, causing the Print output to appear stale or missing at certain steps. Fixed by setting `std::ios::unitbuf` (unbuffered mode) on `std::cout` during redirect and calling `std::cout.flush()` before `drain()`.
+- **Print output stale/freeze across runs** — `std::cout.rdbuf()` redirect used for per-step stdout capture worked on the first run but failed after kernel recreation (which resets `std::cout` to its default WASM streambuf), causing stale stdout from a previous run to leak into the current trace. Removed the `rdbuf` redirect entirely; stdout is now captured from the kernel's iopub stream messages in `runner.ts` and injected into the trace's final step. This sacrifices per-step stdout granularity (intermediate steps show empty Print output) but guarantees correct, non-stale output.
 
 ## [0.2.1] - 2026-07-09
 
