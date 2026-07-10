@@ -247,7 +247,7 @@ function genCaptures(knownVars, heapPointers, deletedPointers, structDefs, exclu
     } else if (heapPointers.has(name)) {
       let sz = heapPointers.get(name);
       captures.push(`__t__.cap_ptr("${name}", ${name}, ${sz});`);
-    } else if (info && info.type && structDefs.has(info.type)) {
+    } else if (info && info.type && !info.isPointer && structDefs.has(info.type)) {
           // Struct variable: capture with field names
           let fields = structDefs.get(info.type);
           let fieldEncoders = fields.map(f => `__t__.__opt_field__("${f.name}", ${name}.${f.name})`).join(" + \",\" + ");
@@ -291,10 +291,18 @@ function instrumentCode(sourceCode) {
   // Track if we're inside a member function (inside a struct/class body)
   let inMemberFunction = false;
   let memberFunctionStructName = '';
+  let memberFunctionIsStatic = false;
 
   // Track if we're inside a struct/class body (to skip variable declarations)
   let inStructBody = false;
   let structBraceDepth = 0;
+
+  // Track local class/struct bodies inside function bodies
+  let inLocalClassBody = false;
+  let localClassBraceDepth = 0;
+
+  // Track brace-less control flow (for/while/if without {) — next line is the body
+  let pendingBracelessBody = false;
   let currentStructName = '';
   let currentStructFields = [];
   let currentAccessLevel = 'public'; // default for struct
@@ -334,6 +342,39 @@ function instrumentCode(sourceCode) {
       mainFrameEnsured = true;
     }
 
+    // Handle local class/struct bodies inside functions — skip all instrumentation
+    // This must come BEFORE the { handler and closing brace handler to prevent
+    // member functions inside the local class from being detected as regular functions
+    if (inFunctionBody && inLocalClassBody) {
+      for (let c of stripped) {
+        if (c === '{') localClassBraceDepth++;
+        if (c === '}') localClassBraceDepth--;
+      }
+      output.push(line);
+      if (localClassBraceDepth <= 0) {
+        inLocalClassBody = false;
+      }
+      continue;
+    }
+
+    // Detect local class/struct definition inside a function body
+    if (inFunctionBody && !inLocalClassBody) {
+      let localClassMatch = stripped.match(/^(struct|class)\s+(\w+)\s*(?:final\s*)?(?::\s*[^{]*)?\{/);
+      if (localClassMatch) {
+        inLocalClassBody = true;
+        localClassBraceDepth = 0;
+        for (let c of stripped) {
+          if (c === '{') localClassBraceDepth++;
+          if (c === '}') localClassBraceDepth--;
+        }
+        output.push(line);
+        if (localClassBraceDepth <= 0) {
+          inLocalClassBody = false;
+        }
+        continue;
+      }
+    }
+
     // If inside struct/class body (but NOT inside a member function), handle field declarations
     if (inStructBody && !inFunctionBody) {
       // Track braces inside struct body
@@ -361,7 +402,21 @@ function instrumentCode(sourceCode) {
       // Detect member function definition: has parentheses and opening brace
       // e.g., "Point(int x, int y) : x(x), y(y) {" or "int getX() {"
       // Also handle inline definitions: "void foo() { ... }"
-      let memberFuncMatch = stripped.match(/^([\w:~]+\s+~?\w+|~?\w+)\s*\(([^)]*)\)\s*(?::\s*[^{]*)?\{/);
+      // Allow const, override, noexcept, final, volatile, & , && between ) and { or :
+      // Handle optional leading keywords: virtual, static, inline, explicit, friend, const
+      // Handle operator overloads: operator(), operator++, operator=, etc.
+      // Handle ref-qualified return types: const static Printer &get_print()
+      let memberFuncMatch = stripped.match(/^(?:(?:virtual|static|inline|explicit|friend|const)\s+)*(?:[\w:~]+\s+)*&?\s*(~?\w+|operator\s*[()]=≠%&|^~]*|operator\s*\+\+|operator\s*--|operator\s*\(\))\s*\(([^)]*)\)\s*(?:(?:const|override|noexcept|final|volatile|&|&&)\s*)*(?::\s*[^{]*)?\{/);
+      if (!memberFuncMatch) {
+        // Try operator() specifically: "void operator()(...) {"
+        let opCallMatch = stripped.match(/^(?:(?:virtual|static|inline|explicit|friend|const)\s+)*(?:[\w:~]+\s+)*&?\s*(operator\s*\(\))\s*\(([^)]*)\)\s*(?:(?:const|override|noexcept|final|volatile|&|&&)\s*)*(?::\s*[^{]*)?\{/);
+        if (opCallMatch) memberFuncMatch = opCallMatch;
+      }
+      if (!memberFuncMatch) {
+        // Try operator() with nested parens in params
+        let opCallMatch2 = stripped.match(/^(?:(?:virtual|static|inline|explicit|friend|const)\s+)*(?:[\w:~]+\s+)*&?\s*(operator\s*\(\))\s*\(((?:[^()]|\([^)]*\))*)\)\s*(?:(?:const|override|noexcept|final|volatile|&|&&)\s*)*(?::\s*[^{]*)?\{/);
+        if (opCallMatch2) memberFuncMatch = opCallMatch2;
+      }
       if (memberFuncMatch) {
         // Extract function name — could be "Point", "~Point", "getX", "operator=", etc.
         let rawName = memberFuncMatch[1].trim();
@@ -392,6 +447,7 @@ function instrumentCode(sourceCode) {
         inFunctionBody = true;
         inMemberFunction = true;
         memberFunctionStructName = currentStructName;
+        memberFunctionIsStatic = stripped.includes('static');
         functionDefs.push({name: funcName, startLine: lineNum, params: params, isMember: true, structName: currentStructName});
 
         // Output the function signature line
@@ -506,7 +562,7 @@ function instrumentCode(sourceCode) {
         continue;
       }
       // Push new scope (but not for struct/class bodies — they're handled separately)
-      if (!stripped.match(/^(struct|class)\s+\w+\s*\{/)) {
+      if (!stripped.match(/^(struct|class)\s+\w+\s*(?:final\s*)?(?::\s*[^{]*)?\{/)) {
         scopeStack.push({ depth: scopeStack[scopeStack.length-1].depth + 1, vars: new Set() });
       }
     }
@@ -514,7 +570,7 @@ function instrumentCode(sourceCode) {
     // At file scope (not in function body), track struct/class bodies and global variable declarations
     if (!inFunctionBody) {
       // Detect struct/class body entry: "struct Name {" or "class Name {"
-      let structMatch = stripped.match(/^(struct|class)\s+(\w+)\s*\{/);
+      let structMatch = stripped.match(/^(struct|class)\s+(\w+)\s*(?:final\s*)?(?::\s*[^{]*)?\{/);
       if (structMatch) {
         inStructBody = true;
         structBraceDepth = 1;
@@ -594,7 +650,9 @@ function instrumentCode(sourceCode) {
     }
 
     // Check for for-loop header: extract variable declarations from inside for(...)
-    let forMatch = stripped.match(/^\s*for\s*\(([^;]*);([^;]*);([^)]*)\)\s*\{?\s*$/);
+    // Only handle for-loops with opening brace — brace-less for-loops would
+    // have their trace injected as the loop body, breaking execution.
+    let forMatch = stripped.match(/^\s*for\s*\(([^;]*);([^;]*);([^)]*)\)\s*\{\s*$/);
     if (forMatch) {
       // Parse the init part: e.g., "int i = 0" or "int i = 0, j = 5"
       let initPart = forMatch[1].trim();
@@ -626,16 +684,21 @@ function instrumentCode(sourceCode) {
       output.push(line);
       // After the for header executes, the loop variable is initialized.
       // Inject another trace showing the for-loop state (i now has a value)
-      let captures2 = [];
-      for (let [name, info] of knownVars) {
-        if (heapPointers.has(name)) {
-          captures2.push(`__t__.cap_ptr("${name}", ${name}, ${heapPointers.get(name)});`);
-        } else {
-          captures2.push(`__t__.cap("${name}", ${name});`);
+      // ONLY if the for-loop has an opening brace — otherwise the trace
+      // would become the loop body, breaking single-statement for-loops.
+      let hasBrace = stripped.includes('{');
+      if (hasBrace) {
+        let captures2 = [];
+        for (let [name, info] of knownVars) {
+          if (heapPointers.has(name)) {
+            captures2.push(`__t__.cap_ptr("${name}", ${name}, ${heapPointers.get(name)});`);
+          } else {
+            captures2.push(`__t__.cap("${name}", ${name});`);
+          }
         }
-      }
-      if (captures2.length > 0) {
-        output.push(`__opt_trace_fn__(${fnArg}${lineNum}, [&](auto& __t__) { ${captures2.join(' ')} });`);
+        if (captures2.length > 0) {
+          output.push(`__opt_trace_fn__(${fnArg}${lineNum}, [&](auto& __t__) { ${captures2.join(' ')} });`);
+        }
       }
       continue;
     }
@@ -672,12 +735,42 @@ function instrumentCode(sourceCode) {
     // Inject trace BEFORE the statement (Python Tutor convention):
     // trace entry's line = the line about to execute
     // variables = state BEFORE this line executes
+    // But skip if this line is the body of a brace-less for/while/if
+    if (pendingBracelessBody) {
+      pendingBracelessBody = false;
+      // Don't inject trace — this line is the body of a brace-less control flow
+      // Just output the line and add any declared variables
+      let declared = parseDeclaration(line);
+      for (let d of declared) {
+        knownVars.set(d.name, d);
+        scopeStack[scopeStack.length-1].vars.add(d.name);
+      }
+      output.push(line);
+      continue;
+    }
+
+    // Detect brace-less control flow (for/while/if without {) — next line is the body
+    // Must come AFTER the pendingBracelessBody check so the flag is set for the NEXT line
+    if (stripped.match(/^\s*(for|while|if)\s*\(/) && !stripped.includes('{') && stripped.endsWith(')')) {
+      pendingBracelessBody = true;
+    }
+
     if (stmtComplete && !stripped.match(/^\s*(for|while|if|else|switch|do)\b/)) {
       let fnArg = `"${currentFunc}", `;
       if (inMemberFunction) {
         // Inside member functions, lambdas don't work in clang-repl.
         // Use __opt_trace_fn_this__ which captures 'this' without a lambda.
-        output.push(`__opt_trace_fn_this__(${fnArg}${lineNum}, "${memberFunctionStructName}*", (void*)this);`);
+        // But static member functions have no 'this' — use plain trace instead.
+        if (memberFunctionIsStatic) {
+          let captures = genCaptures(knownVars, heapPointers, deletedPointers, structDefs);
+          if (captures.length > 0) {
+            output.push(`__opt_trace_fn__(${fnArg}${lineNum}, [&](auto& __t__) { ${captures.join(' ')} });`);
+          } else {
+            output.push(`__opt_trace_fn__(${fnArg}${lineNum});`);
+          }
+        } else {
+          output.push(`__opt_trace_fn_this__(${fnArg}${lineNum}, "${memberFunctionStructName}*", (void*)this);`);
+        }
       } else {
         let captures = genCaptures(knownVars, heapPointers, deletedPointers, structDefs);
         if (captures.length > 0) {
