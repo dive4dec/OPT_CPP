@@ -73,27 +73,6 @@ function stripCommentsAndStrings(code) {
   return result;
 }
 
-// Track brace depth to know which function/scope we're in
-function getBraceDepth(code, upToIndex) {
-  let depth = 0;
-  let inString = false, inChar = false, inComment = false, inLineComment = false;
-  for (let i = 0; i < upToIndex; i++) {
-    const c = code[i];
-    const next = code[i+1];
-    if (inLineComment) { if (c === '\n') inLineComment = false; continue; }
-    if (inComment) { if (c === '*' && next === '/') { inComment = false; i++; } continue; }
-    if (inString) { if (c === '\\') { i++; } else if (c === '"') inString = false; continue; }
-    if (inChar) { if (c === '\\') { i++; } else if (c === "'") inChar = false; continue; }
-    if (c === '/' && next === '/') { inLineComment = true; i++; continue; }
-    if (c === '/' && next === '*') { inComment = true; i++; continue; }
-    if (c === '"') { inString = true; continue; }
-    if (c === "'") { inChar = true; continue; }
-    if (c === '{') depth++;
-    if (c === '}') depth--;
-  }
-  return depth;
-}
-
 // Parse a variable declaration to extract type and variable name(s)
 // Returns array of { type, name, isArray, arraySize, isPointer, isReference }
 function parseDeclaration(line) {
@@ -285,7 +264,6 @@ function instrumentCode(sourceCode) {
 
   // Track if we're inside a function body (to skip instrumentation at file scope)
   let inFunctionBody = false;
-  let mainFunctionDepth = -1;
   let mainFrameEnsured = false;
 
   // Track if we're inside a member function (inside a struct/class body)
@@ -300,6 +278,9 @@ function instrumentCode(sourceCode) {
   // Track local class/struct bodies inside function bodies
   let inLocalClassBody = false;
   let localClassBraceDepth = 0;
+  let localClassName = '';
+  let localClassFields = [];
+  let localClassAccessLevel = 'public';
 
   // Track brace-less control flow (for/while/if without {) — next line is the body
   let pendingBracelessBody = false;
@@ -312,10 +293,6 @@ function instrumentCode(sourceCode) {
 
   // Track all function definitions: name → {startLine, endLine, params}
   let functionDefs = [];
-
-  // Track multiline statements
-  let inMultilineStatement = false;
-  let statementStartLine = 0;
 
   for (let i = 0; i < lines.length; i++) {
     let line = lines[i];
@@ -342,27 +319,15 @@ function instrumentCode(sourceCode) {
       mainFrameEnsured = true;
     }
 
-    // Handle local class/struct bodies inside functions — skip all instrumentation
-    // This must come BEFORE the { handler and closing brace handler to prevent
-    // member functions inside the local class from being detected as regular functions
-    if (inFunctionBody && inLocalClassBody) {
-      for (let c of stripped) {
-        if (c === '{') localClassBraceDepth++;
-        if (c === '}') localClassBraceDepth--;
-      }
-      output.push(line);
-      if (localClassBraceDepth <= 0) {
-        inLocalClassBody = false;
-      }
-      continue;
-    }
-
     // Detect local class/struct definition inside a function body
     if (inFunctionBody && !inLocalClassBody) {
       let localClassMatch = stripped.match(/^(struct|class)\s+(\w+)\s*(?:final\s*)?(?::\s*[^{]*)?\{/);
       if (localClassMatch) {
         inLocalClassBody = true;
         localClassBraceDepth = 0;
+        localClassName = localClassMatch[2];
+        localClassFields = [];
+        localClassAccessLevel = (localClassMatch[1] === 'class') ? 'private' : 'public';
         for (let c of stripped) {
           if (c === '{') localClassBraceDepth++;
           if (c === '}') localClassBraceDepth--;
@@ -373,6 +338,45 @@ function instrumentCode(sourceCode) {
         }
         continue;
       }
+    }
+
+    // If inside a local class/struct body, collect public field declarations
+    // so local-class instances can be visualized with their fields (mirrors
+    // the global struct handling above).
+    if (inFunctionBody && inLocalClassBody) {
+      // Track braces to detect the end of the local class body
+      for (let c of stripped) {
+        if (c === '{') localClassBraceDepth++;
+        if (c === '}') localClassBraceDepth--;
+      }
+      // Register the local class when its body ends
+      if (localClassBraceDepth <= 0) {
+        if (localClassName && localClassFields.length > 0) {
+          structDefs.set(localClassName, localClassFields);
+        }
+        inLocalClassBody = false;
+        output.push(line);
+        continue;
+      }
+      // Skip access specifiers but track the current access level
+      let accessMatch = stripped.match(/^(public|private|protected)\s*:/);
+      if (accessMatch) {
+        localClassAccessLevel = accessMatch[1];
+        output.push(line);
+        continue;
+      }
+      // Parse field declarations — collect only public fields for visualization.
+      // Private members can't be accessed from outside the class in the instrumented
+      // lambda, so accessing them would cause a WASM compilation error.
+      let fieldDecl = parseDeclaration(stripped);
+      for (let d of fieldDecl) {
+        d.access = localClassAccessLevel;
+        if (localClassAccessLevel === 'public') {
+          localClassFields.push(d);
+        }
+      }
+      output.push(line);
+      continue;
     }
 
     // If inside struct/class body (but NOT inside a member function), handle field declarations
@@ -495,7 +499,9 @@ function instrumentCode(sourceCode) {
         output.push(line);
         continue;
       }
-      // Parse field declarations — only collect public fields for visualization
+      // Parse field declarations — collect only public fields for visualization.
+      // Private members can't be accessed from outside the class in the instrumented
+      // lambda, so accessing them would cause a WASM compilation error.
       let fieldDecl = parseDeclaration(stripped);
       for (let d of fieldDecl) {
         d.access = currentAccessLevel;
@@ -519,7 +525,6 @@ function instrumentCode(sourceCode) {
         let funcName = funcMatch[2];
         let params = funcMatch[3].trim();
         inFunctionBody = true;
-        mainFunctionDepth = getBraceDepth(sourceCode, sourceCode.indexOf(line));
         functionDefs.push({name: funcName, startLine: lineNum, params: params});
 
         // Output the function signature line
@@ -686,16 +691,8 @@ function instrumentCode(sourceCode) {
       // Inject another trace showing the for-loop state (i now has a value)
       // ONLY if the for-loop has an opening brace — otherwise the trace
       // would become the loop body, breaking single-statement for-loops.
-      let hasBrace = stripped.includes('{');
-      if (hasBrace) {
-        let captures2 = [];
-        for (let [name, info] of knownVars) {
-          if (heapPointers.has(name)) {
-            captures2.push(`__t__.cap_ptr("${name}", ${name}, ${heapPointers.get(name)});`);
-          } else {
-            captures2.push(`__t__.cap("${name}", ${name});`);
-          }
-        }
+      if (stripped.includes('{')) {
+        let captures2 = genCaptures(knownVars, heapPointers, deletedPointers, structDefs);
         if (captures2.length > 0) {
           output.push(`__opt_trace_fn__(${fnArg}${lineNum}, [&](auto& __t__) { ${captures2.join(' ')} });`);
         }
