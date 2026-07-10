@@ -291,6 +291,7 @@ function instrumentCode(sourceCode) {
   // Track if we're inside a member function (inside a struct/class body)
   let inMemberFunction = false;
   let memberFunctionStructName = '';
+  let memberFunctionIsStatic = false;
 
   // Track if we're inside a struct/class body (to skip variable declarations)
   let inStructBody = false;
@@ -401,9 +402,21 @@ function instrumentCode(sourceCode) {
       // Detect member function definition: has parentheses and opening brace
       // e.g., "Point(int x, int y) : x(x), y(y) {" or "int getX() {"
       // Also handle inline definitions: "void foo() { ... }"
-      // Allow const, override, noexcept, final between ) and { or :
-      // Handle optional leading keywords: virtual, static, inline, explicit
-      let memberFuncMatch = stripped.match(/^(?:(?:virtual|static|inline|explicit|friend)\s+)*([\w:~]+\s+~?\w+|~?\w+)\s*\(([^)]*)\)\s*(?:(?:const|override|noexcept|final|volatile)\s*)*(?::\s*[^{]*)?\{/);
+      // Allow const, override, noexcept, final, volatile, & , && between ) and { or :
+      // Handle optional leading keywords: virtual, static, inline, explicit, friend, const
+      // Handle operator overloads: operator(), operator++, operator=, etc.
+      // Handle ref-qualified return types: const static Printer &get_print()
+      let memberFuncMatch = stripped.match(/^(?:(?:virtual|static|inline|explicit|friend|const)\s+)*(?:[\w:~]+\s+)*&?\s*(~?\w+|operator\s*[()]=≠%&|^~]*|operator\s*\+\+|operator\s*--|operator\s*\(\))\s*\(([^)]*)\)\s*(?:(?:const|override|noexcept|final|volatile|&|&&)\s*)*(?::\s*[^{]*)?\{/);
+      if (!memberFuncMatch) {
+        // Try operator() specifically: "void operator()(...) {"
+        let opCallMatch = stripped.match(/^(?:(?:virtual|static|inline|explicit|friend|const)\s+)*(?:[\w:~]+\s+)*&?\s*(operator\s*\(\))\s*\(([^)]*)\)\s*(?:(?:const|override|noexcept|final|volatile|&|&&)\s*)*(?::\s*[^{]*)?\{/);
+        if (opCallMatch) memberFuncMatch = opCallMatch;
+      }
+      if (!memberFuncMatch) {
+        // Try operator() with nested parens in params
+        let opCallMatch2 = stripped.match(/^(?:(?:virtual|static|inline|explicit|friend|const)\s+)*(?:[\w:~]+\s+)*&?\s*(operator\s*\(\))\s*\(((?:[^()]|\([^)]*\))*)\)\s*(?:(?:const|override|noexcept|final|volatile|&|&&)\s*)*(?::\s*[^{]*)?\{/);
+        if (opCallMatch2) memberFuncMatch = opCallMatch2;
+      }
       if (memberFuncMatch) {
         // Extract function name — could be "Point", "~Point", "getX", "operator=", etc.
         let rawName = memberFuncMatch[1].trim();
@@ -434,6 +447,7 @@ function instrumentCode(sourceCode) {
         inFunctionBody = true;
         inMemberFunction = true;
         memberFunctionStructName = currentStructName;
+        memberFunctionIsStatic = stripped.includes('static');
         functionDefs.push({name: funcName, startLine: lineNum, params: params, isMember: true, structName: currentStructName});
 
         // Output the function signature line
@@ -746,7 +760,17 @@ function instrumentCode(sourceCode) {
       if (inMemberFunction) {
         // Inside member functions, lambdas don't work in clang-repl.
         // Use __opt_trace_fn_this__ which captures 'this' without a lambda.
-        output.push(`__opt_trace_fn_this__(${fnArg}${lineNum}, "${memberFunctionStructName}*", (void*)this);`);
+        // But static member functions have no 'this' — use plain trace instead.
+        if (memberFunctionIsStatic) {
+          let captures = genCaptures(knownVars, heapPointers, deletedPointers, structDefs);
+          if (captures.length > 0) {
+            output.push(`__opt_trace_fn__(${fnArg}${lineNum}, [&](auto& __t__) { ${captures.join(' ')} });`);
+          } else {
+            output.push(`__opt_trace_fn__(${fnArg}${lineNum});`);
+          }
+        } else {
+          output.push(`__opt_trace_fn_this__(${fnArg}${lineNum}, "${memberFunctionStructName}*", (void*)this);`);
+        }
       } else {
         let captures = genCaptures(knownVars, heapPointers, deletedPointers, structDefs);
         if (captures.length > 0) {
