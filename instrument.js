@@ -229,6 +229,10 @@ function instrumentCode(sourceCode) {
   // Track if we're inside a function body (to skip instrumentation at file scope)
   let inFunctionBody = false;
   let mainFunctionDepth = -1;
+  let mainFrameEnsured = false;
+
+  // Track all function definitions: name → {startLine, endLine, params}
+  let functionDefs = [];
 
   // Track multiline statements
   let inMultilineStatement = false;
@@ -247,14 +251,69 @@ function instrumentCode(sourceCode) {
       continue;
     }
 
+    // Add #line directive to map instrumented code back to user's source
+    // NOTE: #line directives cause "Decl inserted into wrong lexical context"
+    // assertion in clang-repl, so we DON'T use them inside function bodies.
+    // Instead, error line mapping is handled by identifier search in runner.ts.
+
+    // First non-preprocessor line — ensure main frame is pushed
+    if (!inFunctionBody && !mainFrameEnsured) {
+      // Push ensure_frame as a separate statement
+      output.push('__opt_ensure_frame__("main", 0);');
+      mainFrameEnsured = true;
+    }
+
     // Check for opening brace — entering a new scope
     if (stripped.includes('{')) {
       // Check if this is a function body opening
-      // e.g., "int main() {"
-      let funcMatch = stripped.match(/(\w+)\s+main\s*\([^)]*\)\s*\{/);
-      if (funcMatch) {
+      // e.g., "int main() {" or "void foo(int x) {"
+      let funcMatch = stripped.match(/(\w[\w:]*)\s+(\w+)\s*\(([^)]*)\)\s*\{/);
+      if (funcMatch && !['if','for','while','switch','else','do','catch','try'].includes(funcMatch[2])) {
+        let funcName = funcMatch[2];
+        let params = funcMatch[3].trim();
         inFunctionBody = true;
         mainFunctionDepth = getBraceDepth(sourceCode, sourceCode.indexOf(line));
+        functionDefs.push({name: funcName, startLine: lineNum, params: params});
+
+        // Output the function signature line
+        output.push(line);
+        // Inject a trace call at function entry (the opening brace line)
+        // This creates a trace step showing "line that just executed" = function entry
+        // matching Python Tutor's behavior
+        let entryFnArg = `"${funcName}", `;
+        output.push(`__opt_trace_fn__(${entryFnArg}${lineNum});`);
+        // Note: __opt_push_frame__ inside function body doesn't work in clang-repl.
+        // Instead, trace calls inside the function use __opt_trace_fn__("funcName", ...)
+        // which calls __opt_ensure_frame__ to push the frame at trace time.
+        // Push new scope
+        scopeStack.push({ depth: scopeStack[scopeStack.length-1].depth + 1, vars: new Set() });
+
+        // Parse function parameters and add to knownVars
+        if (params) {
+          // Parameters are comma-separated declarations: "int a, int b"
+          // parseDeclaration only handles "type name, name" not "type name, type name"
+          // So split by comma and parse each as a separate declaration
+          let paramParts = [];
+          let depth = 0;
+          let current = '';
+          for (let j = 0; j < params.length; j++) {
+            const c = params[j];
+            if (c === '<' || c === '(' || c === '[') depth++;
+            if (c === '>' || c === ')' || c === ']') depth--;
+            if (c === ',' && depth === 0) { paramParts.push(current.trim()); current = ''; }
+            else current += c;
+          }
+          if (current.trim()) paramParts.push(current.trim());
+          
+          for (let p of paramParts) {
+            let declared = parseDeclaration(p);
+            for (let d of declared) {
+              knownVars.set(d.name, d);
+              scopeStack[scopeStack.length-1].vars.add(d.name);
+            }
+          }
+        }
+        continue;
       }
       // Push new scope
       scopeStack.push({ depth: scopeStack[scopeStack.length-1].depth + 1, vars: new Set() });
@@ -269,8 +328,15 @@ function instrumentCode(sourceCode) {
           knownVars.delete(v);
         }
       }
+      // Check if we're leaving a function body
       if (inFunctionBody && scopeStack.length <= 1) {
         inFunctionBody = false;
+        // Note: __opt_pop_frame__() is NOT emitted here because in clang-repl,
+        // code after 'return' inside a function is unreachable and causes
+        // "UNSUPPORTED FEATURES" errors. Instead, frames are popped implicitly
+        // by __opt_trace_impl__ which detects when the call stack depth changes.
+        output.push(line);
+        continue;
       }
     }
 
@@ -280,11 +346,39 @@ function instrumentCode(sourceCode) {
       continue;
     }
 
+    // Determine current function name for frame management
+    let currentFunc = 'main';
+    for (let fd of functionDefs) {
+      if (fd.startLine <= lineNum) currentFunc = fd.name;
+    }
+
     // Check for for-loop header: extract variable declarations from inside for(...)
     let forMatch = stripped.match(/^\s*for\s*\(([^;]*);([^;]*);([^)]*)\)\s*\{?\s*$/);
     if (forMatch) {
       // Parse the init part: e.g., "int i = 0" or "int i = 0, j = 5"
       let initPart = forMatch[1].trim();
+      let initVars = new Set();
+      if (initPart) {
+        let declared = parseDeclaration(initPart);
+        for (let d of declared) {
+          initVars.add(d.name);
+        }
+      }
+      // Inject a trace call BEFORE the for header (captures pre-loop state)
+      // Exclude loop variables (they're not initialized yet)
+      let fnArg = `"${currentFunc}", `;
+      let captures = [];
+      for (let [name, info] of knownVars) {
+        if (!initVars.has(name)) {
+          captures.push(`__t__.cap("${name}", ${name});`);
+        }
+      }
+      if (captures.length > 0) {
+        output.push(`__opt_trace_fn__(${fnArg}${lineNum}, [&](auto& __t__) { ${captures.join(' ')} });`);
+      } else {
+        output.push(`__opt_trace_fn__(${fnArg}${lineNum});`);
+      }
+      // Now add init vars to knownVars (they'll be visible after the for header executes)
       if (initPart) {
         let declared = parseDeclaration(initPart);
         for (let d of declared) {
@@ -294,34 +388,24 @@ function instrumentCode(sourceCode) {
       }
       // Output the original for line
       output.push(line);
-      // Inject a trace call right after the for header to capture loop variable state
-      let captures = [];
+      // After the for header executes, the loop variable is initialized.
+      // Inject another trace showing the for-loop state (i now has a value)
+      let captures2 = [];
       for (let [name, info] of knownVars) {
-        captures.push(`__t__.cap("${name}", ${name});`);
+        captures2.push(`__t__.cap("${name}", ${name});`);
       }
-      if (captures.length > 0) {
-        output.push(`__opt_trace__(${lineNum}, [&](auto& __t__) { ${captures.join(' ')} });`);
-      } else {
-        output.push(`__opt_trace__(${lineNum});`);
+      if (captures2.length > 0) {
+        output.push(`__opt_trace_fn__(${fnArg}${lineNum}, [&](auto& __t__) { ${captures2.join(' ')} });`);
       }
       continue;
     }
 
     // Try to parse variable declarations from this line
     let declared = parseDeclaration(line);
-    for (let d of declared) {
-      knownVars.set(d.name, d);
-      scopeStack[scopeStack.length-1].vars.add(d.name);
-    }
-
-    // Output the original line
-    output.push(line);
+    // Don't add to knownVars yet — we want to capture state BEFORE this line
 
     // Check if this line ends a statement (has a semicolon at the top level)
-    // We need to handle multiline statements
     let stmtComplete = false;
-
-    // Count unbalanced delimiters in the stripped line
     let parenDepth = 0;
     let braceDepth = 0;
     let bracketDepth = 0;
@@ -345,22 +429,64 @@ function instrumentCode(sourceCode) {
       }
     }
 
-    // Only inject trace after statement-ending lines (with semicolons)
-    // Skip if the line is a for-loop header (e.g., "for (int i = 0; i < 10; i++)")
+    // Inject trace BEFORE the statement (Python Tutor convention):
+    // trace entry's line = the line about to execute
+    // variables = state BEFORE this line executes
     if (stmtComplete && !stripped.match(/^\s*(for|while|if|else|switch|do)\b/)) {
-      // Inject trace call with all known variables
+      let fnArg = `"${currentFunc}", `;
       let captures = [];
       for (let [name, info] of knownVars) {
         captures.push(`__t__.cap("${name}", ${name});`);
       }
-
       if (captures.length > 0) {
-        output.push(`__opt_trace__(${lineNum}, [&](auto& __t__) { ${captures.join(' ')} });`);
+        output.push(`__opt_trace_fn__(${fnArg}${lineNum}, [&](auto& __t__) { ${captures.join(' ')} });`);
       } else {
-        // Even with no variables, emit a trace point for step navigation
-        output.push(`__opt_trace__(${lineNum});`);
+        output.push(`__opt_trace_fn__(${fnArg}${lineNum});`);
       }
     }
+
+    // Now add declared variables to knownVars
+    for (let d of declared) {
+      knownVars.set(d.name, d);
+      scopeStack[scopeStack.length-1].vars.add(d.name);
+    }
+
+    // Output the original line
+    output.push(line);
+
+    // For return statements, inject a trace AFTER (showing final state)
+    if (stmtComplete && stripped.match(/^\s*return\b/)) {
+      let fnArg = `"${currentFunc}", `;
+      let captures = [];
+      for (let [name, info] of knownVars) {
+        captures.push(`__t__.cap("${name}", ${name});`);
+      }
+      if (captures.length > 0) {
+        output.push(`__opt_trace_fn__(${fnArg}${lineNum}, [&](auto& __t__) { ${captures.join(' ')} });`);
+      } else {
+        output.push(`__opt_trace_fn__(${fnArg}${lineNum});`);
+      }
+    }
+
+    // For the last cout statement (not a return), add a post-execution trace
+    // so the final step shows the line that just executed with the output
+    if (stmtComplete && !stripped.match(/^\s*(return|for|while|if|else|switch|do)\b/)) {
+      // Check if this is likely the last statement before return or end of function
+      // We'll add a post-trace for all non-return statements that produce output
+      if (stripped.includes('cout') || stripped.includes('printf') || stripped.includes('cerr')) {
+        let fnArg = `"${currentFunc}", `;
+        let captures = [];
+        for (let [name, info] of knownVars) {
+          captures.push(`__t__.cap("${name}", ${name});`);
+        }
+        if (captures.length > 0) {
+          output.push(`__opt_trace_fn__(${fnArg}${lineNum}, [&](auto& __t__) { ${captures.join(' ')} });`);
+        } else {
+          output.push(`__opt_trace_fn__(${fnArg}${lineNum});`);
+        }
+      }
+    }
+
   }
 
   return output.join('\n');
