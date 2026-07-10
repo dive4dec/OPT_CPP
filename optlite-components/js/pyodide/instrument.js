@@ -247,7 +247,7 @@ function genCaptures(knownVars, heapPointers, deletedPointers, structDefs, exclu
     } else if (heapPointers.has(name)) {
       let sz = heapPointers.get(name);
       captures.push(`__t__.cap_ptr("${name}", ${name}, ${sz});`);
-    } else if (info && info.type && structDefs.has(info.type)) {
+    } else if (info && info.type && !info.isPointer && structDefs.has(info.type)) {
           // Struct variable: capture with field names
           let fields = structDefs.get(info.type);
           let fieldEncoders = fields.map(f => `__t__.__opt_field__("${f.name}", ${name}.${f.name})`).join(" + \",\" + ");
@@ -361,7 +361,9 @@ function instrumentCode(sourceCode) {
       // Detect member function definition: has parentheses and opening brace
       // e.g., "Point(int x, int y) : x(x), y(y) {" or "int getX() {"
       // Also handle inline definitions: "void foo() { ... }"
-      let memberFuncMatch = stripped.match(/^([\w:~]+\s+~?\w+|~?\w+)\s*\(([^)]*)\)\s*(?::\s*[^{]*)?\{/);
+      // Allow const, override, noexcept, final between ) and { or :
+      // Handle optional leading keywords: virtual, static, inline, explicit
+      let memberFuncMatch = stripped.match(/^(?:(?:virtual|static|inline|explicit|friend)\s+)*([\w:~]+\s+~?\w+|~?\w+)\s*\(([^)]*)\)\s*(?:(?:const|override|noexcept|final|volatile)\s*)*(?::\s*[^{]*)?\{/);
       if (memberFuncMatch) {
         // Extract function name — could be "Point", "~Point", "getX", "operator=", etc.
         let rawName = memberFuncMatch[1].trim();
@@ -506,7 +508,7 @@ function instrumentCode(sourceCode) {
         continue;
       }
       // Push new scope (but not for struct/class bodies — they're handled separately)
-      if (!stripped.match(/^(struct|class)\s+\w+\s*\{/)) {
+      if (!stripped.match(/^(struct|class)\s+\w+\s*(?::\s*[^{]*)?\{/)) {
         scopeStack.push({ depth: scopeStack[scopeStack.length-1].depth + 1, vars: new Set() });
       }
     }
@@ -514,7 +516,7 @@ function instrumentCode(sourceCode) {
     // At file scope (not in function body), track struct/class bodies and global variable declarations
     if (!inFunctionBody) {
       // Detect struct/class body entry: "struct Name {" or "class Name {"
-      let structMatch = stripped.match(/^(struct|class)\s+(\w+)\s*\{/);
+      let structMatch = stripped.match(/^(struct|class)\s+(\w+)\s*(?::\s*[^{]*)?\{/);
       if (structMatch) {
         inStructBody = true;
         structBraceDepth = 1;
