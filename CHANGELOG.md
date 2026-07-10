@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.11] - 2026-07-10
+
+### Fixed
+- **Local classes inside function bodies** — `class`/`struct` definitions inside `main()` or other functions (e.g., `class Counter { ... }` inside `main()`) were not recognized. Member functions inside them were detected as regular functions, causing trace injection inside class bodies and WASM aborts. Added `inLocalClassBody` tracking that detects local class definitions and skips instrumentation until the closing `};`.
+- **Brace-less `for`/`while`/`if` loops** — the for-loop handler injected trace calls between the loop header and body, making the trace function the loop body and causing WASM aborts. Fixed by: (1) requiring `{` in the for-loop regex, and (2) adding `pendingBracelessBody` tracking — the line after a brace-less `for`/`while`/`if` is output without trace injection.
+- **`final` keyword in class definitions** — `class Printer final { ... }` was not detected as a struct body because the `final` keyword between the class name and `{` broke the regex. Updated all three struct/class regex patterns to accept `final` after the class name. Private member variables (`sep_`, `end_`) were leaking into `main()` scope as a result.
+- **`vcrControls_live` not shown on error in live mode** — in `opt-live.ts`, the error path (compile error or runtime exception) never called `finishSuccessfulExecution()`, so VCR controls stayed `display: none`. Now always creates an `ExecutionVisualizer` and shows VCR controls (wrapped in try-catch), so users can step through execution even when errors occur.
+- **Ask AI button shown during code execution** — the `MutationObserver` in `webllm.ts` showed the Ask AI button whenever `frontendErrorOutput` had any text, including the transient "Running your code ..." message. The initial `startsWith('Running your code')` check failed because `htmlspecialchars` converts spaces to `&nbsp;` (non-breaking spaces, U+00A0). Fixed by using regex `/^Running\s+your\s+code/` which matches non-breaking spaces via `\s`.
+
+### Added
+- **Instrumentation of more member function patterns** — the member function detection regex now supports:
+  - Ref-qualified return types: `const static Printer &get_print()`
+  - Ref-qualifiers after `const`: `Printer sep(...) const & { ... }`
+  - Rvalue ref-qualifiers: `Printer &sep(...) && { ... }`
+  - `operator()` overloads: `void operator()(...) const { ... }`
+  - `const` prefix in return types: `const static Printer &get_print()`
+- **Static member function support** — added `memberFunctionIsStatic` flag to avoid injecting `(void*)this` in static member functions (which have no `this` pointer), preventing the `invalid use of 'this' outside of a non-static member function` error.
+
 ## [0.2.10] - 2026-07-10
 
 ### Fixed
