@@ -174,17 +174,23 @@ cppWorker.onmessage = async (event) => {
           const rawStdout = kernelOutput.join('');
           const SENTINEL = '\x01\x02__OPT_STEP__\x02\x01';
           const segments = rawStdout.split(SENTINEL);
+          // With pre-statement instrumentation:
           // segments[0] = output before first trace step (should be empty)
-          // segments[1] = output between step 0 and step 1
-          // segments[N] = output between step N-1 and step N
-          // segments[N+1] = output after last trace step (should be empty)
+          // segments[1] = output produced by statement 0 (between sentinel 0 and 1)
+          // segments[N] = output produced by statement N-1
+          // The trace at step N is "about to execute statement N",
+          // so it should show cumulative output from statements 0..N-1.
           let cumulative = '';
           for (let i = 0; i < parsed.trace.length; i++) {
-            // Output produced BEFORE this trace step's sentinel
+            // Output produced by the PREVIOUS statement (segment i)
             if (i < segments.length) {
               cumulative += segments[i];
             }
             parsed.trace[i].stdout = cumulative;
+          }
+          // Add any remaining output (after the last sentinel) to the last step
+          if (segments.length > parsed.trace.length) {
+            parsed.trace[parsed.trace.length - 1].stdout += segments[parsed.trace.length];
           }
         }
 

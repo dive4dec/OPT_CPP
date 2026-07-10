@@ -252,14 +252,14 @@ function instrumentCode(sourceCode) {
     }
 
     // Add #line directive to map instrumented code back to user's source
-    // This ensures compiler errors report the correct user line number
-    output.push(`#line ${lineNum} "user_code.cpp"`);
+    // NOTE: #line directives cause "Decl inserted into wrong lexical context"
+    // assertion in clang-repl, so we DON'T use them inside function bodies.
+    // Instead, error line mapping is handled by identifier search in runner.ts.
 
     // First non-preprocessor line — ensure main frame is pushed
     if (!inFunctionBody && !mainFrameEnsured) {
-      // Push ensure_frame as a separate statement that doesn't affect line numbers
+      // Push ensure_frame as a separate statement
       output.push('__opt_ensure_frame__("main", 0);');
-      output.push(`#line ${lineNum} "user_code.cpp"`);
       mainFrameEnsured = true;
     }
 
@@ -276,7 +276,6 @@ function instrumentCode(sourceCode) {
         functionDefs.push({name: funcName, startLine: lineNum, params: params});
 
         // Output the function signature line
-        output.push(`#line ${lineNum} "user_code.cpp"`);
         output.push(line);
         // Inject a trace call at function entry (the opening brace line)
         // This creates a trace step showing "line that just executed" = function entry
@@ -358,6 +357,28 @@ function instrumentCode(sourceCode) {
     if (forMatch) {
       // Parse the init part: e.g., "int i = 0" or "int i = 0, j = 5"
       let initPart = forMatch[1].trim();
+      let initVars = new Set();
+      if (initPart) {
+        let declared = parseDeclaration(initPart);
+        for (let d of declared) {
+          initVars.add(d.name);
+        }
+      }
+      // Inject a trace call BEFORE the for header (captures pre-loop state)
+      // Exclude loop variables (they're not initialized yet)
+      let fnArg = `"${currentFunc}", `;
+      let captures = [];
+      for (let [name, info] of knownVars) {
+        if (!initVars.has(name)) {
+          captures.push(`__t__.cap("${name}", ${name});`);
+        }
+      }
+      if (captures.length > 0) {
+        output.push(`__opt_trace_fn__(${fnArg}${lineNum}, [&](auto& __t__) { ${captures.join(' ')} });`);
+      } else {
+        output.push(`__opt_trace_fn__(${fnArg}${lineNum});`);
+      }
+      // Now add init vars to knownVars (they'll be visible after the for header executes)
       if (initPart) {
         let declared = parseDeclaration(initPart);
         for (let d of declared) {
@@ -366,39 +387,25 @@ function instrumentCode(sourceCode) {
         }
       }
       // Output the original for line
-      output.push(`#line ${lineNum} "user_code.cpp"`);
       output.push(line);
-      // Inject a trace call right after the for header to capture loop variable state
-      let fnArg = `"${currentFunc}", `;
-      let captures = [];
+      // After the for header executes, the loop variable is initialized.
+      // Inject another trace showing the for-loop state (i now has a value)
+      let captures2 = [];
       for (let [name, info] of knownVars) {
-        captures.push(`__t__.cap("${name}", ${name});`);
+        captures2.push(`__t__.cap("${name}", ${name});`);
       }
-      if (captures.length > 0) {
-        output.push(`__opt_trace_fn__(${fnArg}${lineNum}, [&](auto& __t__) { ${captures.join(' ')} });`);
-      } else {
-        output.push(`__opt_trace_fn__(${fnArg}${lineNum});`);
+      if (captures2.length > 0) {
+        output.push(`__opt_trace_fn__(${fnArg}${lineNum}, [&](auto& __t__) { ${captures2.join(' ')} });`);
       }
-      output.push(`#line ${lineNum + 1} "user_code.cpp"`);
       continue;
     }
 
     // Try to parse variable declarations from this line
     let declared = parseDeclaration(line);
-    for (let d of declared) {
-      knownVars.set(d.name, d);
-      scopeStack[scopeStack.length-1].vars.add(d.name);
-    }
-
-    // Output the original line
-    output.push(`#line ${lineNum} "user_code.cpp"`);
-    output.push(line);
+    // Don't add to knownVars yet — we want to capture state BEFORE this line
 
     // Check if this line ends a statement (has a semicolon at the top level)
-    // We need to handle multiline statements
     let stmtComplete = false;
-
-    // Count unbalanced delimiters in the stripped line
     let parenDepth = 0;
     let braceDepth = 0;
     let bracketDepth = 0;
@@ -422,45 +429,64 @@ function instrumentCode(sourceCode) {
       }
     }
 
-    // Only inject trace after statement-ending lines (with semicolons)
-    // Skip if the line is a for-loop header (e.g., "for (int i = 0; i < 10; i++)")
+    // Inject trace BEFORE the statement (Python Tutor convention):
+    // trace entry's line = the line about to execute
+    // variables = state BEFORE this line executes
     if (stmtComplete && !stripped.match(/^\s*(for|while|if|else|switch|do)\b/)) {
-      // Always use __opt_trace_fn__ with the current function name
-      // __opt_ensure_frame__ handles pushing/popping frames as needed
       let fnArg = `"${currentFunc}", `;
-      
-      if (stripped.match(/^\s*return\b/)) {
-        let captures = [];
-        for (let [name, info] of knownVars) {
-          captures.push(`__t__.cap("${name}", ${name});`);
-        }
-        if (captures.length > 0) {
-          output.pop(); // remove the return line
-          output.pop(); // remove the #line directive
-          output.push(`__opt_trace_fn__(${fnArg}${lineNum}, [&](auto& __t__) { ${captures.join(' ')} });`);
-          output.push(`#line ${lineNum} "user_code.cpp"`);
-          output.push(line); // re-add the return line
-        } else {
-          output.pop();
-          output.pop();
-          output.push(`__opt_trace_fn__(${fnArg}${lineNum});`);
-          output.push(`#line ${lineNum} "user_code.cpp"`);
-          output.push(line);
-        }
+      let captures = [];
+      for (let [name, info] of knownVars) {
+        captures.push(`__t__.cap("${name}", ${name});`);
+      }
+      if (captures.length > 0) {
+        output.push(`__opt_trace_fn__(${fnArg}${lineNum}, [&](auto& __t__) { ${captures.join(' ')} });`);
       } else {
-        let captures = [];
-        for (let [name, info] of knownVars) {
-          captures.push(`__t__.cap("${name}", ${name});`);
-        }
-        if (captures.length > 0) {
-          output.push(`__opt_trace_fn__(${fnArg}${lineNum}, [&](auto& __t__) { ${captures.join(' ')} });`);
-        } else {
-          output.push(`__opt_trace_fn__(${fnArg}${lineNum});`);
-        }
-        // Restore line mapping for subsequent code
-        output.push(`#line ${lineNum + 1} "user_code.cpp"`);
+        output.push(`__opt_trace_fn__(${fnArg}${lineNum});`);
       }
     }
+
+    // Now add declared variables to knownVars
+    for (let d of declared) {
+      knownVars.set(d.name, d);
+      scopeStack[scopeStack.length-1].vars.add(d.name);
+    }
+
+    // Output the original line
+    output.push(line);
+
+    // For return statements, inject a trace AFTER (showing final state)
+    if (stmtComplete && stripped.match(/^\s*return\b/)) {
+      let fnArg = `"${currentFunc}", `;
+      let captures = [];
+      for (let [name, info] of knownVars) {
+        captures.push(`__t__.cap("${name}", ${name});`);
+      }
+      if (captures.length > 0) {
+        output.push(`__opt_trace_fn__(${fnArg}${lineNum}, [&](auto& __t__) { ${captures.join(' ')} });`);
+      } else {
+        output.push(`__opt_trace_fn__(${fnArg}${lineNum});`);
+      }
+    }
+
+    // For the last cout statement (not a return), add a post-execution trace
+    // so the final step shows the line that just executed with the output
+    if (stmtComplete && !stripped.match(/^\s*(return|for|while|if|else|switch|do)\b/)) {
+      // Check if this is likely the last statement before return or end of function
+      // We'll add a post-trace for all non-return statements that produce output
+      if (stripped.includes('cout') || stripped.includes('printf') || stripped.includes('cerr')) {
+        let fnArg = `"${currentFunc}", `;
+        let captures = [];
+        for (let [name, info] of knownVars) {
+          captures.push(`__t__.cap("${name}", ${name});`);
+        }
+        if (captures.length > 0) {
+          output.push(`__opt_trace_fn__(${fnArg}${lineNum}, [&](auto& __t__) { ${captures.join(' ')} });`);
+        } else {
+          output.push(`__opt_trace_fn__(${fnArg}${lineNum});`);
+        }
+      }
+    }
+
   }
 
   return output.join('\n');
