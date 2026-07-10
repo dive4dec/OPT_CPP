@@ -15,7 +15,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Step synchronization / premature stdout** — removed post-cout and post-return trace calls that caused stdout to appear before the corresponding line was highlighted as "next to execute". The last step now correctly shows the `std::cout` line as "just executed" with the output.
 
 ### Added
-- **Global variable visualization** — file-scope variable declarations (e.g., `int x = 10;`) are now tracked and displayed in the `main` frame as local variables. (Python Tutor shows these in a separate "Global variables" frame; we show them in `main` for now due to clang-repl limitations with function calls at file scope.)
+- **Global variable visualization** — file-scope variable declarations (e.g., `int x = 10;`) are now displayed in a separate "Global variables" frame, matching Python Tutor's behavior. The instrumenter returns global variable names alongside the instrumented code; the runner moves them from `main`'s `encoded_locals` to the `globals`/`ordered_globals` trace fields so the frontend renders them in the globals area.
 
 ## [0.2.4] - 2026-07-10
 
