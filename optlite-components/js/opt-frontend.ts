@@ -40,7 +40,6 @@ import { AbstractBaseFrontend, generateUUID, supports_html5_storage } from './op
 import { ExecutionVisualizer, assert, htmlspecialchars } from './pytutor';
 
 require('../css/opt-frontend.css');
-require('../css/opt-testcases.css');
 
 export const allTabsRE = new RegExp('\t', 'g');
 

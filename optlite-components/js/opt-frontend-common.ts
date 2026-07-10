@@ -189,7 +189,6 @@ export abstract class AbstractBaseFrontend {
   // parsing the URL query string hash
   getQueryStringOptions() {
     var ril = $.bbq.getState('rawInputLstJSON');
-    var testCasesLstJSON = $.bbq.getState('testCasesJSON');
     // note that any of these can be 'undefined'
     return {
       preseededCode: $.bbq.getState('code'),
@@ -205,7 +204,6 @@ export abstract class AbstractBaseFrontend {
       codcastFile: $.bbq.getState('codcast'), // load a codcast file created using ../recorder.html
       codeopticonSession: $.bbq.getState('cosession'),
       codeopticonUsername: $.bbq.getState('couser'),
-      testCasesLst: testCasesLstJSON ? $.parseJSON(testCasesLstJSON) : undefined
     };
   }
 
@@ -300,17 +298,12 @@ export abstract class AbstractBaseFrontend {
           frontendOptionsObj.startingInstruction = 0;
         }
 
-        if (frontendOptionsObj.runTestCaseCallback) {
-          // hacky! DO NOT actually create a visualization! instead call:
-          frontendOptionsObj.runTestCaseCallback(trace);
-        } else {
-          // success!
-          this.myVisualizer = new ExecutionVisualizer(outputDiv, dataFromBackend, frontendOptionsObj);
-          // SUPER HACK -- slip in backendOptionsObj as an extra field
-          // NB: why do we do this? for more detailed logging?
-          (this.myVisualizer as any).backendOptionsObj = backendOptionsObj;
-          this.finishSuccessfulExecution(); // TODO: should we also run this if we're calling runTestCaseCallback?
-        }
+        // success!
+        this.myVisualizer = new ExecutionVisualizer(outputDiv, dataFromBackend, frontendOptionsObj);
+        // SUPER HACK -- slip in backendOptionsObj as an extra field
+        // NB: why do we do this? for more detailed logging?
+        (this.myVisualizer as any).backendOptionsObj = backendOptionsObj;
+        this.finishSuccessfulExecution();
       }
     }
 

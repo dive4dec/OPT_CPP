@@ -314,11 +314,6 @@ button.surveyBtnBig {
   font-size: 8pt;
 }
 
-#testCasesPane {
- margin-top: 5px;
- margin-bottom: 25px;
-}
-
 #exampleSnippets {
  border-top: 1px solid #ccc;
  margin-top: 15px;
