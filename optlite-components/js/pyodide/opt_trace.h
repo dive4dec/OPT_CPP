@@ -257,6 +257,12 @@ struct __opt_tracer__ {
     }
   }
 
+  void cap_deleted_ptr(const std::string& n, int* v) {
+    // Show pointer on stack as NULL (freed) — no heap entry
+    // Setting address to 0x0 prevents isHeapRef from matching
+    add(n, "[\"C_DATA\",\""+__opt_addr__(&v)+"\",\"pointer\",\"0x0\",{\"bytes\":"+std::to_string(sizeof(int*))+"}]");
+  }
+
   // cap_ptr: capture a pointer, embeds heap data via string accumulation
   // Uses a std::string for heap accumulation (vectors don't work in clang-repl)
   void cap_ptr(const std::string& n, int* v, int arrSize = 0) {

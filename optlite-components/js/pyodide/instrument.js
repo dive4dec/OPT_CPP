@@ -225,6 +225,8 @@ function instrumentCode(sourceCode) {
 
   // Track heap-allocated pointers: name → arraySize (0 = single value, >0 = array)
   let heapPointers = new Map();
+  // Track deleted pointers (after delete/delete[], no heap entry should be created)
+  let deletedPointers = new Set();
 
   // Track current scope (brace depth → list of vars declared at that depth)
   let scopeStack = [{ depth: 0, vars: new Set() }];
@@ -466,7 +468,9 @@ function instrumentCode(sourceCode) {
       let fnArg = `"${currentFunc}", `;
       let captures = [];
       for (let [name, info] of knownVars) {
-        if (heapPointers.has(name)) {
+        if (deletedPointers.has(name)) {
+          captures.push(`__t__.cap_deleted_ptr("${name}", ${name});`);
+        } else if (heapPointers.has(name)) {
           let sz = heapPointers.get(name);
           captures.push(`__t__.cap_ptr("${name}", ${name}, ${sz});`);
         } else {
@@ -496,6 +500,17 @@ function instrumentCode(sourceCode) {
         heapPointers.set(newArrMatch[1], parseInt(newArrMatch[2]));
       } else if (newSingleMatch) {
         heapPointers.set(newSingleMatch[1], 0);
+      }
+    }
+
+    // Detect heap deallocations: delete ptr; or delete[] ptr;
+    if (stmtComplete) {
+      let delMatch = stripped.match(/delete\s*\[\s*\]\s*(\w+)/);
+      let delSingleMatch = stripped.match(/delete\s+(\w+)/);
+      if (delMatch) {
+        deletedPointers.add(delMatch[1]);
+      } else if (delSingleMatch) {
+        deletedPointers.add(delSingleMatch[1]);
       }
     }
 
