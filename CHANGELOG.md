@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.4] - 2026-07-11
+
+### Added
+- Brace-less single-line for-loops (`for(...) body;`) are now instrumented with per-iteration trace calls, producing multiple visualization steps instead of a single step. Previously only braced for-loops (`for(...) {`) were instrumented.
+
 ## [0.3.3] - 2026-07-11
 
 ### Fixed
