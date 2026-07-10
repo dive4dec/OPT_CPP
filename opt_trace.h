@@ -263,6 +263,14 @@ struct __opt_tracer__ {
     add(n, "[\"C_DATA\",\""+__opt_addr__(&v)+"\",\"pointer\",\"0x0\",{\"bytes\":"+std::to_string(sizeof(int*))+"}]");
   }
 
+  // cap_this: capture the 'this' pointer in a member function
+  // 'this' is a prvalue, so we can't take its address with &this
+  // The caller passes the this pointer as a void*
+  void cap_this(const std::string& typeName, void* thisPtr) {
+    std::string addr = __opt_addr__(thisPtr);
+    add("this", "[\"C_DATA\",\""+addr+"\",\"pointer\",\""+addr+"\",{\"bytes\":"+std::to_string(sizeof(void*))+"}]");
+  }
+
   // cap_struct: capture a struct by building C_STRUCT JSON from pre-encoded fields
   // Called as: cap_struct("varName", "TypeName", var, "addr", encodedFields)
   // where encodedFields is a pre-built string like: ["x",3],["y",4]
@@ -536,6 +544,60 @@ void __opt_trace_fn_impl__(const char* func_name, int line) {
   auto& st = __opt_get_state__();
   __opt_tracer__ __t__(line, st.call_stack.back().func_name.c_str(),
                         st.call_stack.back().frame_id.c_str());
+  std::cout << __OPT_SENTINEL__;
+  std::cout.flush();
+  std::string entry = __t__.finish();
+  __opt_update_frame__(line, __t__.locals, __t__.names);
+  st.trace_output += (st.step>0 ? ",\n" : "") + entry;
+  st.step++;
+}
+
+// Variant for member functions: captures 'this' pointer
+void __opt_trace_fn_this__(const char* func_name, int line, const char* typeName, void* thisPtr) {
+  __opt_ensure_frame__(func_name, line);
+  auto& st = __opt_get_state__();
+  __opt_tracer__ __t__(line, st.call_stack.back().func_name.c_str(),
+                        st.call_stack.back().frame_id.c_str());
+  __t__.cap_this(typeName, thisPtr);
+  std::cout << __OPT_SENTINEL__;
+  std::cout.flush();
+  std::string entry = __t__.finish();
+  __opt_update_frame__(line, __t__.locals, __t__.names);
+  st.trace_output += (st.step>0 ? ",\n" : "") + entry;
+  st.step++;
+}
+
+// Variant for member functions with struct captures: passes struct field values
+void __opt_trace_fn_struct__(const char* func_name, int line, const std::string& varName,
+                              const std::string& typeName, void* varPtr, const std::string& fieldsStr) {
+  __opt_ensure_frame__(func_name, line);
+  auto& st = __opt_get_state__();
+  __opt_tracer__ __t__(line, st.call_stack.back().func_name.c_str(),
+                        st.call_stack.back().frame_id.c_str());
+  // Encode struct at varPtr — but we can't access fields from a void* without type info
+  // So just encode as C_DATA pointer
+  __t__.add(varName, "[\"C_DATA\",\""+__opt_addr__(varPtr)+"\",\""+__opt_esc__(typeName)+"\",\"<unknown>\",{}]");
+  std::cout << __OPT_SENTINEL__;
+  std::cout.flush();
+  std::string entry = __t__.finish();
+  __opt_update_frame__(line, __t__.locals, __t__.names);
+  st.trace_output += (st.step>0 ? ",\n" : "") + entry;
+  st.step++;
+}
+
+// Variant for member functions that captures both 'this' and a struct variable
+// Uses pre-encoded field strings passed from the instrumented code
+template<typename T>
+void __opt_trace_fn_this_struct__(const char* func_name, int line,
+                                   const char* thisTypeName, void* thisPtr,
+                                   const std::string& varName, const std::string& typeName,
+                                   const T& var, const std::string& fieldsStr) {
+  __opt_ensure_frame__(func_name, line);
+  auto& st = __opt_get_state__();
+  __opt_tracer__ __t__(line, st.call_stack.back().func_name.c_str(),
+                        st.call_stack.back().frame_id.c_str());
+  __t__.cap_this(thisTypeName, thisPtr);
+  __t__.cap_struct(varName, typeName, var, fieldsStr);
   std::cout << __OPT_SENTINEL__;
   std::cout.flush();
   std::string entry = __t__.finish();
