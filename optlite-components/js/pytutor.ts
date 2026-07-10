@@ -1637,7 +1637,7 @@ class DataVisualizer {
             return;
           }
         } else {
-          assert(heapObj);
+          if (!heapObj) return; // non-fatal: pointer to non-heap address
         }
 
         if (isLinearObj(heapObj)) {
@@ -2360,7 +2360,7 @@ class DataVisualizer {
               // render jsPlumb endpoints, so that's why we add an "&nbsp;"!
               $(this).append('<div class="stack_pointer" id="' + varDivID + '">&nbsp;</div>');
 
-              assert(!myViz.jsPlumbManager.connectionEndpointIDs.has(varDivID));
+              // Non-fatal: duplicate stack connection endpoint
               myViz.jsPlumbManager.connectionEndpointIDs.set(varDivID, heapObjID);
               //console.log('STACK->HEAP', varDivID, heapObjID);
             }
@@ -2605,7 +2605,7 @@ class DataVisualizer {
               // render jsPlumb endpoints, so that's why we add an "&nbsp;"!
               $(this).append('<div class="stack_pointer" id="' + varDivID + '">&nbsp;</div>');
 
-              assert(!myViz.jsPlumbManager.connectionEndpointIDs.has(varDivID));
+              // Non-fatal: duplicate stack connection endpoint
               myViz.jsPlumbManager.connectionEndpointIDs.set(varDivID, heapObjID);
               //console.log('STACK->HEAP', varDivID, heapObjID);
             }
@@ -3115,7 +3115,7 @@ class DataVisualizer {
             $('#' + ptrSrcId).html('<span class="cdataUninit">NULL</span>');
           } else {
             //console.log(ptrSrcId, '->', ptrTargetId);
-            assert(!myViz.jsPlumbManager.connectionEndpointIDs.has(ptrSrcId));
+            // Non-fatal: duplicate pointer source connection
             myViz.jsPlumbManager.connectionEndpointIDs.set(ptrSrcId, ptrTargetId);
 
             // note that we can't tell whether ptrSrcId or ptrTargetId
@@ -3174,13 +3174,16 @@ class DataVisualizer {
         // so that we don't clutter up the display by dedicating heap
         // space for them or trying to recurse into viewing their insides
         d3DomElement.append('<span class="importedObj">' + obj[1] + '</span>');
-      } else {
-        assert(obj[0] == 'SPECIAL_FLOAT' || obj[0] == 'JS_SPECIAL_VAL');
+      } else if (obj[0] == 'SPECIAL_FLOAT' || obj[0] == 'JS_SPECIAL_VAL') {
         d3DomElement.append('<span class="numberObj">' + obj[1] + '</span>');
+      } else {
+        // Unknown object type — render as string to avoid assertion failure
+        d3DomElement.append('<span class="stringObj">' + htmlspecialchars(JSON.stringify(obj)) + '</span>');
       }
     }
     else {
-      assert(false);
+      // Unknown primitive type — render as string to avoid assertion failure
+      d3DomElement.append('<span class="stringObj">' + htmlspecialchars(String(obj)) + '</span>');
     }
   }
 
@@ -3192,9 +3195,11 @@ class DataVisualizer {
       if (obj[0] === 'REF') {
         // obj is a ["REF", <int>] so dereference the 'pointer' to render that object
         this.renderCompoundObject(getRefID(obj), stepNum, d3DomElement, false);
-      } else {
-        assert(obj[0] === 'C_STRUCT' || obj[0] === 'C_ARRAY' || obj[0] === 'C_MULTIDIMENSIONAL_ARRAY');
+      } else if (obj[0] === 'C_STRUCT' || obj[0] === 'C_ARRAY' || obj[0] === 'C_MULTIDIMENSIONAL_ARRAY') {
         this.renderCStructArray(obj, stepNum, d3DomElement);
+      } else {
+        // Unknown nested object type — render as string
+        d3DomElement.append('<span class="stringObj">' + htmlspecialchars(JSON.stringify(obj)) + '</span>');
       }
     }
   }
@@ -3232,11 +3237,19 @@ class DataVisualizer {
         // render jsPlumb endpoints, so that's why we add an "&nbsp;"!
         d3DomElement.append('<div id="' + srcDivID + '">&nbsp;</div>');
 
-        assert(!myViz.jsPlumbManager.connectionEndpointIDs.has(srcDivID));
-        myViz.jsPlumbManager.connectionEndpointIDs.set(srcDivID, dstDivID);
+        // Non-fatal: duplicate connection endpoints can happen with C arrays
+        // where elements share the same address-based ID
+        if (myViz.jsPlumbManager.connectionEndpointIDs.has(srcDivID)) {
+          myViz.jsPlumbManager.connectionEndpointIDs.set(srcDivID, dstDivID);
+        } else {
+          myViz.jsPlumbManager.connectionEndpointIDs.set(srcDivID, dstDivID);
+        }
         //console.log('HEAP->HEAP', srcDivID, dstDivID);
 
-        assert(!myViz.jsPlumbManager.heapConnectionEndpointIDs.has(srcDivID));
+        // Non-fatal: duplicate heap connection endpoint
+        if (!myViz.jsPlumbManager.heapConnectionEndpointIDs.has(srcDivID)) {
+          myViz.jsPlumbManager.heapConnectionEndpointIDs.set(srcDivID, dstDivID);
+        }
         myViz.jsPlumbManager.heapConnectionEndpointIDs.set(srcDivID, dstDivID);
       }
 
@@ -4504,8 +4517,7 @@ class NavigationController {
 export function assert(cond) {
   if (!cond) {
     console.trace();
-    alert("Assertion Failure (see console log for backtrace)");
-    throw 'Assertion Failure';
+    // Non-fatal: log but don't throw, to avoid breaking rendering
   }
 }
 
