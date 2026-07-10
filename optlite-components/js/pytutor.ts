@@ -3573,9 +3573,6 @@ class DataVisualizer {
           var valTd = newRow.find('td:last');
 
           // the keys should always be strings, so render them directly (and without quotes):
-          // (actually this isn't the case when strings are rendered on the heap)
-          assert(typeof kvPair[0] == "string");
-          // common case ...
           var attrnameStr = htmlspecialchars(kvPair[0]);
           keyTd.append('<span class="keyObj">' + attrnameStr + '</span>');
 

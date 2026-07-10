@@ -21,9 +21,6 @@
 #include <iostream>
 #include <vector>
 
-// Forward declare global heap accumulator
-std::string __opt_heap_accum__;
-
 // ── Persistent trace state ──
 // NOTE: Meyers singleton (static local) doesn't work in clang-repl —
 // each top-level statement may get a different static instance.
@@ -31,8 +28,6 @@ std::string __opt_heap_accum__;
 struct __opt_state__ {
   std::string trace_output;
   int step = 0;
-  // Heap entries: address → JSON string
-  std::vector<std::pair<std::string,std::string>> heap_entries;
   // Call stack: each entry is {func_name, frame_id, line, locals_json, varnames}
   struct frame_info {
     std::string func_name;
@@ -45,38 +40,13 @@ struct __opt_state__ {
 
   void reset() {
     trace_output.clear(); step = 0;
-    heap_entries.clear();
     call_stack.clear();
     globals_json = "{}";
     globals_names.clear();
-    heap_accum.clear();
-    __opt_heap_accum__.clear();
-  }
-  // Check if we already have a heap entry for this address
-  bool has_heap(const std::string& addr) {
-    for(auto& h : heap_entries) if(h.first == addr) return true;
-    return false;
-  }
-  // Add a heap entry (deduplicated by address)
-  void add_heap(const std::string& addr, const std::string& json) {
-    if(!has_heap(addr)) heap_entries.push_back({addr, json});
   }
   // Globals storage
   std::string globals_json = "{}";
   std::vector<std::string> globals_names;
-  // Heap JSON accumulator string (appended to by cap_ptr, read by finish)
-  std::string heap_accum;
-  // Build the heap JSON object
-  std::string heap_json() {
-    if(heap_entries.empty()) return "{}";
-    std::string s = "{";
-    for(size_t i=0;i<heap_entries.size();i++){
-      if(i) s+=",";
-      s+="\""+heap_entries[i].first+"\":"+heap_entries[i].second;
-    }
-    s+="}";
-    return s;
-  }
 };
 
 // Global state instance — shared across all clang-repl top-level statements
@@ -142,12 +112,7 @@ std::string __opt_encode_data__(const T& v) {
   } else if constexpr (std::is_pointer_v<T>) {
     using PointedType = std::remove_pointer_t<T>;
     std::string ptr = v ? __opt_addr__((void*)v) : "0x0";
-    // Type label: "pointer to <type>"
-    std::string pointedTypeName;
-    if constexpr (std::is_same_v<PointedType, char>) pointedTypeName = "char";
-    else pointedTypeName = __opt_demangle__(typeid(PointedType).name());
-    std::string typeLabel = "pointer";
-    return "[\"C_DATA\",\""+__opt_addr__(&v)+"\",\""+__opt_esc__(typeLabel)+"\",\""+ptr+"\",{\"bytes\":"+std::to_string(sizeof(T))+"}]";
+    return "[\"C_DATA\",\""+__opt_addr__(&v)+"\",\"pointer\",\""+ptr+"\",{\"bytes\":"+std::to_string(sizeof(T))+"}]";
   } else if constexpr (std::is_class_v<T>) {
     // For class/struct types, emit C_STRUCT with the proper type name
     // instead of <unknown>. C++ has no reflection, so fields cannot be
@@ -200,12 +165,6 @@ std::string __opt_encode_value__(const T& v) {
   }
 }
 
-// ── Helper: get element type name for arrays ──
-template<typename T>
-std::string __opt_type_name__() {
-  return __opt_demangle__(typeid(T).name());
-}
-
 // ── Tracer object — accumulates captured variables ──
 struct __opt_tracer__ {
   std::string locals;
@@ -213,12 +172,9 @@ struct __opt_tracer__ {
   int ln;
   std::string func_name;
   std::string frame_id;
-  bool is_parent;
-  // Heap JSON string accumulated by cap_ptr (local to this tracer, like locals)
-  std::string heap_json_str;
 
-  __opt_tracer__(int line, const char* fn = "main", const char* fid = nullptr, bool parent = false)
-    : ln(line), func_name(fn), is_parent(parent) {
+  __opt_tracer__(int line, const char* fn = "main", const char* fid = nullptr)
+    : ln(line), func_name(fn) {
     locals = "{";
     if(fid) frame_id = fid;
     else frame_id = "0xFFF000BE0"; // default main frame
@@ -442,17 +398,6 @@ void __opt_update_frame__(int line, const std::string& locals,
 #define __opt_trace__(...) __opt_trace_impl__(__VA_ARGS__)
 #define __opt_trace_fn__(...) __opt_trace_fn_impl__(__VA_ARGS__)
 
-// Helper: pop frames until we're at the named function
-void __opt_pop_to__(const char* func_name) {
-  auto& st = __opt_get_state__();
-  while(!st.call_stack.empty() && st.call_stack.back().func_name != func_name) {
-    st.call_stack.pop_back();
-  }
-  if(st.call_stack.empty()) {
-    __opt_push_frame__("main", 0);
-  }
-}
-
 // Ensure a frame exists for the named function; push if not on top,
 // pop if returning to a parent frame.
 // For recursive calls (same function name on top), push a new frame.
@@ -575,46 +520,6 @@ void __opt_trace_fn_this__(const char* func_name, int line, const char* typeName
   st.trace_output += (st.step>0 ? ",\n" : "") + entry;
   st.step++;
 }
-
-// Variant for member functions with struct captures: passes struct field values
-void __opt_trace_fn_struct__(const char* func_name, int line, const std::string& varName,
-                              const std::string& typeName, void* varPtr, const std::string& fieldsStr) {
-  __opt_ensure_frame__(func_name, line);
-  auto& st = __opt_get_state__();
-  __opt_tracer__ __t__(line, st.call_stack.back().func_name.c_str(),
-                        st.call_stack.back().frame_id.c_str());
-  // Encode struct at varPtr — but we can't access fields from a void* without type info
-  // So just encode as C_DATA pointer
-  __t__.add(varName, "[\"C_DATA\",\""+__opt_addr__(varPtr)+"\",\""+__opt_esc__(typeName)+"\",\"<unknown>\",{}]");
-  std::cout << __OPT_SENTINEL__;
-  std::cout.flush();
-  std::string entry = __t__.finish();
-  __opt_update_frame__(line, __t__.locals, __t__.names);
-  st.trace_output += (st.step>0 ? ",\n" : "") + entry;
-  st.step++;
-}
-
-// Variant for member functions that captures both 'this' and a struct variable
-// Uses pre-encoded field strings passed from the instrumented code
-template<typename T>
-void __opt_trace_fn_this_struct__(const char* func_name, int line,
-                                   const char* thisTypeName, void* thisPtr,
-                                   const std::string& varName, const std::string& typeName,
-                                   const T& var, const std::string& fieldsStr) {
-  __opt_ensure_frame__(func_name, line);
-  auto& st = __opt_get_state__();
-  __opt_tracer__ __t__(line, st.call_stack.back().func_name.c_str(),
-                        st.call_stack.back().frame_id.c_str());
-  __t__.cap_this(thisTypeName, thisPtr);
-  __t__.cap_struct(varName, typeName, var, fieldsStr);
-  std::cout << __OPT_SENTINEL__;
-  std::cout.flush();
-  std::string entry = __t__.finish();
-  __opt_update_frame__(line, __t__.locals, __t__.names);
-  st.trace_output += (st.step>0 ? ",\n" : "") + entry;
-  st.step++;
-}
-
 // ── Finalizer ──
 std::string __opt_finalize__() {
   auto& st = __opt_get_state__();

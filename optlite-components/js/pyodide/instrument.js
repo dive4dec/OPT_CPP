@@ -73,27 +73,6 @@ function stripCommentsAndStrings(code) {
   return result;
 }
 
-// Track brace depth to know which function/scope we're in
-function getBraceDepth(code, upToIndex) {
-  let depth = 0;
-  let inString = false, inChar = false, inComment = false, inLineComment = false;
-  for (let i = 0; i < upToIndex; i++) {
-    const c = code[i];
-    const next = code[i+1];
-    if (inLineComment) { if (c === '\n') inLineComment = false; continue; }
-    if (inComment) { if (c === '*' && next === '/') { inComment = false; i++; } continue; }
-    if (inString) { if (c === '\\') { i++; } else if (c === '"') inString = false; continue; }
-    if (inChar) { if (c === '\\') { i++; } else if (c === "'") inChar = false; continue; }
-    if (c === '/' && next === '/') { inLineComment = true; i++; continue; }
-    if (c === '/' && next === '*') { inComment = true; i++; continue; }
-    if (c === '"') { inString = true; continue; }
-    if (c === "'") { inChar = true; continue; }
-    if (c === '{') depth++;
-    if (c === '}') depth--;
-  }
-  return depth;
-}
-
 // Parse a variable declaration to extract type and variable name(s)
 // Returns array of { type, name, isArray, arraySize, isPointer, isReference }
 function parseDeclaration(line) {
@@ -285,7 +264,6 @@ function instrumentCode(sourceCode) {
 
   // Track if we're inside a function body (to skip instrumentation at file scope)
   let inFunctionBody = false;
-  let mainFunctionDepth = -1;
   let mainFrameEnsured = false;
 
   // Track if we're inside a member function (inside a struct/class body)
@@ -315,10 +293,6 @@ function instrumentCode(sourceCode) {
 
   // Track all function definitions: name → {startLine, endLine, params}
   let functionDefs = [];
-
-  // Track multiline statements
-  let inMultilineStatement = false;
-  let statementStartLine = 0;
 
   for (let i = 0; i < lines.length; i++) {
     let line = lines[i];
@@ -551,7 +525,6 @@ function instrumentCode(sourceCode) {
         let funcName = funcMatch[2];
         let params = funcMatch[3].trim();
         inFunctionBody = true;
-        mainFunctionDepth = getBraceDepth(sourceCode, sourceCode.indexOf(line));
         functionDefs.push({name: funcName, startLine: lineNum, params: params});
 
         // Output the function signature line
@@ -718,16 +691,8 @@ function instrumentCode(sourceCode) {
       // Inject another trace showing the for-loop state (i now has a value)
       // ONLY if the for-loop has an opening brace — otherwise the trace
       // would become the loop body, breaking single-statement for-loops.
-      let hasBrace = stripped.includes('{');
-      if (hasBrace) {
-        let captures2 = [];
-        for (let [name, info] of knownVars) {
-          if (heapPointers.has(name)) {
-            captures2.push(`__t__.cap_ptr("${name}", ${name}, ${heapPointers.get(name)});`);
-          } else {
-            captures2.push(`__t__.cap("${name}", ${name});`);
-          }
-        }
+      if (stripped.includes('{')) {
+        let captures2 = genCaptures(knownVars, heapPointers, deletedPointers, structDefs);
         if (captures2.length > 0) {
           output.push(`__opt_trace_fn__(${fnArg}${lineNum}, [&](auto& __t__) { ${captures2.join(' ')} });`);
         }
