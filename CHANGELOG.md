@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.6] - 2026-07-10
+
+### Added
+- **Heap memory visualization** — `int* p = new int(42)` and `int* arr = new int[3]` now render heap objects with pointer arrows from the stack to the heap, matching Python Tutor's behavior. `cap_ptr()` in `opt_trace.h` captures heap-allocated pointers and embeds heap data as a `C_ARRAY` in the trace. `instrument.js` detects `new T(value)` and `new T[size]` allocations and routes them through `cap_ptr()` instead of `cap()`. `runner.ts` extracts the `__heap__` pseudo-variable from `encoded_locals` and builds the `heap` object for the frontend.
+- **Heap removal after `delete`/`delete[]`** — `instrument.js` detects `delete ptr;` and `delete[] ptr;` statements and marks the pointer as freed. Subsequent trace steps use `cap_deleted_ptr()` which sets the pointer address to `0x0` (NULL), preventing the frontend's `isHeapRef()` from matching and rendering a stale heap object.
+
+### Fixed
+- **Assertion error popups** — the frontend's `assert()` function called `alert("Assertion Failure")` which showed a popup box on every step that triggered an assertion. Made `assert()` non-fatal (logs to console, no `alert`, no `throw`). Replaced hard asserts in `renderPrimitiveObject` and `renderNestedObject` with graceful fallback rendering for unknown object types. Made duplicate jsPlumb connection endpoint registrations non-fatal (C array elements share address-based IDs). Made `heapObj` undefined check non-fatal in `precomputeCurTraceLayouts` (handles pointers referencing freed addresses).
+- **C_DATA pointer type label** — changed from `"pointer to int"` to `"pointer"` to match the frontend's `isHeapRef()` check (`obj[2] === 'pointer'`). The previous label caused heap objects to never be rendered.
+- **C_ARRAY format** — removed the size array (`[size]`) from the C_ARRAY JSON. The frontend's `renderCStructArray()` skips indices 0–1 and treats indices 2+ as elements; the size array was being rendered as element 0. Format is now `["C_ARRAY", "addr", elem1, elem2, ...]`.
+
+### Changed
+- **`opt_trace.h`** — `cap_ptr()` stores heap data as a fake `__heap__` variable in `locals` (via `add()`), which is the only `std::string` member that can be modified in clang-repl WASM and read back later. `cap_deleted_ptr()` shows the pointer on the stack as NULL with no heap entry. `__opt_encode_data__` for pointers now uses type label `"pointer"` (was `"pointer to <type>"`).
+- **`runner.ts`** — post-processes each trace entry: scans all frames' `encoded_locals` for `__heap__` entries, parses the `HEAP:` prefix, builds the `heap` object via `JSON.parse`, and removes `__heap__` from `encoded_locals` and `ordered_varnames`.
+- **`pytutor.ts`** — `assert()` is now non-fatal (logs only, no alert/throw). Unknown object types in `renderPrimitiveObject` and `renderNestedObject` render as strings instead of asserting. Duplicate connection endpoint IDs are silently overwritten instead of asserting.
+
 ## [0.2.5] - 2026-07-10
 
 ### Fixed
