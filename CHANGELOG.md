@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **Visualization one step ahead** — the first trace step now shows `int main() {` (function entry) as the line that just executed, matching Python Tutor's behavior. Previously, the first step jumped directly to the first statement inside `main()`. Fixed by injecting a `__opt_trace_fn__` call at function body entry.
+- **Error line not reported** — compile errors (e.g., `std::cut` instead of `std::cout`) now highlight the correct source line with a red annotation in both `visualize.html` and `live.html`. The kernel strips line numbers from error messages, so an identifier-based source code search extracts the offending token (e.g., `cut` from "no member named 'cut'") and searches the user's code to find the error line.
+- **`#line` directives for error mapping** — the instrumenter now emits `#line N "user_code.cpp"` directives before each user source line and after each injected trace call, so compiler diagnostics report user line numbers instead of instrumented code line numbers.
+
+### Changed
+- **Multi-parameter function parsing** — `instrument.js` now correctly splits function parameters by comma (e.g., `int a, int b` → two separate declarations). Previously, `parseDeclaration` only captured the first parameter.
+- **Struct visualization** — removed `std::is_class_v` / `std::is_pointer_v` checks from `cap()` that caused "UNSUPPORTED FEATURES" compile errors in clang-repl WASM. Structs now fall through to `__opt_encode_data__` which encodes them as `C_DATA` with type `object`.
+- **Function call stack mechanism** — replaced `__opt_push_frame__` (which does not execute inside function bodies in clang-repl) with `__opt_trace_fn__(funcName, line, ...)` which calls `__opt_ensure_frame__` at trace time to push/pop frames. `__opt_ensure_frame__` pushes new frames for called functions and pops frames when returning to a parent function.
+- **`runner.ts` error handling** — added `user_code.cpp:line:col:` pattern for error line extraction (from `#line` directives), plus identifier-based source code search as a fallback when the kernel error text lacks line numbers.
+
+### Known Limitations
+- **C_STRUCT fields** — struct fields are not visualized (C++ lacks reflection). Structs appear as `object <type>` with value `<unknown>`.
+- **Function call stepping** — `__opt_trace_fn__` calls inside user-defined function bodies may not execute in clang-repl, so called functions' local variables may not appear in separate stack frames. The `main` frame and its variables work correctly.
+- **Heap objects** — pointers are encoded as `C_DATA` with type `pointer` and the target address, but no heap entries are created.
+
 ### Added
 - **C_STRUCT visualization** — user-defined structs/classes are now encoded as `C_STRUCT` entries in the trace. The struct appears in the stack frame with its type name (e.g., `object Point`). Fields are empty (C++ lacks reflection; future versions may support an opt-in `__opt_cap__` method).
 - **Function call stack** — user-defined functions are instrumented with `__opt_push_frame__` calls. When a function is called from `main()`, a new stack frame is pushed with the function name and parameters. The frontend renders multiple frames with parent-child relationships (`is_parent`, `parent_frame_id_list`).
