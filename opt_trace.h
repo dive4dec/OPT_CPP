@@ -353,15 +353,25 @@ void __opt_pop_to__(const char* func_name) {
 }
 
 // Ensure a frame exists for the named function; push if not on top,
-// pop if returning to a parent frame
+// pop if returning to a parent frame.
+// For recursive calls (same function name on top), push a new frame.
 void __opt_ensure_frame__(const char* func_name, int line) {
   auto& st = __opt_get_state__();
   if(st.call_stack.empty()) {
     __opt_push_frame__(func_name, line);
     return;
   }
-  // If the top frame is already this function, nothing to do
-  if(st.call_stack.back().func_name == func_name) return;
+  // If the top frame is already this function, it's either:
+  // 1. A continuation of the same frame (line > current line) — do nothing
+  // 2. A recursive call (line <= current line, i.e., back to entry) — push new frame
+  if(st.call_stack.back().func_name == func_name) {
+    if(line <= st.call_stack.back().line) {
+      // Recursive call — push a new frame
+      __opt_push_frame__(func_name, line);
+    }
+    // Otherwise, same frame continuing — do nothing
+    return;
+  }
   // Check if this function is already on the stack (returning to a parent)
   for(int i = (int)st.call_stack.size() - 1; i >= 0; i--) {
     if(st.call_stack[i].func_name == func_name) {
