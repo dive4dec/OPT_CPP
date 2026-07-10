@@ -358,7 +358,7 @@ function instrumentCode(sourceCode) {
 
     // Detect local class/struct definition inside a function body
     if (inFunctionBody && !inLocalClassBody) {
-      let localClassMatch = stripped.match(/^(struct|class)\s+(\w+)\s*(?::\s*[^{]*)?\{/);
+      let localClassMatch = stripped.match(/^(struct|class)\s+(\w+)\s*(?:final\s*)?(?::\s*[^{]*)?\{/);
       if (localClassMatch) {
         inLocalClassBody = true;
         localClassBraceDepth = 0;
@@ -548,7 +548,7 @@ function instrumentCode(sourceCode) {
         continue;
       }
       // Push new scope (but not for struct/class bodies — they're handled separately)
-      if (!stripped.match(/^(struct|class)\s+\w+\s*(?::\s*[^{]*)?\{/)) {
+      if (!stripped.match(/^(struct|class)\s+\w+\s*(?:final\s*)?(?::\s*[^{]*)?\{/)) {
         scopeStack.push({ depth: scopeStack[scopeStack.length-1].depth + 1, vars: new Set() });
       }
     }
@@ -556,7 +556,7 @@ function instrumentCode(sourceCode) {
     // At file scope (not in function body), track struct/class bodies and global variable declarations
     if (!inFunctionBody) {
       // Detect struct/class body entry: "struct Name {" or "class Name {"
-      let structMatch = stripped.match(/^(struct|class)\s+(\w+)\s*(?::\s*[^{]*)?\{/);
+      let structMatch = stripped.match(/^(struct|class)\s+(\w+)\s*(?:final\s*)?(?::\s*[^{]*)?\{/);
       if (structMatch) {
         inStructBody = true;
         structBraceDepth = 1;
