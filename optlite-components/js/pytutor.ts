@@ -3555,6 +3555,9 @@ class DataVisualizer {
         let structName = obj[2] ? obj[2] : DataVisualizer.UNNAMED_PREFIX;
         $.each(obj, function(ind, kvPair) {
           if (ind < '3') return; // skip header tags
+          // Skip non-field elements (e.g., empty field array [] for classes
+          // without reflection-based field enumeration)
+          if (!$.isArray(kvPair) || typeof kvPair[0] !== 'string') return;
 
           let fieldName = kvPair[0];
           if (myViz.inHideFieldsSet(structName, fieldName)) {

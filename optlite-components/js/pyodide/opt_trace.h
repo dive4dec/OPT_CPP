@@ -148,9 +148,13 @@ std::string __opt_encode_data__(const T& v) {
     else pointedTypeName = __opt_demangle__(typeid(PointedType).name());
     std::string typeLabel = "pointer";
     return "[\"C_DATA\",\""+__opt_addr__(&v)+"\",\""+__opt_esc__(typeLabel)+"\",\""+ptr+"\",{\"bytes\":"+std::to_string(sizeof(T))+"}]";
+  } else if constexpr (std::is_class_v<T>) {
+    // For class/struct types, emit C_STRUCT with the proper type name
+    // instead of <unknown>. C++ has no reflection, so fields cannot be
+    // enumerated automatically; the type name is shown for identification.
+    std::string addr = __opt_addr__(&v);
+    return "[\"C_STRUCT\",\""+addr+"\",\"" + __opt_esc__(__opt_demangle__(typeid(v).name()))+"\",[]]";
   } else {
-    // For unknown types (including structs/classes), encode as C_DATA
-    // The C_STRUCT format causes frontend assertion failures
     std::string addr = __opt_addr__(&v);
     return "[\"C_DATA\",\""+addr+"\",\"object\",\"<unknown>\",{\"bytes\":"+std::to_string(sizeof(T))+"}]";
   }
@@ -250,8 +254,13 @@ struct __opt_tracer__ {
         s += "]";
         add(n, s);
       }
+    } else if constexpr (std::is_class_v<T>) {
+      // For class/struct types, use __opt_encode_value__ which emits
+      // C_STRUCT with the proper type name (instead of the
+      // __opt_encode_data__ fallthrough that produces <unknown>).
+      add(n, __opt_encode_value__(v));
     } else {
-      // For all other types (including structs/classes and pointers),
+      // For all other types (including pointers),
       // encode as C_DATA using __opt_encode_data__
       add(n, __opt_encode_data__(v));
     }

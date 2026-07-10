@@ -300,6 +300,9 @@ function instrumentCode(sourceCode) {
   // Track local class/struct bodies inside function bodies
   let inLocalClassBody = false;
   let localClassBraceDepth = 0;
+  let localClassName = '';
+  let localClassFields = [];
+  let localClassAccessLevel = 'public';
 
   // Track brace-less control flow (for/while/if without {) — next line is the body
   let pendingBracelessBody = false;
@@ -342,27 +345,15 @@ function instrumentCode(sourceCode) {
       mainFrameEnsured = true;
     }
 
-    // Handle local class/struct bodies inside functions — skip all instrumentation
-    // This must come BEFORE the { handler and closing brace handler to prevent
-    // member functions inside the local class from being detected as regular functions
-    if (inFunctionBody && inLocalClassBody) {
-      for (let c of stripped) {
-        if (c === '{') localClassBraceDepth++;
-        if (c === '}') localClassBraceDepth--;
-      }
-      output.push(line);
-      if (localClassBraceDepth <= 0) {
-        inLocalClassBody = false;
-      }
-      continue;
-    }
-
     // Detect local class/struct definition inside a function body
     if (inFunctionBody && !inLocalClassBody) {
       let localClassMatch = stripped.match(/^(struct|class)\s+(\w+)\s*(?:final\s*)?(?::\s*[^{]*)?\{/);
       if (localClassMatch) {
         inLocalClassBody = true;
         localClassBraceDepth = 0;
+        localClassName = localClassMatch[2];
+        localClassFields = [];
+        localClassAccessLevel = (localClassMatch[1] === 'class') ? 'private' : 'public';
         for (let c of stripped) {
           if (c === '{') localClassBraceDepth++;
           if (c === '}') localClassBraceDepth--;
@@ -373,6 +364,45 @@ function instrumentCode(sourceCode) {
         }
         continue;
       }
+    }
+
+    // If inside a local class/struct body, collect public field declarations
+    // so local-class instances can be visualized with their fields (mirrors
+    // the global struct handling above).
+    if (inFunctionBody && inLocalClassBody) {
+      // Track braces to detect the end of the local class body
+      for (let c of stripped) {
+        if (c === '{') localClassBraceDepth++;
+        if (c === '}') localClassBraceDepth--;
+      }
+      // Register the local class when its body ends
+      if (localClassBraceDepth <= 0) {
+        if (localClassName && localClassFields.length > 0) {
+          structDefs.set(localClassName, localClassFields);
+        }
+        inLocalClassBody = false;
+        output.push(line);
+        continue;
+      }
+      // Skip access specifiers but track the current access level
+      let accessMatch = stripped.match(/^(public|private|protected)\s*:/);
+      if (accessMatch) {
+        localClassAccessLevel = accessMatch[1];
+        output.push(line);
+        continue;
+      }
+      // Parse field declarations — collect only public fields for visualization.
+      // Private members can't be accessed from outside the class in the instrumented
+      // lambda, so accessing them would cause a WASM compilation error.
+      let fieldDecl = parseDeclaration(stripped);
+      for (let d of fieldDecl) {
+        d.access = localClassAccessLevel;
+        if (localClassAccessLevel === 'public') {
+          localClassFields.push(d);
+        }
+      }
+      output.push(line);
+      continue;
     }
 
     // If inside struct/class body (but NOT inside a member function), handle field declarations
@@ -495,7 +525,9 @@ function instrumentCode(sourceCode) {
         output.push(line);
         continue;
       }
-      // Parse field declarations — only collect public fields for visualization
+      // Parse field declarations — collect only public fields for visualization.
+      // Private members can't be accessed from outside the class in the instrumented
+      // lambda, so accessing them would cause a WASM compilation error.
       let fieldDecl = parseDeclaration(stripped);
       for (let d of fieldDecl) {
         d.access = currentAccessLevel;
