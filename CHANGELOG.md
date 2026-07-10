@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.8] - 2026-07-10
+
+### Added
+- **`class` keyword support** — `class` definitions are now tracked the same as `struct`. The instrumenter detects `class Name {` at file scope, tracks the body, and collects public field declarations for visualization. Classes with public fields render as `C_STRUCT` with visible field values; classes with only private/protected fields fall back to `object TypeName <unknown>`.
+- **Access control tracking** — `public:`, `private:`, and `protected:` specifiers inside class/struct bodies are recognized. Only `public` fields are collected for visualization (private/protected fields cannot be accessed from outside the class in clang-repl). Default access is `public` for `struct`, `private` for `class`.
+- **Constructor-call syntax parsing** — `parseDeclaration` now recognizes `Type name(args)` syntax (e.g., `Point p1(3, 4)`, `String s1("hello")`) in addition to `Type name = value`. Previously, constructor calls were mistaken for function definitions and skipped.
+
+### Fixed
+- **Struct body `};` not ending struct tracking** — the `};` line matched an early `continue` before the `structBraceDepth <= 0` check, leaving `inStructBody` true forever. This caused all subsequent code (including `int main() {`) to be treated as struct body content with no trace injections. Fixed by checking `structBraceDepth <= 0` first, before any `continue` statements.
+- **Member function definitions inside class body** — `Point(int x, int y) : x(x), y(y) {}` and `int getX() { return x; }` were being treated as top-level function definitions, triggering `inFunctionBody = true` and trace injections inside the class body. Fixed by skipping lines with `(` and `{` inside struct bodies.
+- **Access specifiers triggering trace injections** — `public:`, `private:`, `protected:` lines were being processed as statements. Fixed by detecting and skipping them in both `parseDeclaration` and the struct body handler.
+- **`operator=` parsed as field name** — `String& operator=(const String& o)` was parsed by `parseDeclaration` as a field named `operator`, generating invalid `__opt_field__("operator", s2.operator)`. Fixed by skipping lines containing `operator` keyword.
+- **Constructor/destructor definitions parsed as declarations** — `Point(int x, int y) {` and `~Point() {` were being parsed as variable declarations. Fixed by adding regex checks to skip constructor/destructor patterns.
+
+### Changed
+- **`instrument.js`** — `genCaptures()` helper now used for all capture generation blocks. Struct body handling moved before function detection to prevent member functions from triggering `inFunctionBody`. `parseDeclaration` has new regex checks for operator overloads, access specifiers, constructor/destructor definitions, and closing braces. Constructor-call syntax (`name(args)`) is now recognized as a valid declaration form.
+- **`parseDeclaration`** — function definition check now requires `{` on the same line (was `\{|\s*$` which matched constructor calls after semicolon removal).
+
+### Known Limitations
+- **Private/protected fields not visible** — C++ access control prevents accessing private/protected members from outside the class. Python Tutor can show all fields because it uses gdb/compiler internals. Our clang-repl approach can only access public fields. Classes with only private fields show as `object TypeName <unknown>`.
+- **Member functions not stepped into** — calling `p1.getX()` does not create a separate stack frame for `getX()`. This is a clang-repl limitation (trace injections inside member function bodies may not execute).
+
 ## [0.2.7] - 2026-07-10
 
 ### Added
