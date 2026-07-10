@@ -263,6 +263,14 @@ struct __opt_tracer__ {
     add(n, "[\"C_DATA\",\""+__opt_addr__(&v)+"\",\"pointer\",\"0x0\",{\"bytes\":"+std::to_string(sizeof(int*))+"}]");
   }
 
+  // cap_this: capture the 'this' pointer in a member function
+  // 'this' is a prvalue, so we can't take its address with &this
+  // The caller passes the this pointer as a void*
+  void cap_this(const std::string& typeName, void* thisPtr) {
+    std::string addr = __opt_addr__(thisPtr);
+    add("this", "[\"C_DATA\",\""+addr+"\",\"pointer\",\""+addr+"\",{\"bytes\":"+std::to_string(sizeof(void*))+"}]");
+  }
+
   // cap_struct: capture a struct by building C_STRUCT JSON from pre-encoded fields
   // Called as: cap_struct("varName", "TypeName", var, "addr", encodedFields)
   // where encodedFields is a pre-built string like: ["x",3],["y",4]

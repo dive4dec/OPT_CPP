@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.9] - 2026-07-10
+
+### Added
+- **Step into constructors and methods** — member function bodies (constructors, destructors, methods, operators) inside `struct`/`class` definitions are now instrumented with trace calls. When `Point p1(3, 4)` is executed, a `Point` frame appears on the call stack. When `p1.getX()` is called, a `getX` frame appears with the `this` pointer visible. This matches Python Tutor's behavior.
+- **`this` pointer visualization** — inside member functions, the `this` pointer is captured and displayed as a `C_DATA` pointer with the object's memory address. Uses `cap_this()` method in `opt_trace.h` which takes `void* thisPtr` (since `this` is a prvalue and `&this` is invalid in C++).
+- **Empty-body constructor instrumentation** — constructors with empty bodies (e.g., `Point(int x, int y) : x(x), y(y) {}`) are split open to inject a trace call inside the body, so the constructor frame still appears on the call stack.
+
+### Fixed
+- **Trace calls placed at class scope** — `__opt_trace_fn__` calls for empty-body constructors were placed AFTER the `}` of the constructor body but BEFORE `};` of the class, which is invalid C++ (function call at class scope). Fixed by splitting the constructor line to inject the trace INSIDE the body: `Point(...) {` + trace + `}`.
+- **`this` pointer leaking into `main()`** — `this` was added to `knownVars` when entering a member function but not removed when the function ended, causing `cap("this", this)` to appear in `main()` traces. Root cause: `inStructBody` block ran before the closing brace handler when `inFunctionBody` was true, preventing scope cleanup. Fixed by adding `!inFunctionBody` condition to the `inStructBody` block.
+- **Extra scope pushed for struct/class bodies** — `class Point {` triggered the generic `{` scope push in addition to struct body tracking, causing `scopeStack.length` to be 2 instead of 1 when a member function ended. Fixed by skipping scope push for `struct`/`class` lines.
+- **`cap_this` used wrong `this`** — `cap_this()` was a method of `__opt_tracer__`, so `this` inside it referred to the tracer object, not the user's `Point`. Fixed by passing the user's `this` pointer as a `void*` parameter.
+
+### Changed
+- **`instrument.js`** — `inStructBody` block now skips when `inFunctionBody` is true (member function body is being processed). Member function detection uses regex `^([\w:~]+\s+~?\w+|~?\w+)\s*\(([^)]*)\)\s*(?::\s*[^{]*)?\{` to match constructors, destructors, and methods. `inMemberFunction` flag tracks member function context. Closing brace handler returns to `inStructBody` mode when a member function ends. `genCaptures()` uses `cap_this()` for the `this` variable. `parseDeclaration` no longer pushes scope for `struct`/`class` lines.
+- **`opt_trace.h`** — `cap_this(const std::string& typeName, void* thisPtr)` method encodes `this` as a `C_DATA` pointer with the object's address.
+
 ## [0.2.8] - 2026-07-10
 
 ### Added
