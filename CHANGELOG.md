@@ -21,8 +21,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`cap_this` used wrong `this`** — `cap_this()` was a method of `__opt_tracer__`, so `this` inside it referred to the tracer object, not the user's `Point`. Fixed by passing the user's `this` pointer as a `void*` parameter.
 
 ### Changed
-- **`instrument.js`** — `inStructBody` block now skips when `inFunctionBody` is true (member function body is being processed). Member function detection uses regex `^([\w:~]+\s+~?\w+|~?\w+)\s*\(([^)]*)\)\s*(?::\s*[^{]*)?\{` to match constructors, destructors, and methods. `inMemberFunction` flag tracks member function context. Closing brace handler returns to `inStructBody` mode when a member function ends. `genCaptures()` uses `cap_this()` for the `this` variable. `parseDeclaration` no longer pushes scope for `struct`/`class` lines.
-- **`opt_trace.h`** — `cap_this(const std::string& typeName, void* thisPtr)` method encodes `this` as a `C_DATA` pointer with the object's address.
+- **`instrument.js`** — `inStructBody` block now skips when `inFunctionBody` is true (member function body is being processed). Member function detection uses regex `^([\w:~]+\s+~?\w+|~?\w+)\s*\(([^)]*)\)\s*(?::\s*[^{]*)?\{` to match constructors, destructors, and methods. `inMemberFunction` flag tracks member function context. Closing brace handler returns to `inStructBody` mode when a member function ends. `genCaptures()` uses `cap_this()` for the `this` variable. `parseDeclaration` no longer pushes scope for `struct`/`class` lines. Member function body traces use `__opt_trace_fn_this__()` (non-lambda) instead of `__opt_trace_fn__()` with lambda, because template lambdas inside member function bodies do not execute in clang-repl.
+- **`opt_trace.h`** — `cap_this(const std::string& typeName, void* thisPtr)` method encodes `this` as a `C_DATA` pointer with the object's address. `__opt_trace_fn_this__()` global function captures `this` without a lambda. `__opt_trace_fn_struct__()` and `__opt_trace_fn_this_struct__()` variants for struct captures in member functions.
+
+### Known Limitations
+- **`return 0;` step may be missing** — when `main()` contains complex expressions (e.g., `cout << p1.getX() << endl;`), the trace for the final `return 0;` statement may not create a visible step. This is a clang-repl timing issue where the `return` exits `main()` before the trace is fully flushed. The constructor and method stepping still work correctly.
+- **Lambda traces inside member functions** — template lambdas (`[&](auto& __t__) { ... }`) inside member function bodies defined inside class/struct definitions do not execute in clang-repl. Workaround: use `__opt_trace_fn_this__()` (a regular function call, no lambda) which captures `this` without needing a lambda.
 
 ## [0.2.8] - 2026-07-10
 

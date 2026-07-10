@@ -552,6 +552,60 @@ void __opt_trace_fn_impl__(const char* func_name, int line) {
   st.step++;
 }
 
+// Variant for member functions: captures 'this' pointer
+void __opt_trace_fn_this__(const char* func_name, int line, const char* typeName, void* thisPtr) {
+  __opt_ensure_frame__(func_name, line);
+  auto& st = __opt_get_state__();
+  __opt_tracer__ __t__(line, st.call_stack.back().func_name.c_str(),
+                        st.call_stack.back().frame_id.c_str());
+  __t__.cap_this(typeName, thisPtr);
+  std::cout << __OPT_SENTINEL__;
+  std::cout.flush();
+  std::string entry = __t__.finish();
+  __opt_update_frame__(line, __t__.locals, __t__.names);
+  st.trace_output += (st.step>0 ? ",\n" : "") + entry;
+  st.step++;
+}
+
+// Variant for member functions with struct captures: passes struct field values
+void __opt_trace_fn_struct__(const char* func_name, int line, const std::string& varName,
+                              const std::string& typeName, void* varPtr, const std::string& fieldsStr) {
+  __opt_ensure_frame__(func_name, line);
+  auto& st = __opt_get_state__();
+  __opt_tracer__ __t__(line, st.call_stack.back().func_name.c_str(),
+                        st.call_stack.back().frame_id.c_str());
+  // Encode struct at varPtr — but we can't access fields from a void* without type info
+  // So just encode as C_DATA pointer
+  __t__.add(varName, "[\"C_DATA\",\""+__opt_addr__(varPtr)+"\",\""+__opt_esc__(typeName)+"\",\"<unknown>\",{}]");
+  std::cout << __OPT_SENTINEL__;
+  std::cout.flush();
+  std::string entry = __t__.finish();
+  __opt_update_frame__(line, __t__.locals, __t__.names);
+  st.trace_output += (st.step>0 ? ",\n" : "") + entry;
+  st.step++;
+}
+
+// Variant for member functions that captures both 'this' and a struct variable
+// Uses pre-encoded field strings passed from the instrumented code
+template<typename T>
+void __opt_trace_fn_this_struct__(const char* func_name, int line,
+                                   const char* thisTypeName, void* thisPtr,
+                                   const std::string& varName, const std::string& typeName,
+                                   const T& var, const std::string& fieldsStr) {
+  __opt_ensure_frame__(func_name, line);
+  auto& st = __opt_get_state__();
+  __opt_tracer__ __t__(line, st.call_stack.back().func_name.c_str(),
+                        st.call_stack.back().frame_id.c_str());
+  __t__.cap_this(thisTypeName, thisPtr);
+  __t__.cap_struct(varName, typeName, var, fieldsStr);
+  std::cout << __OPT_SENTINEL__;
+  std::cout.flush();
+  std::string entry = __t__.finish();
+  __opt_update_frame__(line, __t__.locals, __t__.names);
+  st.trace_output += (st.step>0 ? ",\n" : "") + entry;
+  st.step++;
+}
+
 // ── Finalizer ──
 std::string __opt_finalize__() {
   auto& st = __opt_get_state__();

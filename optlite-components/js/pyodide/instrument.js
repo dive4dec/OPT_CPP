@@ -674,11 +674,17 @@ function instrumentCode(sourceCode) {
     // variables = state BEFORE this line executes
     if (stmtComplete && !stripped.match(/^\s*(for|while|if|else|switch|do)\b/)) {
       let fnArg = `"${currentFunc}", `;
-      let captures = genCaptures(knownVars, heapPointers, deletedPointers, structDefs);
-      if (captures.length > 0) {
-        output.push(`__opt_trace_fn__(${fnArg}${lineNum}, [&](auto& __t__) { ${captures.join(' ')} });`);
+      if (inMemberFunction) {
+        // Inside member functions, lambdas don't work in clang-repl.
+        // Use __opt_trace_fn_this__ which captures 'this' without a lambda.
+        output.push(`__opt_trace_fn_this__(${fnArg}${lineNum}, "${memberFunctionStructName}*", (void*)this);`);
       } else {
-        output.push(`__opt_trace_fn__(${fnArg}${lineNum});`);
+        let captures = genCaptures(knownVars, heapPointers, deletedPointers, structDefs);
+        if (captures.length > 0) {
+          output.push(`__opt_trace_fn__(${fnArg}${lineNum}, [&](auto& __t__) { ${captures.join(' ')} });`);
+        } else {
+          output.push(`__opt_trace_fn__(${fnArg}${lineNum});`);
+        }
       }
     }
 
