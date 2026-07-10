@@ -11,6 +11,20 @@
 // Load the code instrumenter (cache-busted to ensure latest version)
 importScripts('./instrument.js?v=' + Date.now());
 
+// Capture stderr from iopub stream messages so we can include the real
+// compiler error in the error message when the WASM aborts.
+let workerStderr = '';
+const _origPostMessage = self.postMessage.bind(self);
+self.postMessage = function(msg) {
+  // Intercept iopub stream messages to capture stderr
+  if (msg && msg.header && msg.header.msg_type === 'stream' && msg.content) {
+    if ((msg.content.name || '') === 'stderr') {
+      workerStderr += msg.content.text || '';
+    }
+  }
+  return _origPostMessage(msg);
+};
+
 let initResolve, initReject;
 const initPromise = new Promise((res, rej) => { initResolve = res; initReject = rej; });
 
@@ -69,6 +83,9 @@ self.onmessage = async (event) => {
   // ── User message ──
   const { id, ...context } = msg;
 
+  // Reset stderr capture for this execution
+  workerStderr = '';
+
   for (const key of Object.keys(context)) {
     self[key] = context[key];
   }
@@ -93,8 +110,18 @@ self.onmessage = async (event) => {
 
         // Suppress clang/LLVM diagnostic output that floods the console
         // (stdout from user code goes through iopub stream, captured by runner.ts)
+        // BUT capture stderr so we can extract compiler errors on WASM abort.
         print: () => {},
-        printErr: () => {},
+        printErr: (text) => { workerStderr += text + '\n'; },
+        onAbort: (reason) => {
+          // Try to send the abort reason + any captured stderr back to main thread
+          // before the worker dies. Use _origPostMessage to bypass our interceptor.
+          const abortMsg = typeof reason === 'string' ? reason : 'WASM aborted';
+          _origPostMessage({
+            header: { msg_type: 'stream' },
+            content: { name: 'stderr', text: workerStderr + '\nerror: ' + abortMsg }
+          });
+        },
 
         preRun: [
           function() {
@@ -141,7 +168,15 @@ self.onmessage = async (event) => {
       const Module2 = {
         locateFile: (file) => XEUS_CPP_BASE2 + file,
         print: () => {},
-        printErr: () => {},
+        printErr: (text) => { workerStderr += text + '\n'; },
+        onAbort: (reason) => {
+          const abortMsg = typeof reason === 'string' && reason.length > 0 ? reason : 'Compilation error (WASM aborted). Check your code for syntax errors.';
+          // Send as iopub stream so runner.ts captures it as kernelErrorText
+          _origPostMessage({
+            header: { msg_type: 'stream' },
+            content: { name: 'stderr', text: (workerStderr ? workerStderr + '\n' : '') + 'error: ' + abortMsg }
+          });
+        },
         preRun: [
           function() {
             const M = self.xeusModule;
@@ -220,10 +255,35 @@ self.onmessage = async (event) => {
         buffers: [],
       };
 
-      self.xserver.notify_listener(executeRequest);
+      let execAborted = false;
+      try {
+        self.xserver.notify_listener(executeRequest);
+      } catch (e) {
+        // WASM abort — compiler error was likely sent via stderr.
+        // Wait for iopub messages to be processed by the event loop.
+        execAborted = true;
+        await new Promise(r => setTimeout(r, 1000));
+      }
 
-      // Wait for execution to complete
-      await new Promise(r => setTimeout(r, 300));
+      // Wait for execution to complete (or extra time after abort)
+      await new Promise(r => setTimeout(r, execAborted ? 0 : 300));
+
+      // If the WASM aborted, extract the real compiler error from stderr
+      // and report it instead of continuing with a fallback trace.
+      if (execAborted) {
+        let errorMsg = '';
+        const allStderr = workerStderr;
+        if (allStderr && allStderr.includes('error:')) {
+          const errorLine = allStderr.split('\n')
+            .find(l => l.includes('error:')) || '';
+          errorMsg = errorLine.replace(/^input_line_\d+:\d+:\d+:\s*/, '').trim()
+            .replace(/^.*?error:\s*/, 'error: ');
+        }
+        if (!errorMsg) {
+          errorMsg = 'Compilation error (WASM aborted). Check your code for syntax errors.';
+        }
+        throw new Error(errorMsg);
+      }
 
       // ── Extract trace JSON from kernel output ──
       // The trace JSON is emitted between __OPT_TRACE_JSON_BEGIN__ and __OPT_TRACE_JSON_END__
@@ -296,7 +356,14 @@ self.onmessage = async (event) => {
     }
     self.postMessage({ results, id });
   } catch (error) {
-    self.postMessage({ error: 'Failed to run code: ' + error.message, id });
+    let errorMsg = error.message;
+    if (workerStderr && workerStderr.includes('error:')) {
+      const errorLine = workerStderr.split('\n')
+        .find(l => l.includes('error:')) || '';
+      errorMsg = errorLine.replace(/^input_line_\d+:\d+:\d+:\s*/, '').trim()
+        .replace(/^.*?error:\s*/, 'error: ');
+    }
+    _origPostMessage({ error: errorMsg, id });
   }
 };
 

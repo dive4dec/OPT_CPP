@@ -258,6 +258,24 @@ cppWorker.onmessage = async (event) => {
   }
 };
 
+// Handle worker errors (e.g., uncaught WASM abort that kills the worker)
+cppWorker.onerror = (event) => {
+  // If we have pending callbacks, reject them with the kernel error if available
+  for (const id of Object.keys(callbacks)) {
+    const cb = callbacks[id];
+    delete callbacks[id];
+    if (kernelHasError && kernelErrorText) {
+      let errorMsg = kernelErrorText.split('\n')
+        .find(l => l.includes('error:')) || 'Compilation error';
+      errorMsg = errorMsg.replace(/^input_line_\d+:\d+:\d+:\s*/, '').trim();
+      errorMsg = errorMsg.replace(/^.*?error:\s*/, 'error: ');
+      cb({ error: errorMsg });
+    } else {
+      cb({ error: 'Compilation error (WASM aborted). Check your code for syntax errors.' });
+    }
+  }
+};
+
 const asyncRun = (() => {
   let id = 0;
   return (script: string, rawInputLst: string[], options: any) => {
@@ -269,8 +287,21 @@ const asyncRun = (() => {
         kernelHasError = false;
         kernelErrorText = '';
         callbacks[id] = (data) => {
-          if (data.error) reject(new Error(data.error));
-          else resolve(data);
+          if (data.error) {
+            // The WASM abort may have sent compiler errors via iopub stderr
+            // messages that haven't been processed yet. Wait briefly for them.
+            setTimeout(() => {
+              if (kernelHasError && kernelErrorText) {
+                let errorMsg = kernelErrorText.split('\n')
+                  .find(l => l.includes('error:')) || 'Compilation error';
+                errorMsg = errorMsg.replace(/^input_line_\d+:\d+:\d+:\s*/, '').trim();
+                errorMsg = errorMsg.replace(/^.*?error:\s*/, 'error: ');
+                reject(new Error(errorMsg));
+              } else {
+                reject(new Error(data.error));
+              }
+            }, 500);
+          } else resolve(data);
         };
         cppWorker.postMessage({
           ...options,

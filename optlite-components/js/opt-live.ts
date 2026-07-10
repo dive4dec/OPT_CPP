@@ -658,7 +658,7 @@ export class OptLiveFrontend extends OptFrontend {
           let result: any = await asyncRun(codeToExec, this.rawInputLst, {});
           execCallback(JSON.parse(result.results))
         } catch (err) {
-          this.setFronendError(["Error: " + (err as Error).message]);
+          this.setFronendError([(err as Error).message], true);
           this.doneExecutingCode();
         }
       }
