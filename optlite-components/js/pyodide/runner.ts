@@ -174,24 +174,47 @@ cppWorker.onmessage = async (event) => {
           const rawStdout = kernelOutput.join('');
           const SENTINEL = '\x01\x02__OPT_STEP__\x02\x01';
           const segments = rawStdout.split(SENTINEL);
-          // With pre-statement instrumentation:
-          // segments[0] = output before first trace step (should be empty)
-          // segments[1] = output produced by statement 0 (between sentinel 0 and 1)
-          // segments[N] = output produced by statement N-1
-          // The trace at step N is "about to execute statement N",
-          // so it should show cumulative output from statements 0..N-1.
           let cumulative = '';
           for (let i = 0; i < parsed.trace.length; i++) {
-            // Output produced by the PREVIOUS statement (segment i)
             if (i < segments.length) {
               cumulative += segments[i];
             }
             parsed.trace[i].stdout = cumulative;
           }
-          // Add any remaining output (after the last sentinel) to the last step
           if (segments.length > parsed.trace.length) {
             parsed.trace[parsed.trace.length - 1].stdout += segments[parsed.trace.length];
           }
+        }
+
+        // Move global variables from main's encoded_locals to globals section
+        // so they appear in the "Global variables" frame like Python Tutor
+        if (parsed.global_vars && parsed.trace) {
+          const gvarNames: string[] = parsed.global_vars;
+          for (const entry of parsed.trace) {
+            if (!entry.stack_to_render || entry.stack_to_render.length === 0) continue;
+            // Find the main frame (first frame or the one with func_name 'main')
+            const mainFrame = entry.stack_to_render.find(f => f.func_name === 'main');
+            if (!mainFrame || !mainFrame.encoded_locals || !mainFrame.ordered_varnames) continue;
+            const newGlobals = {};
+            const newOrderedGlobals: string[] = [];
+            const newLocals = {};
+            const newOrderedLocals: string[] = [];
+            for (const varname of mainFrame.ordered_varnames) {
+              if (gvarNames.includes(varname)) {
+                newGlobals[varname] = mainFrame.encoded_locals[varname];
+                newOrderedGlobals.push(varname);
+              } else {
+                newLocals[varname] = mainFrame.encoded_locals[varname];
+                newOrderedLocals.push(varname);
+              }
+            }
+            entry.globals = newGlobals;
+            entry.ordered_globals = newOrderedGlobals;
+            mainFrame.encoded_locals = newLocals;
+            mainFrame.ordered_varnames = newOrderedLocals;
+          }
+          // Remove global_vars so the frontend doesn't see it
+          delete parsed.global_vars;
         }
 
         data.results = JSON.stringify(parsed);

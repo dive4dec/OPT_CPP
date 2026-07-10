@@ -474,8 +474,12 @@ function instrumentCode(sourceCode) {
 
   }
 
-  return output.join('\n');
+  // Return both the instrumented code and the list of global variable names
+  return { code: output.join('\n'), globalVars: globalVars.map(g => g.name) };
 }
+
+// Backward-compatible string return for any code that expects a string
+// (instrumentCode now returns an object; cppworker.js handles both)
 
 // Export for use in worker
 self.instrumentCode = instrumentCode;

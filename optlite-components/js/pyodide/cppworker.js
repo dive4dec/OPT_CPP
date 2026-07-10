@@ -143,8 +143,15 @@ self.onmessage = async (event) => {
       // ── Instrument the user code ──
       const header = optTraceHeader || '';
       let instrumentedCode;
+      let globalVarNames = [];
       try {
-        instrumentedCode = self.instrumentCode(code);
+        const result = self.instrumentCode(code);
+        if (typeof result === 'string') {
+          instrumentedCode = result;
+        } else {
+          instrumentedCode = result.code;
+          globalVarNames = result.globalVars || [];
+        }
       } catch (e) {
         // If instrumentation fails, use original code (no visualization)
         instrumentedCode = code;
@@ -247,6 +254,11 @@ self.onmessage = async (event) => {
           const parsed = JSON.parse(traceJson);
           // Set the code field (opt_trace.h leaves it empty)
           parsed.code = self.script;
+          // Attach global variable names so the runner can move them
+          // from main's encoded_locals to the globals section
+          if (globalVarNames.length > 0) {
+            parsed.global_vars = globalVarNames;
+          }
           // If trace is empty (no statements to instrument), use fallback
           if (!parsed.trace || parsed.trace.length === 0) {
             results = JSON.stringify({ code: self.script, trace: buildFallbackTrace(code) });
