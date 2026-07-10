@@ -217,6 +217,38 @@ cppWorker.onmessage = async (event) => {
           delete parsed.global_vars;
         }
 
+        // Extract __heap__ entries from all frames' encoded_locals and build heap
+        if (parsed.trace) {
+          for (const entry of parsed.trace) {
+            if (!entry.stack_to_render) continue;
+            const heap: any = {};
+            for (const frame of entry.stack_to_render) {
+              if (!frame.encoded_locals || !frame.ordered_varnames) continue;
+              const newLocals: any = {};
+              const newVarnames: string[] = [];
+              for (const varname of frame.ordered_varnames) {
+                if (varname === '__heap__') {
+                  // Extract heap data: value is "HEAP:escaped_json"
+                  const heapVal = frame.encoded_locals[varname];
+                  if (typeof heapVal === 'string' && heapVal.startsWith('HEAP:')) {
+                    const heapEntry = heapVal.substring(5);
+                    try {
+                      const parsed = JSON.parse('{' + heapEntry + '}');
+                      Object.assign(heap, parsed);
+                    } catch (e) {}
+                  }
+                } else {
+                  newLocals[varname] = frame.encoded_locals[varname];
+                  newVarnames.push(varname);
+                }
+              }
+              frame.encoded_locals = newLocals;
+              frame.ordered_varnames = newVarnames;
+            }
+            entry.heap = heap;
+          }
+        }
+
         data.results = JSON.stringify(parsed);
       } catch (e) {
         // Not valid JSON, leave as-is
