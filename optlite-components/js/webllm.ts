@@ -159,13 +159,19 @@ async function callOpenAIAPI(messages, onUpdate, onFinish, onError) {
             }, INACTIVITY_TIMEOUT_MS) as unknown as number;
         };
 
-        const response = await fetch(`${API_CONFIG.baseUrl}/chat/completions`, {
+        // When using the nginx reverse proxy (baseUrl = "/ai-proxy"), the API
+        // key is injected server-side by nginx. The browser never sees it.
+        const url = API_CONFIG.baseUrl === '/ai-proxy'
+            ? '/ai-proxy/chat/completions'
+            : `${API_CONFIG.baseUrl}/chat/completions`;
+        const response = await fetch(url, {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json',
                 // Prefer SSE, but allow JSON fallback
                 'Accept': 'text/event-stream, application/json',
-                ...(API_CONFIG.apiKey && { 'Authorization': `Bearer ${API_CONFIG.apiKey}` })
+                // Only send key from client when NOT using the proxy
+                ...(API_CONFIG.baseUrl !== '/ai-proxy' && API_CONFIG.apiKey && { 'Authorization': `Bearer ${API_CONFIG.apiKey}` })
             },
             body: JSON.stringify({
                 model: API_CONFIG.model,

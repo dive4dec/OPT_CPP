@@ -70,5 +70,10 @@ FROM nginx:1.29-alpine3.23
 COPY --from=optlite-builder /app/opt-cpp/optlite-components/build/ /usr/share/nginx/html/
 COPY --from=xeus-cpp-fetcher /xeus-cpp/ /usr/share/nginx/html/xeus-cpp/
 EXPOSE 8000
-COPY optlite-components/nginx.conf /etc/nginx/conf.d/default.conf
-CMD ["nginx", "-g", "daemon off;"]
+COPY optlite-components/nginx.conf /etc/nginx/templates/default.conf.template
+# envsubst processes ${VAR} in the template at container start.
+# API_PROXY_TARGET = upstream API base URL (without trailing slash)
+# API_PROXY_KEY   = API key injected server-side (never sent to browser)
+# Default to a dead-end port so unset proxy just returns 502.
+ENV API_PROXY_TARGET="http://127.0.0.1:1"
+ENV API_PROXY_KEY=""
