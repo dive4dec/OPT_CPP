@@ -7,15 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.3] - 2026-07-10
+
 ### Fixed
 - **Visualization one step ahead** — the trace now follows Python Tutor's pre-statement convention: each trace entry's `line` is the line *about to execute* (red arrow) and variables reflect the state *before* that line runs. The green arrow (line that just executed) points to the previous step's line. Previously, trace calls were injected *after* each statement, causing variables to appear one step too early and the final step to show the wrong line as "just executed". Now `sum` appears at the correct step, and the last step shows `std::cout << sum` (line 8) as the line that just executed with stdout `60`.
 - **Error line not reported** — compile errors (e.g., `std::cut` instead of `std::cout`) now highlight the correct source line with a red annotation in both `visualize.html` and `live.html`. The kernel strips line numbers from error messages, so an identifier-based source code search extracts the offending token (e.g., `cut` from "no member named 'cut'") and searches the user's code to find the error line.
+- **Struct visualization crash** — removed `std::is_class_v` / `std::is_pointer_v` checks from `cap()` that caused "UNSUPPORTED FEATURES" compile errors in clang-repl WASM. Structs now fall through to `__opt_encode_data__` which encodes them as `C_DATA` with type `object`.
+- **Multi-parameter function parsing** — `instrument.js` now correctly splits function parameters by comma (e.g., `int a, int b` → two separate declarations). Previously, `parseDeclaration` only captured the first parameter.
 
 ### Changed
 - **Pre-statement instrumentation** — `instrument.js` now injects trace calls *before* each statement instead of after, matching Python Tutor's trace format. For-loop headers get a pre-header trace (without the loop variable) and a post-header trace (with the loop variable initialized). `cout`/`printf` statements get a post-execution trace so the final step shows the output and the correct "line that just executed". `return` statements get a post-execution trace showing final state.
 - **Stdout mapping** — `runner.ts` updated for pre-statement convention: segment `N` = output produced by statement `N-1`, and any remaining output after the last sentinel is added to the final trace entry.
-- **Multi-parameter function parsing** — `instrument.js` now correctly splits function parameters by comma (e.g., `int a, int b` → two separate declarations). Previously, `parseDeclaration` only captured the first parameter.
-- **Struct visualization** — removed `std::is_class_v` / `std::is_pointer_v` checks from `cap()` that caused "UNSUPPORTED FEATURES" compile errors in clang-repl WASM. Structs now fall through to `__opt_encode_data__` which encodes them as `C_DATA` with type `object`.
 - **Function call stack mechanism** — replaced `__opt_push_frame__` (which does not execute inside function bodies in clang-repl) with `__opt_trace_fn__(funcName, line, ...)` which calls `__opt_ensure_frame__` at trace time to push/pop frames.
 - **`runner.ts` error handling** — identifier-based source code search as a fallback when the kernel error text lacks line numbers. `#line` directives were removed because they cause "Decl inserted into wrong lexical context" assertion failures in clang-repl.
 
@@ -23,6 +25,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **C_STRUCT fields** — struct fields are not visualized (C++ lacks reflection). Structs appear as `object <type>` with value `<unknown>`.
 - **Function call stepping** — `__opt_trace_fn__` calls inside user-defined function bodies may not execute in clang-repl, so called functions' local variables may not appear in separate stack frames. The `main` frame and its variables work correctly.
 - **Heap objects** — pointers are encoded as `C_DATA` with type `pointer` and the target address, but no heap entries are created.
+
+## [0.2.2] - 2026-07-09
 
 ### Added
 - **C_STRUCT visualization** — user-defined structs/classes are now encoded as `C_STRUCT` entries in the trace. The struct appears in the stack frame with its type name (e.g., `object Point`). Fields are empty (C++ lacks reflection; future versions may support an opt-in `__opt_cap__` method).
