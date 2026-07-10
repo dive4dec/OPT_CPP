@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.1] - 2026-07-11
+
+### Removed
+- **Test cases feature** — deleted `opt-testcases.ts`, `opt-testcases.css`, `SyntaxErrorSurveyBubble`, `OptFrontendWithTestcases` class, `testCasesParent` div from `visualize.html`, `testCasesLst` query param parsing, `runTestCaseCallback` branching, and `#testCasesPane` CSS (net -925 lines).
+
 ## [0.3.0] - 2026-07-10
 
 ### Added
