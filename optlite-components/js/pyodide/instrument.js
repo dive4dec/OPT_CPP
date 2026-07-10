@@ -220,6 +220,9 @@ function instrumentCode(sourceCode) {
   // Map from variable name → type info
   let knownVars = new Map();
 
+  // Track global (file-scope) variables
+  let globalVars = [];
+
   // Track current scope (brace depth → list of vars declared at that depth)
   let scopeStack = [{ depth: 0, vars: new Set() }];
 
@@ -264,6 +267,9 @@ function instrumentCode(sourceCode) {
     }
 
     // Check for opening brace — entering a new scope
+    // This check must come BEFORE the global variable check, because
+    // function definitions like "int add(int a, int b) {" also match
+    // parseDeclaration's skip pattern but need to be handled as functions
     if (stripped.includes('{')) {
       // Check if this is a function body opening
       // e.g., "int main() {" or "void foo(int x) {"
@@ -278,21 +284,13 @@ function instrumentCode(sourceCode) {
         // Output the function signature line
         output.push(line);
         // Inject a trace call at function entry (the opening brace line)
-        // This creates a trace step showing "line that just executed" = function entry
-        // matching Python Tutor's behavior
         let entryFnArg = `"${funcName}", `;
         output.push(`__opt_trace_fn__(${entryFnArg}${lineNum});`);
-        // Note: __opt_push_frame__ inside function body doesn't work in clang-repl.
-        // Instead, trace calls inside the function use __opt_trace_fn__("funcName", ...)
-        // which calls __opt_ensure_frame__ to push the frame at trace time.
         // Push new scope
         scopeStack.push({ depth: scopeStack[scopeStack.length-1].depth + 1, vars: new Set() });
 
         // Parse function parameters and add to knownVars
         if (params) {
-          // Parameters are comma-separated declarations: "int a, int b"
-          // parseDeclaration only handles "type name, name" not "type name, type name"
-          // So split by comma and parse each as a separate declaration
           let paramParts = [];
           let depth = 0;
           let current = '';
@@ -313,10 +311,30 @@ function instrumentCode(sourceCode) {
             }
           }
         }
+        // For main, add global variables to knownVars so they appear in the frame
+        if (funcName === 'main') {
+          for (let g of globalVars) {
+            knownVars.set(g.name, g);
+            scopeStack[scopeStack.length-1].vars.add(g.name);
+          }
+        }
         continue;
       }
       // Push new scope
       scopeStack.push({ depth: scopeStack[scopeStack.length-1].depth + 1, vars: new Set() });
+    }
+
+    // At file scope (not in function body), track global variable declarations
+    if (!inFunctionBody) {
+      let declared = parseDeclaration(stripped);
+      if (declared.length > 0) {
+        for (let d of declared) {
+          globalVars.push(d);
+        }
+      }
+      // Output the original line as-is (no trace call at file scope)
+      output.push(line);
+      continue;
     }
 
     // Check for closing brace — leaving a scope
@@ -453,39 +471,6 @@ function instrumentCode(sourceCode) {
 
     // Output the original line
     output.push(line);
-
-    // For return statements, inject a trace AFTER (showing final state)
-    if (stmtComplete && stripped.match(/^\s*return\b/)) {
-      let fnArg = `"${currentFunc}", `;
-      let captures = [];
-      for (let [name, info] of knownVars) {
-        captures.push(`__t__.cap("${name}", ${name});`);
-      }
-      if (captures.length > 0) {
-        output.push(`__opt_trace_fn__(${fnArg}${lineNum}, [&](auto& __t__) { ${captures.join(' ')} });`);
-      } else {
-        output.push(`__opt_trace_fn__(${fnArg}${lineNum});`);
-      }
-    }
-
-    // For the last cout statement (not a return), add a post-execution trace
-    // so the final step shows the line that just executed with the output
-    if (stmtComplete && !stripped.match(/^\s*(return|for|while|if|else|switch|do)\b/)) {
-      // Check if this is likely the last statement before return or end of function
-      // We'll add a post-trace for all non-return statements that produce output
-      if (stripped.includes('cout') || stripped.includes('printf') || stripped.includes('cerr')) {
-        let fnArg = `"${currentFunc}", `;
-        let captures = [];
-        for (let [name, info] of knownVars) {
-          captures.push(`__t__.cap("${name}", ${name});`);
-        }
-        if (captures.length > 0) {
-          output.push(`__opt_trace_fn__(${fnArg}${lineNum}, [&](auto& __t__) { ${captures.join(' ')} });`);
-        } else {
-          output.push(`__opt_trace_fn__(${fnArg}${lineNum});`);
-        }
-      }
-    }
 
   }
 

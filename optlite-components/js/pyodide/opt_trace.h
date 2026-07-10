@@ -41,6 +41,8 @@ struct __opt_state__ {
     trace_output.clear(); step = 0;
     heap_entries.clear();
     call_stack.clear();
+    globals_json = "{}";
+    globals_names.clear();
   }
   // Check if we already have a heap entry for this address
   bool has_heap(const std::string& addr) {
@@ -51,6 +53,9 @@ struct __opt_state__ {
   void add_heap(const std::string& addr, const std::string& json) {
     if(!has_heap(addr)) heap_entries.push_back({addr, json});
   }
+  // Globals storage
+  std::string globals_json = "{}";
+  std::vector<std::string> globals_names;
   // Build the heap JSON object
   std::string heap_json() {
     if(heap_entries.empty()) return "{}";
@@ -296,9 +301,14 @@ struct __opt_tracer__ {
     }
     stack_json += "]";
 
+    // Build ordered_globals
+    std::string globals_varnames="[";
+    for(size_t j=0;j<st.globals_names.size();j++){if(j)globals_varnames+=",";globals_varnames+="\""+__opt_esc__(st.globals_names[j])+"\"";}
+    globals_varnames+="]";
+
     std::string e = "{\"line\":"+std::to_string(ln)+",\"event\":\"step_line\","
       "\"func_name\":\""+(st.call_stack.empty()?"main":st.call_stack.back().func_name)+"\","
-      "\"globals\":{},\"ordered_globals\":[],"
+      "\"globals\":"+st.globals_json+",\"ordered_globals\":"+globals_varnames+","
       "\"stack_to_render\":"+stack_json+","
       "\"heap\":"+st.heap_json()+",\"stdout\":\"\"}";
     return e;
@@ -362,10 +372,10 @@ void __opt_ensure_frame__(const char* func_name, int line) {
     return;
   }
   // If the top frame is already this function, it's either:
-  // 1. A continuation of the same frame (line > current line) — do nothing
-  // 2. A recursive call (line <= current line, i.e., back to entry) — push new frame
+  // 1. A continuation of the same frame (line >= current line) — do nothing
+  // 2. A recursive call (line < current line, i.e., back to entry) — push new frame
   if(st.call_stack.back().func_name == func_name) {
-    if(line <= st.call_stack.back().line) {
+    if(line < st.call_stack.back().line) {
       // Recursive call — push a new frame
       __opt_push_frame__(func_name, line);
     }
