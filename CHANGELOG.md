@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.7] - 2026-07-10
+
+### Added
+- **Custom class/struct visualization** — `struct` and `class` instances now render as `C_STRUCT` with visible field names and values, matching Python Tutor's behavior. The instrumenter tracks struct definitions (field names and types) and generates `cap_struct()` calls that encode each field individually. Example: `struct Point { int x; int y; };` renders as `object Point` with fields `x: int <value>` and `y: int <value>` inline in the stack frame.
+
+### Fixed
+- **Struct field declarations treated as variables** — `int x;` and `int y;` inside `struct Point {}` were being parsed as global variable declarations and added to `knownVars`, causing "use of undeclared identifier" errors when `cap("x", x)` was generated. Fixed by tracking struct/class body brace depth and skipping all declarations inside struct bodies.
+- **Struct member assignments treated as declarations** — `p1.x = 3;` was being parsed by `parseDeclaration` as a new variable declaration. Added regex checks to skip struct member assignments (`obj.field = value`) and array element assignments (`arr[i] = value`).
+
+### Changed
+- **`instrument.js`** — tracks struct/class definitions (`structDefs` map: type name → field list). Uses `genCaptures()` helper for all capture generation blocks (main, for-loop, function entry). Detects `struct Name {` and `class Name {` at file scope, collects field declarations, and skips them from `globalVars`.
+- **`opt_trace.h`** — `cap_struct()` template method builds `C_STRUCT` JSON from pre-encoded fields. `__opt_field__()` helper encodes a single field as `["fieldName", C_DATA_value]`.
+
 ## [0.2.6] - 2026-07-10
 
 ### Added

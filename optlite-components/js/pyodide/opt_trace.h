@@ -263,6 +263,24 @@ struct __opt_tracer__ {
     add(n, "[\"C_DATA\",\""+__opt_addr__(&v)+"\",\"pointer\",\"0x0\",{\"bytes\":"+std::to_string(sizeof(int*))+"}]");
   }
 
+  // cap_struct: capture a struct by building C_STRUCT JSON from pre-encoded fields
+  // Called as: cap_struct("varName", "TypeName", var, "addr", encodedFields)
+  // where encodedFields is a pre-built string like: ["x",3],["y",4]
+  template<typename T>
+  void cap_struct(const std::string& n, const std::string& typeName, const T& v, const std::string& fieldsStr) {
+    std::string addr = __opt_addr__(&v);
+    std::string s = "[\"C_STRUCT\",\""+addr+"\",\""+__opt_esc__(typeName)+"\"";
+    if(!fieldsStr.empty()) s += "," + fieldsStr;
+    s += "]";
+    add(n, s);
+  }
+
+  // Helper to encode a single field value as JSON
+  template<typename T>
+  std::string __opt_field__(const std::string& name, const T& v) {
+    return "[\"" + __opt_esc__(name) + "\"," + __opt_encode_data__(v) + "]";
+  }
+
   // cap_ptr: capture a pointer, embeds heap data via string accumulation
   // Uses a std::string for heap accumulation (vectors don't work in clang-repl)
   void cap_ptr(const std::string& n, int* v, int arrSize = 0) {

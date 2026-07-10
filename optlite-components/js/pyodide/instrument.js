@@ -100,6 +100,12 @@ function parseDeclaration(line) {
   // Remove leading/trailing whitespace
   line = line.trim();
 
+  // Skip struct member assignments (e.g., "p1.x = 3" or "obj.member = value")
+  if (/^\w+\.\w+\s*=/.test(line)) return [];
+
+  // Skip array element assignments (e.g., "arr[0] = 10")
+  if (/^\w+\[.+\]\s*=/.test(line)) return [];
+
   // Remove the trailing semicolon and anything after (e.g., initializer)
   const semiIdx = line.indexOf(';');
   if (semiIdx >= 0) line = line.substring(0, semiIdx).trim();
@@ -213,6 +219,28 @@ function parseDeclaration(line) {
 
 // ── Main instrumentation function ──
 
+// Generate capture calls for all known variables
+function genCaptures(knownVars, heapPointers, deletedPointers, structDefs, excludeVars) {
+  let captures = [];
+  for (let [name, info] of knownVars) {
+    if (excludeVars && excludeVars.has(name)) continue;
+    if (deletedPointers.has(name)) {
+      captures.push(`__t__.cap_deleted_ptr("${name}", ${name});`);
+    } else if (heapPointers.has(name)) {
+      let sz = heapPointers.get(name);
+      captures.push(`__t__.cap_ptr("${name}", ${name}, ${sz});`);
+    } else if (info && info.type && structDefs.has(info.type)) {
+          // Struct variable: capture with field names
+          let fields = structDefs.get(info.type);
+          let fieldEncoders = fields.map(f => `__t__.__opt_field__("${f.name}", ${name}.${f.name})`).join(" + \",\" + ");
+          captures.push(`__t__.cap_struct("${name}", "${info.type}", ${name}, ${fieldEncoders});`);
+    } else {
+      captures.push(`__t__.cap("${name}", ${name});`);
+    }
+  }
+  return captures;
+}
+
 function instrumentCode(sourceCode) {
   const lines = sourceCode.split('\n');
 
@@ -238,6 +266,15 @@ function instrumentCode(sourceCode) {
   let inFunctionBody = false;
   let mainFunctionDepth = -1;
   let mainFrameEnsured = false;
+
+  // Track if we're inside a struct/class body (to skip variable declarations)
+  let inStructBody = false;
+  let structBraceDepth = 0;
+  let currentStructName = '';
+  let currentStructFields = [];
+
+  // Map: struct name → array of {name, type}
+  let structDefs = new Map();
 
   // Track all function definitions: name → {startLine, endLine, params}
   let functionDefs = [];
@@ -329,8 +366,41 @@ function instrumentCode(sourceCode) {
       scopeStack.push({ depth: scopeStack[scopeStack.length-1].depth + 1, vars: new Set() });
     }
 
-    // At file scope (not in function body), track global variable declarations
+    // At file scope (not in function body), track struct/class bodies and global variable declarations
     if (!inFunctionBody) {
+      // Detect struct/class body entry: "struct Name {" or "class Name {"
+      let structMatch = stripped.match(/^(struct|class)\s+(\w+)\s*\{/);
+      if (structMatch) {
+        inStructBody = true;
+        structBraceDepth = 1;
+        currentStructName = structMatch[2];
+        currentStructFields = [];
+        output.push(line);
+        continue;
+      }
+      // Track braces inside struct body and collect field declarations
+      if (inStructBody) {
+        for (let c of stripped) {
+          if (c === '{') structBraceDepth++;
+          if (c === '}') structBraceDepth--;
+        }
+        // Parse field declarations (e.g., "int x;" → {name: "x", type: "int"})
+        if (structBraceDepth > 0) {
+          let fieldDecl = parseDeclaration(stripped);
+          for (let d of fieldDecl) {
+            currentStructFields.push(d);
+          }
+        }
+        if (structBraceDepth <= 0) {
+          inStructBody = false;
+          if (currentStructName && currentStructFields.length > 0) {
+            structDefs.set(currentStructName, currentStructFields);
+          }
+        }
+        output.push(line);
+        continue;
+      }
+      // Skip global variable declarations if inside struct body (shouldn't reach here)
       let declared = parseDeclaration(stripped);
       if (declared.length > 0) {
         for (let d of declared) {
@@ -391,16 +461,7 @@ function instrumentCode(sourceCode) {
       // Inject a trace call BEFORE the for header (captures pre-loop state)
       // Exclude loop variables (they're not initialized yet)
       let fnArg = `"${currentFunc}", `;
-      let captures = [];
-      for (let [name, info] of knownVars) {
-        if (!initVars.has(name)) {
-          if (heapPointers.has(name)) {
-            captures.push(`__t__.cap_ptr("${name}", ${name}, ${heapPointers.get(name)});`);
-          } else {
-            captures.push(`__t__.cap("${name}", ${name});`);
-          }
-        }
-      }
+      let captures = genCaptures(knownVars, heapPointers, deletedPointers, structDefs, initVars);
       if (captures.length > 0) {
         output.push(`__opt_trace_fn__(${fnArg}${lineNum}, [&](auto& __t__) { ${captures.join(' ')} });`);
       } else {
@@ -466,17 +527,7 @@ function instrumentCode(sourceCode) {
     // variables = state BEFORE this line executes
     if (stmtComplete && !stripped.match(/^\s*(for|while|if|else|switch|do)\b/)) {
       let fnArg = `"${currentFunc}", `;
-      let captures = [];
-      for (let [name, info] of knownVars) {
-        if (deletedPointers.has(name)) {
-          captures.push(`__t__.cap_deleted_ptr("${name}", ${name});`);
-        } else if (heapPointers.has(name)) {
-          let sz = heapPointers.get(name);
-          captures.push(`__t__.cap_ptr("${name}", ${name}, ${sz});`);
-        } else {
-          captures.push(`__t__.cap("${name}", ${name});`);
-        }
-      }
+      let captures = genCaptures(knownVars, heapPointers, deletedPointers, structDefs);
       if (captures.length > 0) {
         output.push(`__opt_trace_fn__(${fnArg}${lineNum}, [&](auto& __t__) { ${captures.join(' ')} });`);
       } else {
