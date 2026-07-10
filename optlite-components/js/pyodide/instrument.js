@@ -299,6 +299,9 @@ function instrumentCode(sourceCode) {
   // Track local class/struct bodies inside function bodies
   let inLocalClassBody = false;
   let localClassBraceDepth = 0;
+
+  // Track brace-less control flow (for/while/if without {) — next line is the body
+  let pendingBracelessBody = false;
   let currentStructName = '';
   let currentStructFields = [];
   let currentAccessLevel = 'public'; // default for struct
@@ -633,7 +636,9 @@ function instrumentCode(sourceCode) {
     }
 
     // Check for for-loop header: extract variable declarations from inside for(...)
-    let forMatch = stripped.match(/^\s*for\s*\(([^;]*);([^;]*);([^)]*)\)\s*\{?\s*$/);
+    // Only handle for-loops with opening brace — brace-less for-loops would
+    // have their trace injected as the loop body, breaking execution.
+    let forMatch = stripped.match(/^\s*for\s*\(([^;]*);([^;]*);([^)]*)\)\s*\{\s*$/);
     if (forMatch) {
       // Parse the init part: e.g., "int i = 0" or "int i = 0, j = 5"
       let initPart = forMatch[1].trim();
@@ -665,16 +670,21 @@ function instrumentCode(sourceCode) {
       output.push(line);
       // After the for header executes, the loop variable is initialized.
       // Inject another trace showing the for-loop state (i now has a value)
-      let captures2 = [];
-      for (let [name, info] of knownVars) {
-        if (heapPointers.has(name)) {
-          captures2.push(`__t__.cap_ptr("${name}", ${name}, ${heapPointers.get(name)});`);
-        } else {
-          captures2.push(`__t__.cap("${name}", ${name});`);
+      // ONLY if the for-loop has an opening brace — otherwise the trace
+      // would become the loop body, breaking single-statement for-loops.
+      let hasBrace = stripped.includes('{');
+      if (hasBrace) {
+        let captures2 = [];
+        for (let [name, info] of knownVars) {
+          if (heapPointers.has(name)) {
+            captures2.push(`__t__.cap_ptr("${name}", ${name}, ${heapPointers.get(name)});`);
+          } else {
+            captures2.push(`__t__.cap("${name}", ${name});`);
+          }
         }
-      }
-      if (captures2.length > 0) {
-        output.push(`__opt_trace_fn__(${fnArg}${lineNum}, [&](auto& __t__) { ${captures2.join(' ')} });`);
+        if (captures2.length > 0) {
+          output.push(`__opt_trace_fn__(${fnArg}${lineNum}, [&](auto& __t__) { ${captures2.join(' ')} });`);
+        }
       }
       continue;
     }
@@ -711,6 +721,26 @@ function instrumentCode(sourceCode) {
     // Inject trace BEFORE the statement (Python Tutor convention):
     // trace entry's line = the line about to execute
     // variables = state BEFORE this line executes
+    // But skip if this line is the body of a brace-less for/while/if
+    if (pendingBracelessBody) {
+      pendingBracelessBody = false;
+      // Don't inject trace — this line is the body of a brace-less control flow
+      // Just output the line and add any declared variables
+      let declared = parseDeclaration(line);
+      for (let d of declared) {
+        knownVars.set(d.name, d);
+        scopeStack[scopeStack.length-1].vars.add(d.name);
+      }
+      output.push(line);
+      continue;
+    }
+
+    // Detect brace-less control flow (for/while/if without {) — next line is the body
+    // Must come AFTER the pendingBracelessBody check so the flag is set for the NEXT line
+    if (stripped.match(/^\s*(for|while|if)\s*\(/) && !stripped.includes('{') && stripped.endsWith(')')) {
+      pendingBracelessBody = true;
+    }
+
     if (stmtComplete && !stripped.match(/^\s*(for|while|if|else|switch|do)\b/)) {
       let fnArg = `"${currentFunc}", `;
       if (inMemberFunction) {
