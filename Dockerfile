@@ -11,14 +11,28 @@ RUN chmod +x cleanup-index-js.sh \
     && ./cleanup-index-js.sh \
     && test -f lib/index.js
 
-# ── Stage 2: Copy pre-built xeus-cpp WASM files (patched for std::format) ──
+# ── Stage 2: Download xeus-cpp WASM files from conda ──
 FROM node:22-slim AS xeus-cpp-fetcher
-# The WASM files in xeus-cpp-wasm/ are patched: __availability header has
-# _LIBCPP_AVAILABILITY_DISABLE_FTM___cpp_lib_format commented out.
-# This enables std::format even with the default C++20 standard.
-# See: make xeus-cpp-patch (in dive-deploy Makefile) to rebuild from upstream.
-COPY xeus-cpp-wasm/ /xeus-cpp/
-RUN ls -la /xeus-cpp/
+RUN apt-get update && apt-get install -y --no-install-recommends curl bzip2 ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+WORKDIR /tmp/xeus-cpp
+# xeus-cpp 0.6.0 from emscripten-forge (contains xcpp.js, xcpp.wasm, xcpp.data)
+RUN curl -fsSL "https://repo.mamba.pm/emscripten-forge/emscripten-wasm32/xeus-cpp-0.6.0-h18da88b_1.tar.bz2" -o xcpp.tar.bz2 \
+    && tar xf xcpp.tar.bz2 \
+    && find . -name "xcpp.js" -o -name "xcpp.wasm" -o -name "xcpp.data" | head -10
+# CppInterOp 1.5.0 — provides libclangCppInterOp.so (WASM side module, ~54MB)
+# Version 1.5.0 h18da88b_3 was built 2025-01-20, matching xeus-cpp 0.6.0 h18da88b_1 (built 2025-01-23)
+# Required by xcpp.wasm's dylink section — provides __clang_Interpreter_SetValueNoAlloc
+RUN curl -fsSL "https://repo.mamba.pm/emscripten-forge/emscripten-wasm32/cppinterop-1.5.0-h18da88b_3.tar.bz2" -o cppinterop.tar.bz2 \
+    && tar xf cppinterop.tar.bz2 lib/libclangCppInterOp.so \
+    && ls -la lib/libclangCppInterOp.so
+# Copy all WASM files to a known location
+RUN mkdir -p /xeus-cpp \
+    && find . -name "xcpp.js" -exec cp {} /xeus-cpp/ \; \
+    && find . -name "xcpp.wasm" -exec cp {} /xeus-cpp/ \; \
+    && find . -name "xcpp.data" -exec cp {} /xeus-cpp/ \; \
+    && cp lib/libclangCppInterOp.so /xeus-cpp/libclangCppInterOp.so \
+    && ls -la /xeus-cpp/
 
 # ── Stage 3: Build optlite-components (webpack → build/) ──
 FROM node:22-slim AS optlite-builder

@@ -80,8 +80,7 @@ self.onmessage = async (event) => {
     let results;
     if (id < 0) {
       // ── Initialize worker (one-time setup) ──
-      // Cache-bust xcpp.js to ensure we get the latest patched version
-      importScripts(XEUS_CPP_BASE + 'xcpp.js?v=fmt1');
+      importScripts(XEUS_CPP_BASE + 'xcpp.js');
 
       // Fetch the .so once and cache it
       const soUrl = XEUS_CPP_BASE + 'libclangCppInterOp.so';
@@ -90,7 +89,7 @@ self.onmessage = async (event) => {
       cachedSoData = new Uint8Array(soArrayBuffer);
 
       const Module = {
-        locateFile: (file) => XEUS_CPP_BASE + file + (file === 'xcpp.data' ? '?v=fmt1' : ''),
+        locateFile: (file) => XEUS_CPP_BASE + file,
 
         // Suppress clang/LLVM diagnostic output that floods the console
         // (stdout from user code goes through iopub stream, captured by runner.ts)
@@ -140,7 +139,7 @@ self.onmessage = async (event) => {
       const XEUS_CPP_BASE2 = self.xeusCpp ||
         new URL('./xeus-cpp/', self.location.href).href;
       const Module2 = {
-        locateFile: (file) => XEUS_CPP_BASE2 + file + (file === 'xcpp.data' ? '?v=fmt1' : ''),
+        locateFile: (file) => XEUS_CPP_BASE2 + file,
         print: () => {},
         printErr: () => {},
         preRun: [
