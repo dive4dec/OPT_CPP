@@ -21,7 +21,13 @@
 #include <iostream>
 #include <vector>
 
-// ── Persistent trace state via Meyers singleton ──
+// Forward declare global heap accumulator
+std::string __opt_heap_accum__;
+
+// ── Persistent trace state ──
+// NOTE: Meyers singleton (static local) doesn't work in clang-repl —
+// each top-level statement may get a different static instance.
+// Use a global variable instead, which is shared across all statements.
 struct __opt_state__ {
   std::string trace_output;
   int step = 0;
@@ -43,6 +49,8 @@ struct __opt_state__ {
     call_stack.clear();
     globals_json = "{}";
     globals_names.clear();
+    heap_accum.clear();
+    __opt_heap_accum__.clear();
   }
   // Check if we already have a heap entry for this address
   bool has_heap(const std::string& addr) {
@@ -56,6 +64,8 @@ struct __opt_state__ {
   // Globals storage
   std::string globals_json = "{}";
   std::vector<std::string> globals_names;
+  // Heap JSON accumulator string (appended to by cap_ptr, read by finish)
+  std::string heap_accum;
   // Build the heap JSON object
   std::string heap_json() {
     if(heap_entries.empty()) return "{}";
@@ -69,8 +79,11 @@ struct __opt_state__ {
   }
 };
 
+// Global state instance — shared across all clang-repl top-level statements
+__opt_state__ __opt_global_state__;
+
 __opt_state__& __opt_get_state__() {
-  static __opt_state__ s; return s;
+  return __opt_global_state__;
 }
 
 // ── Address formatting ──
@@ -127,8 +140,14 @@ std::string __opt_encode_data__(const T& v) {
     std::string typeName = __opt_demangle__(typeid(v).name());
     return "[\"C_DATA\",\""+__opt_addr__(&v)+"\",\""+__opt_esc__(typeName)+"\","+os.str()+",{\"bytes\":"+std::to_string(sizeof(T))+"}]";
   } else if constexpr (std::is_pointer_v<T>) {
+    using PointedType = std::remove_pointer_t<T>;
     std::string ptr = v ? __opt_addr__((void*)v) : "0x0";
-    return "[\"C_DATA\",\""+__opt_addr__(&v)+"\",\"pointer\",\""+ptr+"\",{\"bytes\":"+std::to_string(sizeof(T))+"}]";
+    // Type label: "pointer to <type>"
+    std::string pointedTypeName;
+    if constexpr (std::is_same_v<PointedType, char>) pointedTypeName = "char";
+    else pointedTypeName = __opt_demangle__(typeid(PointedType).name());
+    std::string typeLabel = "pointer";
+    return "[\"C_DATA\",\""+__opt_addr__(&v)+"\",\""+__opt_esc__(typeLabel)+"\",\""+ptr+"\",{\"bytes\":"+std::to_string(sizeof(T))+"}]";
   } else {
     // For unknown types (including structs/classes), encode as C_DATA
     // The C_STRUCT format causes frontend assertion failures
@@ -191,6 +210,8 @@ struct __opt_tracer__ {
   std::string func_name;
   std::string frame_id;
   bool is_parent;
+  // Heap JSON string accumulated by cap_ptr (local to this tracer, like locals)
+  std::string heap_json_str;
 
   __opt_tracer__(int line, const char* fn = "main", const char* fid = nullptr, bool parent = false)
     : ln(line), func_name(fn), is_parent(parent) {
@@ -236,6 +257,37 @@ struct __opt_tracer__ {
     }
   }
 
+  void cap_deleted_ptr(const std::string& n, int* v) {
+    // Show pointer on stack as NULL (freed) — no heap entry
+    // Setting address to 0x0 prevents isHeapRef from matching
+    add(n, "[\"C_DATA\",\""+__opt_addr__(&v)+"\",\"pointer\",\"0x0\",{\"bytes\":"+std::to_string(sizeof(int*))+"}]");
+  }
+
+  // cap_ptr: capture a pointer, embeds heap data via string accumulation
+  // Uses a std::string for heap accumulation (vectors don't work in clang-repl)
+  void cap_ptr(const std::string& n, int* v, int arrSize = 0) {
+    std::string ptr = v ? __opt_addr__((void*)v) : "0x0";
+    std::string typeLabel = "pointer";
+    // Encode heap data in a special variable __heap__ that finish() extracts
+    std::string heapEntry = "";
+    if(arrSize > 0 && v) {
+      heapEntry = "\"" + ptr + "\":[\"C_ARRAY\",\"" + ptr + "\"";
+      for(int i = 0; i < arrSize; i++) {
+        heapEntry += ",[\"C_DATA\",\"" + ptr + "\",\"int\"," + std::to_string(v[i]) + ",{\"bytes\":4}]";
+      }
+      heapEntry += "]";
+    } else if(v) {
+      heapEntry = "\"" + ptr + "\":[\"C_ARRAY\",\"" + ptr + "\",[\"C_DATA\",\"" + ptr + "\",\"int\"," + std::to_string(*v) + ",{\"bytes\":4}]]";
+    } else {
+      heapEntry = "\"0x0\":[\"C_DATA\",\"0x0\",\"null\",\"null\",{}]";
+    }
+    // Store heap entry as a fake variable (extracted by runner.ts)
+    // The value is a string that runner.ts parses to build the heap object
+    add("__heap__", "\"HEAP:" + __opt_esc__(heapEntry) + "\"");
+    // Also add the pointer itself
+    add(n, "[\"C_DATA\",\""+__opt_addr__(&v)+"\",\""+__opt_esc__(typeLabel)+"\",\""+ptr+"\",{\"bytes\":"+std::to_string(sizeof(int*))+"}]");
+  }
+
   void add(const std::string& n, const std::string& encoded) {
     if(locals.size()>1) locals+=",";
     locals+="\""+__opt_esc__(n)+"\":"+encoded;
@@ -253,6 +305,7 @@ struct __opt_tracer__ {
 
     // Build stack_to_render from the call stack
     // For the top frame, use this tracer's locals/names (current step data)
+    // Note: __heap__ entries in locals are extracted by runner.ts to build heap
     std::string stack_json = "[";
     for(size_t i=0;i<st.call_stack.size();i++){
       if(i) stack_json+=",";
@@ -306,11 +359,14 @@ struct __opt_tracer__ {
     for(size_t j=0;j<st.globals_names.size();j++){if(j)globals_varnames+=",";globals_varnames+="\""+__opt_esc__(st.globals_names[j])+"\"";}
     globals_varnames+="]";
 
+    // Heap is built by runner.ts from __heap__ entries in locals
+    std::string heapJson = "{}";
+    
     std::string e = "{\"line\":"+std::to_string(ln)+",\"event\":\"step_line\","
       "\"func_name\":\""+(st.call_stack.empty()?"main":st.call_stack.back().func_name)+"\","
       "\"globals\":"+st.globals_json+",\"ordered_globals\":"+globals_varnames+","
       "\"stack_to_render\":"+stack_json+","
-      "\"heap\":"+st.heap_json()+",\"stdout\":\"\"}";
+      "\"heap\":"+heapJson+",\"stdout\":\"\"}";
     return e;
   }
 };
@@ -405,7 +461,11 @@ void __opt_trace_impl__(int line, F&& lambda) {
                         st.call_stack.back().frame_id.c_str());
   try {
     lambda(__t__);
+  } catch (const std::exception& e) {
+    // If cap() throws (e.g., bad pointer dereference), add error info
+    __t__.add("__opt_error__", "[\"C_DATA\",\"0x0\",\"error\",\"" + __opt_esc__(e.what()) + "\",{}]");
   } catch (...) {
+    __t__.add("__opt_error__", "[\"C_DATA\",\"0x0\",\"error\",\"unknown\",{}]");
   }
   std::cout << __OPT_SENTINEL__;
   std::cout.flush();
@@ -425,7 +485,10 @@ void __opt_trace_fn_impl__(const char* func_name, int line, F&& lambda) {
                         st.call_stack.back().frame_id.c_str());
   try {
     lambda(__t__);
+  } catch (const std::exception& e) {
+    __t__.add("__opt_error__", "[\"C_DATA\",\"0x0\",\"error\",\"" + __opt_esc__(e.what()) + "\",{}]");
   } catch (...) {
+    __t__.add("__opt_error__", "[\"C_DATA\",\"0x0\",\"error\",\"unknown\",{}]");
   }
   std::cout << __OPT_SENTINEL__;
   std::cout.flush();

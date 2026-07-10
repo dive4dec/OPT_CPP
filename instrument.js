@@ -223,6 +223,11 @@ function instrumentCode(sourceCode) {
   // Track global (file-scope) variables
   let globalVars = [];
 
+  // Track heap-allocated pointers: name → arraySize (0 = single value, >0 = array)
+  let heapPointers = new Map();
+  // Track deleted pointers (after delete/delete[], no heap entry should be created)
+  let deletedPointers = new Set();
+
   // Track current scope (brace depth → list of vars declared at that depth)
   let scopeStack = [{ depth: 0, vars: new Set() }];
 
@@ -344,6 +349,7 @@ function instrumentCode(sourceCode) {
         let popped = scopeStack.pop();
         for (let v of popped.vars) {
           knownVars.delete(v);
+          heapPointers.delete(v);
         }
       }
       // Check if we're leaving a function body
@@ -388,7 +394,11 @@ function instrumentCode(sourceCode) {
       let captures = [];
       for (let [name, info] of knownVars) {
         if (!initVars.has(name)) {
-          captures.push(`__t__.cap("${name}", ${name});`);
+          if (heapPointers.has(name)) {
+            captures.push(`__t__.cap_ptr("${name}", ${name}, ${heapPointers.get(name)});`);
+          } else {
+            captures.push(`__t__.cap("${name}", ${name});`);
+          }
         }
       }
       if (captures.length > 0) {
@@ -410,7 +420,11 @@ function instrumentCode(sourceCode) {
       // Inject another trace showing the for-loop state (i now has a value)
       let captures2 = [];
       for (let [name, info] of knownVars) {
-        captures2.push(`__t__.cap("${name}", ${name});`);
+        if (heapPointers.has(name)) {
+          captures2.push(`__t__.cap_ptr("${name}", ${name}, ${heapPointers.get(name)});`);
+        } else {
+          captures2.push(`__t__.cap("${name}", ${name});`);
+        }
       }
       if (captures2.length > 0) {
         output.push(`__opt_trace_fn__(${fnArg}${lineNum}, [&](auto& __t__) { ${captures2.join(' ')} });`);
@@ -454,7 +468,14 @@ function instrumentCode(sourceCode) {
       let fnArg = `"${currentFunc}", `;
       let captures = [];
       for (let [name, info] of knownVars) {
-        captures.push(`__t__.cap("${name}", ${name});`);
+        if (deletedPointers.has(name)) {
+          captures.push(`__t__.cap_deleted_ptr("${name}", ${name});`);
+        } else if (heapPointers.has(name)) {
+          let sz = heapPointers.get(name);
+          captures.push(`__t__.cap_ptr("${name}", ${name}, ${sz});`);
+        } else {
+          captures.push(`__t__.cap("${name}", ${name});`);
+        }
       }
       if (captures.length > 0) {
         output.push(`__opt_trace_fn__(${fnArg}${lineNum}, [&](auto& __t__) { ${captures.join(' ')} });`);
@@ -467,6 +488,30 @@ function instrumentCode(sourceCode) {
     for (let d of declared) {
       knownVars.set(d.name, d);
       scopeStack[scopeStack.length-1].vars.add(d.name);
+    }
+
+    // Detect heap allocations: new T(value) or new T[size]
+    if (stmtComplete) {
+      // Match: varName = new Type(size)  → single heap value
+      // Match: varName = new Type[size]  → heap array
+      let newSingleMatch = stripped.match(/(\w+)\s*=\s*new\s+\w+/);
+      let newArrMatch = stripped.match(/(\w+)\s*=\s*new\s+\w+\s*\[(\d+)\]/);
+      if (newArrMatch) {
+        heapPointers.set(newArrMatch[1], parseInt(newArrMatch[2]));
+      } else if (newSingleMatch) {
+        heapPointers.set(newSingleMatch[1], 0);
+      }
+    }
+
+    // Detect heap deallocations: delete ptr; or delete[] ptr;
+    if (stmtComplete) {
+      let delMatch = stripped.match(/delete\s*\[\s*\]\s*(\w+)/);
+      let delSingleMatch = stripped.match(/delete\s+(\w+)/);
+      if (delMatch) {
+        deletedPointers.add(delMatch[1]);
+      } else if (delSingleMatch) {
+        deletedPointers.add(delSingleMatch[1]);
+      }
     }
 
     // Output the original line
