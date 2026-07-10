@@ -295,6 +295,10 @@ function instrumentCode(sourceCode) {
   // Track if we're inside a struct/class body (to skip variable declarations)
   let inStructBody = false;
   let structBraceDepth = 0;
+
+  // Track local class/struct bodies inside function bodies
+  let inLocalClassBody = false;
+  let localClassBraceDepth = 0;
   let currentStructName = '';
   let currentStructFields = [];
   let currentAccessLevel = 'public'; // default for struct
@@ -332,6 +336,39 @@ function instrumentCode(sourceCode) {
       // Push ensure_frame as a separate statement
       output.push('__opt_ensure_frame__("main", 0);');
       mainFrameEnsured = true;
+    }
+
+    // Handle local class/struct bodies inside functions — skip all instrumentation
+    // This must come BEFORE the { handler and closing brace handler to prevent
+    // member functions inside the local class from being detected as regular functions
+    if (inFunctionBody && inLocalClassBody) {
+      for (let c of stripped) {
+        if (c === '{') localClassBraceDepth++;
+        if (c === '}') localClassBraceDepth--;
+      }
+      output.push(line);
+      if (localClassBraceDepth <= 0) {
+        inLocalClassBody = false;
+      }
+      continue;
+    }
+
+    // Detect local class/struct definition inside a function body
+    if (inFunctionBody && !inLocalClassBody) {
+      let localClassMatch = stripped.match(/^(struct|class)\s+(\w+)\s*(?::\s*[^{]*)?\{/);
+      if (localClassMatch) {
+        inLocalClassBody = true;
+        localClassBraceDepth = 0;
+        for (let c of stripped) {
+          if (c === '{') localClassBraceDepth++;
+          if (c === '}') localClassBraceDepth--;
+        }
+        output.push(line);
+        if (localClassBraceDepth <= 0) {
+          inLocalClassBody = false;
+        }
+        continue;
+      }
     }
 
     // If inside struct/class body (but NOT inside a member function), handle field declarations
