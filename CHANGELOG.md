@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.5] - 2026-07-10
+
+### Fixed
+- **Duplicate `main` frames** — the recursion detection heuristic used `line <=` (non-strict), which triggered on same-line trace calls (e.g., post-cout traces) and pushed a duplicate `main` frame. Changed to `line <` (strict) so same-line traces are treated as continuations, not recursive calls.
+- **Missing `add` frame when global variables present** — the global variable check was placed before the function definition check in the instrumenter, causing function definitions like `int add(int a, int b) {` to be output without instrumentation. Reordered: function definition detection runs first.
+- **Step synchronization / premature stdout** — removed post-cout and post-return trace calls that caused stdout to appear before the corresponding line was highlighted as "next to execute". The last step now correctly shows the `std::cout` line as "just executed" with the output.
+
+### Added
+- **Global variable visualization** — file-scope variable declarations (e.g., `int x = 10;`) are now tracked and displayed in the `main` frame as local variables. (Python Tutor shows these in a separate "Global variables" frame; we show them in `main` for now due to clang-repl limitations with function calls at file scope.)
+
 ## [0.2.4] - 2026-07-10
 
 ### Added
