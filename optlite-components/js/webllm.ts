@@ -420,7 +420,10 @@ function initializeErrorObserver() {
 
     const observer = new MutationObserver((mutations) => {
         mutations.forEach(() => {
-            const hasError = frontendErrorOutput.textContent?.trim() !== '';
+            const text = frontendErrorOutput.textContent?.trim() || '';
+            // Don't show Ask AI for transient "Running your code ..." messages
+            // (uses &nbsp; which are non-breaking spaces, so check with regex)
+            const hasError = text !== '' && !/^Running\s+your\s+code/.test(text);
             askAIButton.style.display = hasError ? 'block' : 'none';
             if (temperatureControl) {
                 temperatureControl.style.display = hasError ? 'block' : 'none';
@@ -447,10 +450,11 @@ function initializeErrorObserver() {
     });
 
     // Initial check
-    const hasError = frontendErrorOutput.textContent?.trim() !== '';
-    askAIButton.style.display = hasError ? 'block' : 'none';
+    const initText = frontendErrorOutput.textContent?.trim() || '';
+    const initHasError = initText !== '' && !/^Running\s+your\s+code/.test(initText);
+    askAIButton.style.display = initHasError ? 'block' : 'none';
     if (temperatureControl) {
-        temperatureControl.style.display = hasError ? 'block' : 'none';
+        temperatureControl.style.display = initHasError ? 'block' : 'none';
     }
 }
 
