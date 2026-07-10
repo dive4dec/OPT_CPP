@@ -655,9 +655,112 @@ function instrumentCode(sourceCode) {
     }
 
     // Check for for-loop header: extract variable declarations from inside for(...)
-    // Only handle for-loops with opening brace — brace-less for-loops would
-    // have their trace injected as the loop body, breaking execution.
+    // Handles both braced for-loops (for(...) {) and brace-less single-line
+    // for-loops (for(...) <body>;) — the latter are wrapped in braces with a
+    // trace call injected inside the loop body.
     let forMatch = stripped.match(/^\s*for\s*\(([^;]*);([^;]*);([^)]*)\)\s*\{\s*$/);
+    if (!forMatch) {
+      // Brace-less for-loop: for(...) <body>;
+      // The body is everything after the closing ')' of the for-header.
+      // If there are multiple statements on the same line separated by ';',
+      // only the first is the loop body; the rest execute after the loop.
+      let bracelessForMatch = stripped.match(/^\s*for\s*\(([^;]*);([^;]*);([^)]*)\)\s*(.+)$/);
+      if (bracelessForMatch && !bracelessForMatch[4].trim().startsWith('{')) {
+        // Transform: for(...) body; rest;
+        // Into:      for(...) { __opt_trace_fn__(...); body; }
+        //            rest;
+        let initPart = bracelessForMatch[1].trim();
+        let condPart = bracelessForMatch[2].trim();
+        let incrPart = bracelessForMatch[3].trim();
+
+        // Extract body and afterLoop from the ORIGINAL line (not stripped)
+        // to preserve string/char literals. Find the ')' that closes the for-header
+        // by tracking paren depth from 'for', then split the rest at first ';'.
+        let bodyStartIdx = -1;
+        let parenD = 0;
+        let inStr = false, inChar = false;
+        for (let j = line.indexOf('for'); j < line.length; j++) {
+          const c = line[j];
+          if (inStr) { if (c === '\\' && j+1 < line.length) j++; else if (c === '"') inStr = false; continue; }
+          if (inChar) { if (c === '\\' && j+1 < line.length) j++; else if (c === "'") inChar = false; continue; }
+          if (c === '"') { inStr = true; continue; }
+          if (c === "'") { inChar = true; continue; }
+          if (c === '(') parenD++;
+          if (c === ')') { parenD--; if (parenD === 0) { bodyStartIdx = j + 1; break; } }
+        }
+        let restOriginal = bodyStartIdx >= 0 ? line.substring(bodyStartIdx).trim() : '';
+
+        // Split restOriginal into loop-body (first statement) and post-loop statements
+        let bodyPart = restOriginal;
+        let afterLoop = '';
+        let pd = 0, bd = 0, brd = 0, inS = false, inC = false;
+        for (let j = 0; j < restOriginal.length; j++) {
+          const c = restOriginal[j];
+          if (inS) { if (c === '\\' && j+1 < restOriginal.length) j++; else if (c === '"') inS = false; continue; }
+          if (inC) { if (c === '\\' && j+1 < restOriginal.length) j++; else if (c === "'") inC = false; continue; }
+          if (c === '"') { inS = true; continue; }
+          if (c === "'") { inC = true; continue; }
+          if (c === '(') pd++; if (c === ')') pd--;
+          if (c === '{') bd++; if (c === '}') bd--;
+          if (c === '[') brd++; if (c === ']') brd--;
+          if (c === ';' && pd === 0 && bd === 0 && brd === 0) {
+            bodyPart = restOriginal.substring(0, j + 1);
+            afterLoop = restOriginal.substring(j + 1);
+            break;
+          }
+        }
+
+        // Parse init vars
+        let initVars = new Set();
+        if (initPart) {
+          let declared = parseDeclaration(initPart);
+          for (let d of declared) { initVars.add(d.name); }
+        }
+
+        // Pre-loop trace (exclude loop vars — not initialized yet)
+        let fnArg = `"${currentFunc}", `;
+        let captures = genCaptures(knownVars, heapPointers, deletedPointers, structDefs, initVars);
+        if (captures.length > 0) {
+          output.push(`__opt_trace_fn__(${fnArg}${lineNum}, [&](auto& __t__) { ${captures.join(' ')} });`);
+        } else {
+          output.push(`__opt_trace_fn__(${fnArg}${lineNum});`);
+        }
+
+        // Add init vars to knownVars
+        if (initPart) {
+          let declared = parseDeclaration(initPart);
+          for (let d of declared) {
+            knownVars.set(d.name, d);
+            scopeStack[scopeStack.length-1].vars.add(d.name);
+          }
+        }
+
+        // Output: for(...) { __trace; body; } afterLoop;
+        let forHeader = `for (${initPart}; ${condPart}; ${incrPart})`;
+        output.push(`${forHeader} {`);
+        // Per-iteration trace inside loop body
+        let captures2 = genCaptures(knownVars, heapPointers, deletedPointers, structDefs);
+        if (captures2.length > 0) {
+          output.push(`__opt_trace_fn__(${fnArg}${lineNum}, [&](auto& __t__) { ${captures2.join(' ')} });`);
+        } else {
+          output.push(`__opt_trace_fn__(${fnArg}${lineNum});`);
+        }
+        output.push(bodyPart);
+        output.push(`}`);
+        // Remove loop variables from knownVars — they're scoped to the for-loop
+        if (initPart) {
+          let declared = parseDeclaration(initPart);
+          for (let d of declared) {
+            knownVars.delete(d.name);
+            scopeStack[scopeStack.length-1].vars.delete(d.name);
+          }
+        }
+        if (afterLoop.trim()) {
+          output.push(afterLoop.trim());
+        }
+        continue;
+      }
+    }
     if (forMatch) {
       // Parse the init part: e.g., "int i = 0" or "int i = 0, j = 5"
       let initPart = forMatch[1].trim();
