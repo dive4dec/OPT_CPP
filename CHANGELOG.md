@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.3] - 2026-07-11
+
+### Fixed
+- For-loop second trace injection now properly handles structs, deleted pointers, and `this` (was missing these cases).
+
+### Changed
+- Removed 138 lines of dead code across opt_trace.h, instrument.js, and pytutor.ts.
+- Eliminated O(n) `getBraceDepth` scan that ran on every function entry but whose result was never used.
+
 ## [0.3.2] - 2026-07-11
 
 ### Fixed
