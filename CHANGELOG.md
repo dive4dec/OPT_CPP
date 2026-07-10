@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.10] - 2026-07-10
+
+### Fixed
+- **Static variables not reset between runs** — C++ `static` variables persisted across executions because they live in the WASM module's linear memory, not in the clang-repl kernel's JIT state. Recreating the kernel was not enough. Fixed by recreating the entire WASM module (`createXeusModule()`) on each execution, which resets all linear memory including static variables. The WASM binary is cached by the browser's HTTP cache, so re-creation is fast after the first run.
+  - Test case: `static int count; return ++count;` called 10 times → outputs `1 2 3 4 5 6 7 8 9 10`. Previously, the second run would output `11 12 13 14 15 16 17 18 19 20`. Now correctly outputs `1 2 3 4 5 6 7 8 9 10` on every run.
+
+### Changed
+- **`cppworker.js`** — The WASM module (`self.xeusModule`) is now recreated on each execution instead of just recreating the kernel. This ensures all state is clean: static variables, global variables, JIT-compiled code, and REPL history.
+
 ## [0.2.9] - 2026-07-10
 
 ### Added

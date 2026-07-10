@@ -1,7 +1,8 @@
-// C++ execution Web Worker — loads xeus-cpp (clang-repl WASM) and executes C++ code
+// C++ execution worker — loads xeus-cpp (clang-repl WASM) and executes C++ code
 //
-// The kernel is recreated before each execution to ensure a clean REPL state,
-// avoiding "redefinition of 'main'" errors when the user re-runs code.
+// The WASM module is recreated for each execution to ensure a completely clean
+// state (static variables, global state, etc.). The WASM binary is cached by
+// the browser's HTTP cache, so re-creation is fast after the first run.
 //
 // Code instrumentation: user code is instrumented with __opt_trace__() calls
 // that capture variable state at each step, producing a Python Tutor-compatible
@@ -13,7 +14,7 @@ importScripts('./instrument.js?v=' + Date.now());
 let initResolve, initReject;
 const initPromise = new Promise((res, rej) => { initResolve = res; initReject = rej; });
 
-// Cached .so data (fetched once, reused for every kernel recreation)
+// Cached .so data (fetched once, reused for every WASM module recreation)
 let cachedSoData = null;
 
 // ── Load opt_trace.h content ──
@@ -124,7 +125,8 @@ self.onmessage = async (event) => {
 
       const code = self.script;
 
-      // Recreate the kernel for a clean REPL state
+      // Recreate the WASM module for a completely clean state
+      // (static variables, global state, JIT state all reset)
       try {
         if (self.xkernel && typeof self.xkernel.delete === 'function') {
           self.xkernel.delete();
@@ -133,7 +135,25 @@ self.onmessage = async (event) => {
         // delete() may not exist; just drop the reference
       }
 
-      const { xkernel, xserver } = await createKernel(XEUS_CPP_BASE);
+      // Create a fresh WASM module to reset all state (including statics)
+      const XEUS_CPP_BASE2 = self.xeusCpp ||
+        new URL('./xeus-cpp/', self.location.href).href;
+      const Module2 = {
+        locateFile: (file) => XEUS_CPP_BASE2 + file,
+        print: () => {},
+        printErr: () => {},
+        preRun: [
+          function() {
+            const M = self.xeusModule;
+            try {
+              M.FS_createPath('/', 'lib', true, true);
+              M.FS.writeFile('/lib/libclangCppInterOp.so', cachedSoData);
+            } catch (e) { /* may already exist */ }
+          }
+        ],
+      };
+      self.xeusModule = await createXeusModule(Module2);
+      const { xkernel, xserver } = await createKernel(XEUS_CPP_BASE2);
       self.xkernel = xkernel;
       self.xserver = xserver;
 
