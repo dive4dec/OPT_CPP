@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-07-10
+
+### Added
+- **nginx reverse proxy for API key hiding** — the LLM API key is now injected server-side by nginx, never visible in the browser. The browser calls same-origin `/ai-proxy/chat/completions`; nginx forwards to the upstream API with `Authorization: Bearer ***` injected from a Kubernetes secret. GitHub Pages deployments continue using WebLLM (no proxy, no key).
+  - `nginx.conf` — new `/ai-proxy/` location block with `proxy_pass`, `Authorization` header injection, SSE streaming support
+  - `Dockerfile` — uses nginx `envsubst` template (`/etc/nginx/templates/default.conf.template`) for runtime env var substitution (`API_PROXY_TARGET`, `API_PROXY_KEY`)
+  - `webllm.ts` — `callOpenAIAPI` skips sending `Authorization` header from client when using the proxy
+  - `runner.ts` — `cppWorker.onerror` handler rejects pending callbacks with `kernelErrorText` if available, or a meaningful fallback, when the worker dies from an uncaught WASM abort
+
+### Fixed
+- **Error messages on WASM abort** — when clang-repl's internal assertion triggers a WASM abort (e.g., undeclared identifier inside a function body), the error message was a raw `Aborted(). Build with -sASSERTIONS for more info.` Now shows `error: Compilation error (WASM aborted). Check your code for syntax errors.` instead. The specific compiler error cannot be recovered because the abort kills the WASM module before the error can be reported through any channel (iopub, `printErr`, or `onAbort`).
+  - `cppworker.js` — `onAbort` callback posts the abort reason as an iopub stderr message before the worker dies; `printErr` captures Emscripten-level stderr in both initial and recreated WASM modules; `notify_listener` wrapped in try-catch to detect synchronous aborts
+  - `runner.ts` — error callback delayed by 500ms to allow iopub messages to arrive before rejecting
+  - `opt-live.ts` — `setFronendError` for compiler errors uses `ignoreLog=true` to suppress misleading `(UNSUPPORTED FEATURES)` suffix
+
 ## [0.2.11] - 2026-07-10
 
 ### Fixed
