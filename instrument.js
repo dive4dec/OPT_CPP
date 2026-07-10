@@ -106,6 +106,18 @@ function parseDeclaration(line) {
   // Skip array element assignments (e.g., "arr[0] = 10")
   if (/^\w+\[.+\]\s*=/.test(line)) return [];
 
+  // Skip operator overloads (e.g., "String& operator=(const String& o) { ... }")
+  if (/\boperator\b/.test(line)) return [];
+
+  // Skip access specifiers
+  if (/^(public|private|protected)\s*:/.test(line)) return [];
+
+  // Skip constructor/destructor definitions (e.g., "Point(int x, int y) {" or "~Point() {")
+  if (/^~?\w+\s*\([^)]*\)\s*(\{|:)/.test(line)) return [];
+
+  // Skip lines that are just closing braces
+  if (/^[};\s]*$/.test(line)) return [];
+
   // Remove the trailing semicolon and anything after (e.g., initializer)
   const semiIdx = line.indexOf(';');
   if (semiIdx >= 0) line = line.substring(0, semiIdx).trim();
@@ -126,9 +138,10 @@ function parseDeclaration(line) {
   // Skip if it starts with # (preprocessor)
   if (line.startsWith('#')) return [];
 
-  // Skip if it's a function definition (has parentheses with types)
-  // e.g., "int main()" or "void foo(int x)"
-  if (/\w+\s+\w+\s*\([^)]*\)\s*(\{|\s*$)/.test(line) && !line.includes('=')) return [];
+  // Skip if it's a function definition (has parentheses with types, followed by {)
+  // e.g., "int main() {" or "void foo(int x) {"
+  // But NOT constructor calls like "String s1(\"hello\")" or "Point p1(3, 4)"
+  if (/\w+\s+\w+\s*\([^)]*\)\s*\{/.test(line) && !line.includes('=')) return [];
 
   // Parse: [const] type [*|&]* name [= value] [, name [= value]]*
   // We need to handle:
@@ -177,8 +190,13 @@ function parseDeclaration(line) {
   const result = [];
   for (let v of vars) {
     // Parse: name [= value] or name[size] or name[] = {...} or name[M][N] = {...}
+    //   or name(args) — constructor call (e.g., "s1(\"hello\")" or "p1(3, 4)")
     // Capture multiple array dimensions: name[2][3]
     let nameMatch = v.match(/^(\w+)\s*((?:\[[^\]]*\])*)\s*(=.*)?$/);
+    // Also match constructor-call syntax: name(args)
+    if (!nameMatch) {
+      nameMatch = v.match(/^(\w+)\s*\([^)]*\)$/);
+    }
     if (!nameMatch) continue;
 
     let name = nameMatch[1];
@@ -272,6 +290,7 @@ function instrumentCode(sourceCode) {
   let structBraceDepth = 0;
   let currentStructName = '';
   let currentStructFields = [];
+  let currentAccessLevel = 'public'; // default for struct
 
   // Map: struct name → array of {name, type}
   let structDefs = new Map();
@@ -302,10 +321,55 @@ function instrumentCode(sourceCode) {
     // Instead, error line mapping is handled by identifier search in runner.ts.
 
     // First non-preprocessor line — ensure main frame is pushed
-    if (!inFunctionBody && !mainFrameEnsured) {
+    if (!inFunctionBody && !inStructBody && !mainFrameEnsured) {
       // Push ensure_frame as a separate statement
       output.push('__opt_ensure_frame__("main", 0);');
       mainFrameEnsured = true;
+    }
+
+    // If inside struct/class body, skip function detection and access specifiers
+    if (inStructBody) {
+      // Track braces inside struct body and collect field declarations
+      for (let c of stripped) {
+        if (c === '{') structBraceDepth++;
+        if (c === '}') structBraceDepth--;
+      }
+      // Check if struct body ended
+      if (structBraceDepth <= 0) {
+        inStructBody = false;
+        if (currentStructName && currentStructFields.length > 0) {
+          structDefs.set(currentStructName, currentStructFields);
+        }
+        output.push(line);
+        continue;
+      }
+      // Skip access specifiers — but track the current access level
+      let accessMatch = stripped.match(/^(public|private|protected)\s*:/);
+      if (accessMatch) {
+        currentAccessLevel = accessMatch[1];
+        output.push(line);
+        continue;
+      }
+      // Skip member function definitions (lines with parentheses and braces)
+      if (stripped.includes('(') && stripped.includes('{')) {
+        output.push(line);
+        continue;
+      }
+      // Skip constructor initializer lists (lines with `:` or `{};`)
+      if (stripped.includes(':') && !stripped.match(/^\s*(public|private|protected)\s*:/)) {
+        output.push(line);
+        continue;
+      }
+      // Parse field declarations — only collect public fields for visualization
+      let fieldDecl = parseDeclaration(stripped);
+      for (let d of fieldDecl) {
+        d.access = currentAccessLevel;
+        if (currentAccessLevel === 'public') {
+          currentStructFields.push(d);
+        }
+      }
+      output.push(line);
+      continue;
     }
 
     // Check for opening brace — entering a new scope
@@ -375,31 +439,11 @@ function instrumentCode(sourceCode) {
         structBraceDepth = 1;
         currentStructName = structMatch[2];
         currentStructFields = [];
+        currentAccessLevel = (structMatch[1] === 'class') ? 'private' : 'public';
         output.push(line);
         continue;
       }
-      // Track braces inside struct body and collect field declarations
-      if (inStructBody) {
-        for (let c of stripped) {
-          if (c === '{') structBraceDepth++;
-          if (c === '}') structBraceDepth--;
-        }
-        // Parse field declarations (e.g., "int x;" → {name: "x", type: "int"})
-        if (structBraceDepth > 0) {
-          let fieldDecl = parseDeclaration(stripped);
-          for (let d of fieldDecl) {
-            currentStructFields.push(d);
-          }
-        }
-        if (structBraceDepth <= 0) {
-          inStructBody = false;
-          if (currentStructName && currentStructFields.length > 0) {
-            structDefs.set(currentStructName, currentStructFields);
-          }
-        }
-        output.push(line);
-        continue;
-      }
+      // inStructBody case is handled above (before function detection)
       // Skip global variable declarations if inside struct body (shouldn't reach here)
       let declared = parseDeclaration(stripped);
       if (declared.length > 0) {
