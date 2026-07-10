@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.4] - 2026-07-10
+
+### Added
+- **Function call stepping** — stepping into user-defined functions now works. When a function is called from `main` (or another function), a new stack frame is pushed with the function name and parameters. The visualization shows the call stack with parent-child relationships, matching Python Tutor's behavior. Tested with simple function calls (`add(3, 4)`) and recursive calls (`factorial(5)` — 5 nested frames appear correctly).
+
+### Fixed
+- **Recursive call frames** — `__opt_ensure_frame__` now detects recursive calls by checking if the line number went backwards to the function entry line. Previously, recursive calls were treated as continuations of the same frame, so only one frame appeared regardless of recursion depth. Now each recursive call pushes a new frame.
+
 ## [0.2.3] - 2026-07-10
 
 ### Fixed
