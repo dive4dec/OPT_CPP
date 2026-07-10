@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.2] - 2026-07-11
+
+### Fixed
+- **Local class instances showing `<unknown>`** — locally-defined classes (inside `main()`) now display as `object main::Counter` instead of `<unknown>`. Local structs with public fields also show their field values (e.g., `object Point` with `x: 3, y: 4`).
+
 ## [0.3.1] - 2026-07-11
 
 ### Removed
