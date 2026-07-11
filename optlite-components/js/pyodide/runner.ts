@@ -296,9 +296,74 @@ function handleWorkerError(event: ErrorEvent) {
 
 const asyncRun = (() => {
   let id = 0;
+
+  // ── Pre-execution syntax check ──
+  // Catch obvious C++ syntax errors before sending to the WASM compiler,
+  // which may hang or take very long on malformed input.
+  // This mirrors what g++ does instantly (e.g. Python Tutor's server-side check).
+  function checkSyntax(code: string): string | null {
+    const lines = code.split('\n');
+    let inBlockComment = false;
+
+    for (let i = 0; i < lines.length; i++) {
+      let line = lines[i];
+      const lineNum = i + 1;
+
+      // Handle block comments: remove content inside /* ... */ (can span lines)
+      if (inBlockComment) {
+        const endIdx = line.indexOf('*/');
+        if (endIdx >= 0) {
+          line = line.substring(endIdx + 2);
+          inBlockComment = false;
+        } else {
+          continue; // entire line is inside a block comment
+        }
+      }
+      // Check for block comment start on this line
+      const blockStart = line.indexOf('/*');
+      const blockEnd = line.indexOf('*/');
+      if (blockStart >= 0 && (blockEnd < 0 || blockEnd < blockStart)) {
+        line = line.substring(0, blockStart);
+        inBlockComment = true;
+      }
+
+      // Skip preprocessor directives and single-line comments
+      const trimmed = line.trim();
+      if (trimmed.startsWith('#')) continue;
+      if (trimmed.startsWith('//')) continue;
+
+      // Skip raw string literals R"(...)" — they can span multiple lines
+      // Simple heuristic: if the line contains R" and doesn't close it,
+      // skip the quote check for this line
+      if (/R"\(/.test(line) || /R"\[/.test(line) || /R"\{/.test(line)) {
+        continue;
+      }
+
+      // Check for unterminated string literals (literal newline inside "...")
+      // Remove escaped quotes and single-line comments first
+      const cleaned = line
+        .replace(/\\"/g, '')       // remove escaped double quotes
+        .replace(/\\'/g, '')       // remove escaped single quotes
+        .replace(/\/\/.*$/, '');   // remove single-line comments
+      const dquotes = (cleaned.match(/"/g) || []).length;
+      if (dquotes % 2 !== 0) {
+        return `Line ${lineNum}: error: missing terminating " character`;
+      }
+    }
+    return null;
+  }
+
   return (script: string, rawInputLst: string[], options: any) => {
     id = (id + 1) % Number.MAX_SAFE_INTEGER;
     return new Promise((resolve, reject) => {
+
+      // ── Pre-execution syntax check ──
+      const syntaxError = checkSyntax(script);
+      if (syntaxError) {
+        reject(new Error(syntaxError));
+        return;
+      }
+
       init.then(() => {
         // Reset kernel output collector
         kernelOutput = [];
