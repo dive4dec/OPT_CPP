@@ -18,20 +18,32 @@ let kernelErrorText = '';
 // in a global OptLite object predefined before loading.
 const initWorker = (() => {
   let id = -1; // use -ve job id for initialization
-  combineDefaults(OptLite, {
-    xeusCpp: '',
-    packages: [],
-  });
-
-  if (!OptLite.xeusCpp) {
-    OptLite.xeusCpp = new URL('./xeus-cpp/', window.location.href).href;
-  } else {
-    OptLite.xeusCpp = new URL(OptLite.xeusCpp, window.location.href).href;
-  }
+  let configDone = false;
 
   return () => {
+    // Only set up OptLite config once, not on every worker recreation
+    if (!configDone) {
+      combineDefaults(OptLite, {
+        xeusCpp: '',
+        packages: [],
+      });
+
+      if (!OptLite.xeusCpp) {
+        OptLite.xeusCpp = new URL('./xeus-cpp/', window.location.href).href;
+      } else {
+        OptLite.xeusCpp = new URL(OptLite.xeusCpp, window.location.href).href;
+      }
+      configDone = true;
+    }
+
     return new Promise((resolve, reject) => {
+      // Timeout: if the worker doesn't init within 60s, reject (WASM may have crashed)
+      const timeout = setTimeout(() => {
+        reject(new Error('Worker initialization timed out (WASM may have crashed)'));
+      }, 60000);
+
       callbacks[id] = (data) => {
+        clearTimeout(timeout);
         if (data.error) reject(new Error(data.error));
         else resolve(data);
       };
@@ -59,14 +71,6 @@ let init = initWorker();
 async function handleWorkerMessage(event: MessageEvent) {
   const msg = event.data;
   const { id, ...data } = msg;
-
-  // ── Flush signal from worker (reset output after kernel recreation) ──
-  if (msg && msg.type === 'flush') {
-    kernelOutput = [];
-    kernelHasError = false;
-    kernelErrorText = '';
-    return;
-  }
 
   // ── Kernel iopub messages (from xserver_emscripten's self.postMessage) ──
   // These have header.msg_type but no numeric id

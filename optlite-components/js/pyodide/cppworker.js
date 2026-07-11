@@ -1,8 +1,9 @@
 // C++ execution worker — loads xeus-cpp (clang-repl WASM) and executes C++ code
 //
-// The WASM module is recreated for each execution to ensure a completely clean
-// state (static variables, global state, etc.). The WASM binary is cached by
-// the browser's HTTP cache, so re-creation is fast after the first run.
+// In emscripten 4.x, the WASM module cannot be reinstantiated within the same
+// worker. runner.ts creates a fresh Web Worker for each execution to get a
+// clean kernel state. The WASM binary is cached by the browser's HTTP cache,
+// so worker creation is fast after the first run.
 //
 // Code instrumentation: user code is instrumented with __opt_trace__() calls
 // that capture variable state at each step, producing a Python Tutor-compatible
@@ -27,9 +28,6 @@ self.postMessage = function(msg) {
 
 let initResolve, initReject;
 const initPromise = new Promise((res, rej) => { initResolve = res; initReject = rej; });
-
-// Cached .so data (fetched once, reused for every WASM module recreation)
-let cachedSoData = null;
 
 // ── Load opt_trace.h content ──
 let optTraceHeader = null;
@@ -104,14 +102,32 @@ self.onmessage = async (event) => {
       // Cache-bust xcpp.js to ensure we get the version matching this build
       importScripts(XEUS_CPP_BASE + 'xcpp.js?v=0.10.0');
 
+      // Track whether user code execution has started (first sentinel seen).
+      // Before that, stdout is clang compiler diagnostics which we suppress.
+      let userExecutionStarted = false;
+      const SENTINEL = '\x01\x02__OPT_STEP__\x02\x01';
+
       const Module = {
         locateFile: (file) => XEUS_CPP_BASE + file + '?v=0.10.0',
 
-        // Suppress clang/LLVM diagnostic output that floods the console
-        // (stdout from user code goes through iopub stream, captured by runner.ts)
-        // BUT capture stderr so we can extract compiler errors on WASM abort.
-        print: () => {},
-        printErr: (text) => { workerStderr += text + '\n'; },
+        // Route stdout through iopub stream so runner.ts can capture it.
+        // Suppress clang compiler diagnostics (emitted before user code runs)
+        // by only forwarding after the first sentinel marker is seen.
+        print: (text) => {
+          const str = text !== undefined ? String(text) : '';
+          if (str.includes(SENTINEL)) {
+            userExecutionStarted = true;
+          }
+          if (userExecutionStarted) {
+            _origPostMessage({
+              header: { msg_type: 'stream' },
+              content: { name: 'stdout', text: str + '\n' }
+            });
+          }
+        },
+        printErr: (text) => {
+          workerStderr += (text !== undefined ? text : '') + '\n';
+        },
         onAbort: (reason) => {
           // Try to send the abort reason + any captured stderr back to main thread
           // before the worker dies. Use _origPostMessage to bypass our interceptor.
@@ -123,13 +139,10 @@ self.onmessage = async (event) => {
         },
       };
 
-      console.log('[cppworker] Loading createXeusModule...');
       self.xeusModule = await createXeusModule(Module);
-      console.log('[cppworker] createXeusModule loaded, creating kernel...');
 
       // Create initial kernel (wait for dynamic library loading on first init)
       const { xkernel, xserver } = await createKernel(XEUS_CPP_BASE, true);
-      console.log('[cppworker] Kernel created');
       self.xkernel = xkernel;
       self.xserver = xserver;
 
@@ -238,40 +251,12 @@ self.onmessage = async (event) => {
         throw new Error(errorMsg);
       }
 
-      // ── Extract trace JSON from kernel output ──
-      // The trace JSON is emitted between __OPT_TRACE_JSON_BEGIN__ and __OPT_TRACE_JSON_END__
-      // markers in stdout. We collected all stdout in runner.ts's kernelOutput.
-      // But since we're in the worker, we need to send it back.
-      // Actually, the iopub stream messages come back to the main thread.
-      // We need a different approach: use the kernel's stdout directly.
-
-      // Actually, since Module.print is overridden to () => {}, stdout goes nowhere.
-      // We need to use printf which goes through the WASM's own stdout, not Module.print.
-      // Wait — printf in WASM goes through Module.print too.
-      //
-      // Alternative: write the trace to a file and read it back.
-      // Or: use a global variable to store the trace and retrieve it via a second execute_request.
-      //
-      // Best approach: execute __opt_finalize__() as a user_expression and get the result.
-      // But xeus-cpp's execute_request with user_expressions may not return results easily.
-      //
-      // Simplest: temporarily override Module.print to capture output, then execute
-      // a printf of the trace JSON.
-
-      // Let's use a different approach: store the trace in a global C++ variable
-      // and retrieve it via a second execute_request that prints it.
-
-      // Actually, the iopub stream messages DO come back to the worker via
-      // self.postMessage in xserver_emscripten. Let me check...
-      //
-      // The xserver_emscripten posts iopub messages via self.postMessage().
-      // These are received by runner.ts's onmessage handler.
-      // But we're in the worker — the messages go from worker to main thread.
-      //
-      // Wait for execution to complete
+      // Wait for execution to complete (iopub messages are async)
       await new Promise(r => setTimeout(r, 300));
 
       // ── Read trace JSON from WASM filesystem ──
+      // opt_trace.h writes the finalized trace to /tmp/opt_trace.json via fopen/fprintf.
+      // We read it back from the WASM filesystem (M.FS) and parse it.
       const M = self.xeusModule;
       let traceJson = null;
       try {

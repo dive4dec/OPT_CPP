@@ -19,6 +19,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Full kernel argv now passed to `xkernel()` constructor: `-resource-dir /lib/clang/21`, `-Xclang -iwithsysroot/include/compat`, `-std=c++23`, `-fwasm-exceptions`, `-mllvm -wasm-enable-sjlj`, `-msimd128` — matching the xeus-cpp 0.10.0 `xcpp23` kernel spec.
 - `runner.ts` restructured to terminate and recreate the Web Worker for each execution, since emscripten 4.x does not allow reinstantiating the WASM module within the same worker. This follows the same pattern used by `jupyterlite-xeus`.
 - Cache-busting `?v=0.10.0` added to `importScripts`, `locateFile`, and `.so` fetch URLs to prevent stale cached 0.6.0 binaries from being served alongside the new 0.10.0 `xcpp.js`.
+- Removed dead code: `cachedSoData` variable, stale design-note comment block (28 lines), debug `console.log` statements, and dead `flush` message handler in `runner.ts`.
+- `OptLite` config setup (`combineDefaults`) now runs once instead of on every worker recreation.
+- Worker init timeout (60s) added to prevent silent hangs if WASM crashes during initialization.
+- Stdout routing: `Module.print` now forwards to iopub stream messages (instead of suppressing with `() => {}`), with clang compiler diagnostics filtered out by only forwarding after the first trace sentinel is seen.
 
 ### Known Limitations
 - `set_count` body statements (brace-less `if`/`else`) do not receive per-statement traces — pre-existing `pendingBracelessBody` limitation carried over from v0.3.5.
