@@ -150,40 +150,6 @@ self.onmessage = async (event) => {
       // Pre-load the trace header
       await loadTraceHeader();
 
-      // Pre-compile heavy standard headers so user code that includes them
-      // doesn't have to compile them from scratch each time.
-      // The interpreter caches compiled declarations, so once <format> is
-      // parsed, subsequent #include <format> is instant.
-      try {
-        const precompileRequest = {
-          channel: "shell",
-          header: {
-            msg_id: "opt-precompile",
-            username: "opt",
-            session: "opt-session",
-            msg_type: "execute_request",
-            date: new Date().toISOString(),
-            version: "5.3",
-          },
-          parent_header: {},
-          metadata: {},
-          content: {
-            code: '#include <format>\n#include <iostream>\n#include <vector>\n#include <string>\n#include <map>',
-            silent: true,
-            store_history: false,
-            user_expressions: {},
-            allow_stdin: false,
-            stop_on_error: false,
-          },
-          buffers: [],
-        };
-        self.xserver.notify_listener(precompileRequest);
-        // Wait for pre-compilation to complete (can take 30-60s for <format>)
-        await new Promise(r => setTimeout(r, 60000));
-      } catch (e) {
-        // Pre-compilation failed — not critical, user code will just be slower
-      }
-
       initResolve();
       results = { status: 'ready' };
     } else {

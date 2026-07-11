@@ -37,11 +37,10 @@ const initWorker = (() => {
     }
 
     return new Promise((resolve, reject) => {
-      // Timeout: if the worker doesn't init within 120s, reject (WASM may have crashed).
-      // The extra time accounts for pre-compilation of heavy headers like <format>.
+      // Timeout: if the worker doesn't init within 60s, reject (WASM may have crashed)
       const timeout = setTimeout(() => {
         reject(new Error('Worker initialization timed out (WASM may have crashed)'));
-      }, 120000);
+      }, 60000);
 
       callbacks[id] = (data) => {
         clearTimeout(timeout);
@@ -353,6 +352,40 @@ const asyncRun = (() => {
     return null;
   }
 
+  // ── Pre-execution check for heavy headers ──
+  // The WASM clang compiler crashes the browser tab (out of memory) when
+  // compiling certain heavy C++ headers. We detect these before execution
+  // and show a helpful message instead of crashing.
+  // This is a known limitation of the WASM-based compiler, not an OPT_CPP bug.
+  // (compiler-research.org/xeus-cpp has the same issue.)
+  function checkHeavyHeaders(code: string): string | null {
+    // Remove comments and string literals to avoid false positives
+    const cleaned = code
+      .replace(/\/\/.*$/gm, '')        // single-line comments
+      .replace(/\/\*[\s\S]*?\*\//g, '') // block comments
+      .replace(/"[^"]*"/g, '""')        // string literals (keep quotes for parsing)
+      .replace(/R"([^"]*)\([^)]*\)"/g, '""'); // raw string literals
+
+    // Headers known to crash the WASM compiler due to excessive template instantiation
+    const heavyHeaders: Record<string, string> = {
+      '<format>': 'std::format (C++23). The <format> header is extremely heavy to compile in the browser.',
+      '<ranges>': 'std::ranges (C++20). The <ranges> header is extremely heavy to compile in the browser.',
+      '<regex>': 'std::regex. The <regex> header is extremely heavy to compile in the browser.',
+      '<locale>': 'std::locale. The <locale> header is extremely heavy to compile in the browser.',
+      '<codecvt>': 'std::codecvt. The <codecvt> header is extremely heavy to compile in the browser.',
+    };
+
+    for (const [header, msg] of Object.entries(heavyHeaders)) {
+      // Match #include <header> or #include "header"
+      const pattern = new RegExp('#\\s*include\\s*[<"]' + header.slice(1, -1) + '[>"]', 'i');
+      if (pattern.test(cleaned)) {
+        return `Warning: ${msg} This will crash the browser tab. ` +
+               `Please use simpler alternatives (e.g., printf, snprintf, or manual string concatenation).`;
+      }
+    }
+    return null;
+  }
+
   return (script: string, rawInputLst: string[], options: any) => {
     id = (id + 1) % Number.MAX_SAFE_INTEGER;
     return new Promise((resolve, reject) => {
@@ -364,17 +397,40 @@ const asyncRun = (() => {
         return;
       }
 
+      // ── Pre-execution heavy header check ──
+      const heavyError = checkHeavyHeaders(script);
+      if (heavyError) {
+        reject(new Error(heavyError));
+        return;
+      }
+
       init.then(() => {
         // Reset kernel output collector
         kernelOutput = [];
         kernelHasError = false;
         kernelErrorText = '';
 
+        // Execution timeout: if the WASM compiler hangs (e.g., compiling
+        // heavy headers like <format>), the worker's event loop is blocked
+        // and no result message arrives. This timeout fires on the main
+        // thread and rejects the promise with a helpful message.
+        const execTimeout = setTimeout(() => {
+          if (callbacks[id]) {
+            delete callbacks[id];
+            reject(new Error(
+              'Compilation timed out. This can happen when using heavy headers ' +
+              'like <format> or <string>. Try simplifying your code or using ' +
+              'fewer includes.'
+            ));
+          }
+        }, 120000); // 2 minutes
+
         // Reuse the existing worker — the WASM module stays initialized.
         // State cleanup is handled by __s__.reset() in the instrumented code
         // (cppworker.js line 188), which clears the trace state, globals,
         // and heap between executions.
         callbacks[id] = (data) => {
+          clearTimeout(execTimeout);
           if (data.error) {
             // The WASM abort may have sent compiler errors via iopub stderr
             // messages that haven't been processed yet. Wait briefly for them.
