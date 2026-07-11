@@ -270,6 +270,7 @@ function instrumentCode(sourceCode) {
   let inMemberFunction = false;
   let memberFunctionStructName = '';
   let memberFunctionIsStatic = false;
+  let memberFunctionScopeDepth = 0;  // scopeStack.length at entry
 
   // Track if we're inside a struct/class body (to skip variable declarations)
   let inStructBody = false;
@@ -293,6 +294,10 @@ function instrumentCode(sourceCode) {
 
   // Track all function definitions: name → {startLine, endLine, params}
   let functionDefs = [];
+
+  // Current function name (for frame management) and a stack for nesting
+  let currentFunc = 'main';
+  let funcNameStack = ['main'];
 
   for (let i = 0; i < lines.length; i++) {
     let line = lines[i];
@@ -340,10 +345,11 @@ function instrumentCode(sourceCode) {
       }
     }
 
-    // If inside a local class/struct body, collect public field declarations
-    // so local-class instances can be visualized with their fields (mirrors
-    // the global struct handling above).
-    if (inFunctionBody && inLocalClassBody) {
+    // If inside a local class/struct body, handle field declarations AND
+    // member function instrumentation (mirrors the global struct handler).
+    // Skip when inside a member function — those lines are handled by the
+    // general function-body instrumentation path below.
+    if (inFunctionBody && inLocalClassBody && !inMemberFunction) {
       // Track braces to detect the end of the local class body
       for (let c of stripped) {
         if (c === '{') localClassBraceDepth++;
@@ -365,9 +371,94 @@ function instrumentCode(sourceCode) {
         output.push(line);
         continue;
       }
-      // Parse field declarations — collect only public fields for visualization.
-      // Private members can't be accessed from outside the class in the instrumented
-      // lambda, so accessing them would cause a WASM compilation error.
+
+      // Detect member function definition (same regex as global struct handler)
+      let memberFuncMatch = stripped.match(/^(?:(?:virtual|static|inline|explicit|friend|const)\s+)*(?:[\w:~]+[&\s]+)*&?\s*(~?\w+|operator\s*[()]=≠%&|^~]*|operator\s*\+\+|operator\s*--|operator\s*\(\))\s*\(([^)]*)\)\s*(?:(?:const|override|noexcept|final|volatile|&|&&)\s*)*(?::\s*[^{]*)?\{/);
+      if (!memberFuncMatch) {
+        let opCallMatch = stripped.match(/^(?:(?:virtual|static|inline|explicit|friend|const)\s+)*(?:[\w:~]+[&\s]+)*&?\s*(operator\s*\(\))\s*\(([^)]*)\)\s*(?:(?:const|override|noexcept|final|volatile|&|&&)\s*)*(?::\s*[^{]*)?\{/);
+        if (opCallMatch) memberFuncMatch = opCallMatch;
+      }
+      if (!memberFuncMatch) {
+        let opCallMatch2 = stripped.match(/^(?:(?:virtual|static|inline|explicit|friend|const)\s+)*(?:[\w:~]+[&\s]+)*&?\s*(operator\s*\(\))\s*\(((?:[^()]|\([^)]*\))*)\)\s*(?:(?:const|override|noexcept|final|volatile|&|&&)\s*)*(?::\s*[^{]*)?\{/);
+        if (opCallMatch2) memberFuncMatch = opCallMatch2;
+      }
+      if (memberFuncMatch) {
+        let rawName = memberFuncMatch[1].trim();
+        let funcName = rawName.split(/\s+/).pop();
+        let params = memberFuncMatch[2].trim();
+        // Empty body inline "{}" or "{};"
+        if (stripped.match(/\{\s*\}\s*;?$/)) {
+          let beforeBrace = line.substring(0, line.indexOf('{') + 1);
+          let afterBrace = line.substring(line.indexOf('{') + 1);
+          output.push(beforeBrace);
+          output.push(`__opt_trace_fn__("${funcName}", ${lineNum});`);
+          output.push(afterBrace);
+          continue;
+        }
+        // Single-line function body — split into multi-line for instrumentation
+        let bodyCloseIdx = stripped.lastIndexOf('}');
+        if (bodyCloseIdx > stripped.indexOf('{')) {
+          let braceIdx = line.indexOf('{');
+          let closeIdx = line.lastIndexOf('}');
+          let beforeBrace = line.substring(0, braceIdx + 1);
+          let bodyContent = line.substring(braceIdx + 1, closeIdx).trim();
+          let afterBrace = line.substring(closeIdx);
+          output.push(beforeBrace);
+          output.push(`__opt_trace_fn__("${funcName}", ${lineNum});`);
+          if (bodyContent) output.push(bodyContent + ';');
+          output.push(afterBrace);
+          continue;
+        }
+        // Multi-line function body — instrument it
+        inMemberFunction = true;
+        memberFunctionStructName = localClassName;
+        memberFunctionIsStatic = stripped.includes('static');
+        memberFunctionScopeDepth = scopeStack.length;
+        functionDefs.push({name: funcName, startLine: lineNum, params: params, isMember: true, structName: localClassName});
+        currentFunc = funcName;
+        funcNameStack.push(funcName);
+
+        output.push(line);
+        output.push(`__opt_trace_fn__("${funcName}", ${lineNum});`);
+        // Push new scope for member function
+        scopeStack.push({ depth: scopeStack[scopeStack.length-1].depth + 1, vars: new Set() });
+
+        // Parse function parameters
+        if (params) {
+          let paramParts = [];
+          let depth = 0;
+          let current = '';
+          for (let j = 0; j < params.length; j++) {
+            const c = params[j];
+            if (c === '<' || c === '(' || c === '[') depth++;
+            if (c === '>' || c === ')' || c === ']') depth--;
+            if (c === ',' && depth === 0) { paramParts.push(current.trim()); current = ''; }
+            else current += c;
+          }
+          if (current.trim()) paramParts.push(current.trim());
+          for (let p of paramParts) {
+            let declared = parseDeclaration(p);
+            for (let d of declared) {
+              knownVars.set(d.name, d);
+              scopeStack[scopeStack.length-1].vars.add(d.name);
+            }
+          }
+        }
+        // Add 'this' for non-static member functions
+        if (!stripped.includes('static')) {
+          let thisInfo = {name: 'this', type: localClassName + '*', isArray: false, isPointer: true};
+          knownVars.set('this', thisInfo);
+          scopeStack[scopeStack.length-1].vars.add('this');
+        }
+        continue;
+      }
+
+      // Skip constructor initializer lists on their own line
+      if (stripped.includes(':') && !stripped.match(/^\s*(public|private|protected)\s*:/) && !stripped.includes('{')) {
+        output.push(line);
+        continue;
+      }
+      // Parse field declarations — collect only public fields
       let fieldDecl = parseDeclaration(stripped);
       for (let d of fieldDecl) {
         d.access = localClassAccessLevel;
@@ -410,15 +501,15 @@ function instrumentCode(sourceCode) {
       // Handle optional leading keywords: virtual, static, inline, explicit, friend, const
       // Handle operator overloads: operator(), operator++, operator=, etc.
       // Handle ref-qualified return types: const static Printer &get_print()
-      let memberFuncMatch = stripped.match(/^(?:(?:virtual|static|inline|explicit|friend|const)\s+)*(?:[\w:~]+\s+)*&?\s*(~?\w+|operator\s*[()]=≠%&|^~]*|operator\s*\+\+|operator\s*--|operator\s*\(\))\s*\(([^)]*)\)\s*(?:(?:const|override|noexcept|final|volatile|&|&&)\s*)*(?::\s*[^{]*)?\{/);
+      let memberFuncMatch = stripped.match(/^(?:(?:virtual|static|inline|explicit|friend|const)\s+)*(?:[\w:~]+[&\s]+)*&?\s*(~?\w+|operator\s*[()]=≠%&|^~]*|operator\s*\+\+|operator\s*--|operator\s*\(\))\s*\(([^)]*)\)\s*(?:(?:const|override|noexcept|final|volatile|&|&&)\s*)*(?::\s*[^{]*)?\{/);
       if (!memberFuncMatch) {
         // Try operator() specifically: "void operator()(...) {"
-        let opCallMatch = stripped.match(/^(?:(?:virtual|static|inline|explicit|friend|const)\s+)*(?:[\w:~]+\s+)*&?\s*(operator\s*\(\))\s*\(([^)]*)\)\s*(?:(?:const|override|noexcept|final|volatile|&|&&)\s*)*(?::\s*[^{]*)?\{/);
+        let opCallMatch = stripped.match(/^(?:(?:virtual|static|inline|explicit|friend|const)\s+)*(?:[\w:~]+[&\s]+)*&?\s*(operator\s*\(\))\s*\(([^)]*)\)\s*(?:(?:const|override|noexcept|final|volatile|&|&&)\s*)*(?::\s*[^{]*)?\{/);
         if (opCallMatch) memberFuncMatch = opCallMatch;
       }
       if (!memberFuncMatch) {
         // Try operator() with nested parens in params
-        let opCallMatch2 = stripped.match(/^(?:(?:virtual|static|inline|explicit|friend|const)\s+)*(?:[\w:~]+\s+)*&?\s*(operator\s*\(\))\s*\(((?:[^()]|\([^)]*\))*)\)\s*(?:(?:const|override|noexcept|final|volatile|&|&&)\s*)*(?::\s*[^{]*)?\{/);
+        let opCallMatch2 = stripped.match(/^(?:(?:virtual|static|inline|explicit|friend|const)\s+)*(?:[\w:~]+[&\s]+)*&?\s*(operator\s*\(\))\s*\(((?:[^()]|\([^)]*\))*)\)\s*(?:(?:const|override|noexcept|final|volatile|&|&&)\s*)*(?::\s*[^{]*)?\{/);
         if (opCallMatch2) memberFuncMatch = opCallMatch2;
       }
       if (memberFuncMatch) {
@@ -452,7 +543,10 @@ function instrumentCode(sourceCode) {
         inMemberFunction = true;
         memberFunctionStructName = currentStructName;
         memberFunctionIsStatic = stripped.includes('static');
+        memberFunctionScopeDepth = scopeStack.length;
         functionDefs.push({name: funcName, startLine: lineNum, params: params, isMember: true, structName: currentStructName});
+        currentFunc = funcName;
+        funcNameStack.push(funcName);
 
         // Output the function signature line
         output.push(line);
@@ -526,6 +620,8 @@ function instrumentCode(sourceCode) {
         let params = funcMatch[3].trim();
         inFunctionBody = true;
         functionDefs.push({name: funcName, startLine: lineNum, params: params});
+        currentFunc = funcName;
+        funcNameStack.push(funcName);
 
         // Output the function signature line
         output.push(line);
@@ -609,10 +705,22 @@ function instrumentCode(sourceCode) {
           deletedPointers.delete(v);
         }
       }
-      // Check if we're leaving a member function — return to struct body mode
-      if (inMemberFunction && scopeStack.length <= 1) {
-        inFunctionBody = false;
+      // Check if we're leaving a member function — return to struct/local-class body mode
+      if (inMemberFunction && scopeStack.length <= memberFunctionScopeDepth) {
         inMemberFunction = false;
+        funcNameStack.pop();
+        currentFunc = funcNameStack[funcNameStack.length - 1];
+        if (inLocalClassBody) {
+          // The member function's '{' was counted by the local class body
+          // handler. Now count the '}' to keep localClassBraceDepth balanced.
+          for (let c of stripped) {
+            if (c === '}') localClassBraceDepth--;
+          }
+          output.push(line);
+          continue;
+        }
+        // Returning to global struct body
+        inFunctionBody = false;
         inStructBody = true;
         // Count closing braces to update structBraceDepth.
         // The member function's '{' was counted by the inStructBody block
@@ -633,6 +741,8 @@ function instrumentCode(sourceCode) {
       // Check if we're leaving a function body
       if (inFunctionBody && scopeStack.length <= 1) {
         inFunctionBody = false;
+        funcNameStack.pop();
+        currentFunc = funcNameStack[funcNameStack.length - 1];
         // Note: __opt_pop_frame__() is NOT emitted here because in clang-repl,
         // code after 'return' inside a function is unreachable and causes
         // "UNSUPPORTED FEATURES" errors. Instead, frames are popped implicitly
@@ -648,16 +758,115 @@ function instrumentCode(sourceCode) {
       continue;
     }
 
-    // Determine current function name for frame management
-    let currentFunc = 'main';
-    for (let fd of functionDefs) {
-      if (fd.startLine <= lineNum) currentFunc = fd.name;
-    }
+    // currentFunc is tracked via funcNameStack — no need to derive from line numbers
 
     // Check for for-loop header: extract variable declarations from inside for(...)
-    // Only handle for-loops with opening brace — brace-less for-loops would
-    // have their trace injected as the loop body, breaking execution.
+    // Handles both braced for-loops (for(...) {) and brace-less single-line
+    // for-loops (for(...) <body>;) — the latter are wrapped in braces with a
+    // trace call injected inside the loop body.
     let forMatch = stripped.match(/^\s*for\s*\(([^;]*);([^;]*);([^)]*)\)\s*\{\s*$/);
+    if (!forMatch) {
+      // Brace-less for-loop: for(...) <body>;
+      // The body is everything after the closing ')' of the for-header.
+      // If there are multiple statements on the same line separated by ';',
+      // only the first is the loop body; the rest execute after the loop.
+      let bracelessForMatch = stripped.match(/^\s*for\s*\(([^;]*);([^;]*);([^)]*)\)\s*(.+)$/);
+      if (bracelessForMatch && !bracelessForMatch[4].trim().startsWith('{')) {
+        // Transform: for(...) body; rest;
+        // Into:      for(...) { __opt_trace_fn__(...); body; }
+        //            rest;
+        let initPart = bracelessForMatch[1].trim();
+        let condPart = bracelessForMatch[2].trim();
+        let incrPart = bracelessForMatch[3].trim();
+
+        // Extract body and afterLoop from the ORIGINAL line (not stripped)
+        // to preserve string/char literals. Find the ')' that closes the for-header
+        // by tracking paren depth from 'for', then split the rest at first ';'.
+        let bodyStartIdx = -1;
+        let parenD = 0;
+        let inStr = false, inChar = false;
+        for (let j = line.indexOf('for'); j < line.length; j++) {
+          const c = line[j];
+          if (inStr) { if (c === '\\' && j+1 < line.length) j++; else if (c === '"') inStr = false; continue; }
+          if (inChar) { if (c === '\\' && j+1 < line.length) j++; else if (c === "'") inChar = false; continue; }
+          if (c === '"') { inStr = true; continue; }
+          if (c === "'") { inChar = true; continue; }
+          if (c === '(') parenD++;
+          if (c === ')') { parenD--; if (parenD === 0) { bodyStartIdx = j + 1; break; } }
+        }
+        let restOriginal = bodyStartIdx >= 0 ? line.substring(bodyStartIdx).trim() : '';
+
+        // Split restOriginal into loop-body (first statement) and post-loop statements
+        let bodyPart = restOriginal;
+        let afterLoop = '';
+        let pd = 0, bd = 0, brd = 0, inS = false, inC = false;
+        for (let j = 0; j < restOriginal.length; j++) {
+          const c = restOriginal[j];
+          if (inS) { if (c === '\\' && j+1 < restOriginal.length) j++; else if (c === '"') inS = false; continue; }
+          if (inC) { if (c === '\\' && j+1 < restOriginal.length) j++; else if (c === "'") inC = false; continue; }
+          if (c === '"') { inS = true; continue; }
+          if (c === "'") { inC = true; continue; }
+          if (c === '(') pd++; if (c === ')') pd--;
+          if (c === '{') bd++; if (c === '}') bd--;
+          if (c === '[') brd++; if (c === ']') brd--;
+          if (c === ';' && pd === 0 && bd === 0 && brd === 0) {
+            bodyPart = restOriginal.substring(0, j + 1);
+            afterLoop = restOriginal.substring(j + 1);
+            break;
+          }
+        }
+
+        // Parse init vars
+        let initVars = new Set();
+        if (initPart) {
+          let declared = parseDeclaration(initPart);
+          for (let d of declared) { initVars.add(d.name); }
+        }
+
+        // Pre-loop trace (exclude loop vars — not initialized yet)
+        let fnArg = `"${currentFunc}", `;
+        let captures = genCaptures(knownVars, heapPointers, deletedPointers, structDefs, initVars);
+        if (captures.length > 0) {
+          output.push(`__opt_trace_fn__(${fnArg}${lineNum}, [&](auto& __t__) { ${captures.join(' ')} });`);
+        } else {
+          output.push(`__opt_trace_fn__(${fnArg}${lineNum});`);
+        }
+
+        // Add init vars to knownVars
+        if (initPart) {
+          let declared = parseDeclaration(initPart);
+          for (let d of declared) {
+            knownVars.set(d.name, d);
+            scopeStack[scopeStack.length-1].vars.add(d.name);
+          }
+        }
+
+        // Output: for(...) { __trace; body; } afterLoop;
+        let forHeader = `for (${initPart}; ${condPart}; ${incrPart})`;
+        output.push(`${forHeader} {`);
+        // Per-iteration trace inside loop body
+        let captures2 = genCaptures(knownVars, heapPointers, deletedPointers, structDefs);
+        if (captures2.length > 0) {
+          output.push(`__opt_trace_fn__(${fnArg}${lineNum}, [&](auto& __t__) { ${captures2.join(' ')} });`);
+        } else {
+          output.push(`__opt_trace_fn__(${fnArg}${lineNum});`);
+        }
+        output.push(bodyPart);
+        output.push(`}`);
+        // Remove loop variables from knownVars — they're scoped to the for-loop
+        if (initPart) {
+          let declared = parseDeclaration(initPart);
+          for (let d of declared) {
+            knownVars.delete(d.name);
+            scopeStack[scopeStack.length-1].vars.delete(d.name);
+          }
+        }
+        if (afterLoop.trim()) {
+          output.push(afterLoop.trim());
+        }
+        continue;
+      }
+    }
     if (forMatch) {
       // Parse the init part: e.g., "int i = 0" or "int i = 0, j = 5"
       let initPart = forMatch[1].trim();
@@ -754,19 +963,15 @@ function instrumentCode(sourceCode) {
 
     if (stmtComplete && !stripped.match(/^\s*(for|while|if|else|switch|do)\b/)) {
       let fnArg = `"${currentFunc}", `;
-      if (inMemberFunction) {
-        // Inside member functions, lambdas don't work in clang-repl.
-        // Use __opt_trace_fn_this__ which captures 'this' without a lambda.
-        // But static member functions have no 'this' — use plain trace instead.
-        if (memberFunctionIsStatic) {
-          let captures = genCaptures(knownVars, heapPointers, deletedPointers, structDefs);
-          if (captures.length > 0) {
-            output.push(`__opt_trace_fn__(${fnArg}${lineNum}, [&](auto& __t__) { ${captures.join(' ')} });`);
-          } else {
-            output.push(`__opt_trace_fn__(${fnArg}${lineNum});`);
-          }
+      if (inMemberFunction && !memberFunctionIsStatic) {
+        // Non-static member function: capture 'this' explicitly, plus all
+        // known variables via lambda. The lambda captures 'this' so we can
+        // access member variables through the this pointer.
+        let captures = genCaptures(knownVars, heapPointers, deletedPointers, structDefs);
+        if (captures.length > 0) {
+          output.push(`__opt_trace_fn__(${fnArg}${lineNum}, [this](auto& __t__) { ${captures.join(' ')} });`);
         } else {
-          output.push(`__opt_trace_fn_this__(${fnArg}${lineNum}, "${memberFunctionStructName}*", (void*)this);`);
+          output.push(`__opt_trace_fn__(${fnArg}${lineNum});`);
         }
       } else {
         let captures = genCaptures(knownVars, heapPointers, deletedPointers, structDefs);
