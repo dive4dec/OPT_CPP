@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.7] - 2026-07-11
+
+### Fixed
+- **Redefinition of `main` on re-runs** — the persistent clang-repl kernel retains all previous declarations, so editing and re-executing code in `live.html` caused "redefinition of 'main'" errors. Each execution now renames `main()` to a unique `__opt_main_<timestamp>()` function, so hundreds of re-runs work without redefinition. The unique function names are lightweight symbol table entries; standard library includes stay cached via clang-repl's include guards, so re-runs remain fast.
+- **Redefinition of trace structs on re-runs** — `opt_trace.h` now has include guards (`#ifndef OPT_TRACE_H` / `#define OPT_TRACE_H` / `#endif`) so the trace runtime (singleton, tracer, capture functions) is not redefined on subsequent executions in the persistent kernel.
+- **Heavy header crashes** — removed `checkHeavyHeaders()` blocking logic. Code using `#include <format>` now executes through a raw path (no trace header, no instrumentation) that produces stdout output without step-by-step visualization. `std::format` is also available without `#include <format>` since clang-repl's preamble provides it.
+
+### Changed
+- **Persistent worker (no per-execution kernel recreation)** — the worker stays alive across executions for fast re-runs. Re-runs reuse cached clang-repl state (includes, standard library templates). Only `main()` is renamed per execution to avoid redefinition.
+- **Init timeout** reduced from 120s to 60s (pre-compilation of trace header removed).
+- **Execution timeout** is 120s.
+- **`opt_trace.h`** — removed pre-compilation during worker init; the header is compiled fresh on each execution (its include guard makes subsequent compilations instant).
+- **`cppworker.js`** — removed `xkernel.delete()`/recreate approach (hung indefinitely); removed `.undo` meta-command approach (not supported by `Cpp::Process()`); removed pre-compilation of `opt_trace.h` during init; removed skip-trace-header logic for `<format>` code.
+- **`runner.ts`** — removed `checkHeavyHeaders()` function and call site; removed `checkSyntax()` retained; init timeout 60s; execution timeout 120s.
+
+### Known Limitations
+- Code using `#include <format>` runs without step-by-step visualization (trace header + instrumentation skipped to avoid WASM memory exhaustion from combined compilation).
+- Unique `__opt_main_<timestamp>` function definitions accumulate in clang-repl's AST across hundreds of re-runs. These are lightweight symbol table entries and do not affect performance, but the kernel state grows slowly.
+- `set_count` body statements (brace-less `if`/`else`) do not receive per-statement traces — pre-existing limitation carried over from v0.3.5.
+
 ## [0.3.6] - 2026-07-11
 
 ### Changed

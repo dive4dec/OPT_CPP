@@ -111,6 +111,8 @@ self.onmessage = async (event) => {
       const Module = {
         locateFile: (file) => XEUS_CPP_BASE + file + '?v=0.10.0',
 
+        INITIAL_MEMORY: 67108864, // 64MB — default, matches compiler-research.org
+
         // Route stdout through iopub stream so runner.ts can capture it.
         // Suppress clang compiler diagnostics (emitted before user code runs)
         // by only forwarding after the first sentinel marker is seen.
@@ -147,7 +149,9 @@ self.onmessage = async (event) => {
       self.xkernel = xkernel;
       self.xserver = xserver;
 
-      // Pre-load the trace header
+      // Pre-load the trace header (but don't pre-compile it — pre-compilation
+      // consumes WASM memory that is then unavailable for user code like
+      // <format>)
       await loadTraceHeader();
 
       initResolve();
@@ -161,16 +165,67 @@ self.onmessage = async (event) => {
       // Reset stdout filtering for this execution
       self._userExecutionStarted = false;
 
-      // Reuse the existing kernel — in emscripten 4.x, the WASM module and
-      // xkernel cannot be cleanly recreated. Static state from previous
-      // executions persists, but the trace header resets it via __s__.reset().
+      // Persistent kernel: clang-repl keeps all previous declarations.
+      // To prevent "redefinition of 'main'" on re-runs, rename main() to
+      // a unique function name for each execution. This is lightweight —
+      // just a symbol table entry, no heavy recompilation (includes are cached
+      // by clang-repl's include guards).
 
       // ── Instrument the user code ──
       const header = optTraceHeader || '';
       let instrumentedCode;
       let globalVarNames = [];
+
+      // Check if user code includes <format> — if so, skip instrumentation
+      // and trace header to reduce compilation burden.
+      const hasHeavyHeader = /#include\s*[<"]format[>"]/i.test(code);
+
+      // Unique suffix for this execution's main() rename
+      const execId = Date.now();
+      const mainAlias = `__opt_main_${execId}`;
+
+      if (hasHeavyHeader) {
+        // Execute raw user code with main() renamed to avoid redefinition.
+        let execCode = code
+          .replace(/\bint\s+main\s*\(\s*\)/g, `int ${mainAlias}()`)
+          .replace(/\bvoid\s+main\s*\(\s*\)/g, `void ${mainAlias}()`);
+        if (/\bint\s+main\s*\(\s*\)/.test(code) || /\bvoid\s+main\s*\(\s*\)/.test(code)) {
+          execCode += `\n${mainAlias}();`;
+        }
+
+        const msgId = 'opt-' + Date.now();
+        const executeRequest = {
+          channel: "shell",
+          header: {
+            msg_id: msgId,
+            username: "opt",
+            session: "opt-session",
+            msg_type: "execute_request",
+            date: new Date().toISOString(),
+            version: "5.3",
+          },
+          parent_header: {},
+          metadata: {},
+          content: {
+            code: execCode,
+            silent: false,
+            store_history: true,
+            allow_stdin: false,
+            stop_on_error: false,
+          },
+        };
+        self._userExecutionStarted = true;
+        self.xserver.notify_listener(executeRequest);
+        return;
+      }
+
+      // For instrumented path: rename main() before instrumentation
+      const renamedCode = code
+        .replace(/\bint\s+main\s*\(\s*\)/g, `int ${mainAlias}()`)
+        .replace(/\bvoid\s+main\s*\(\s*\)/g, `void ${mainAlias}()`);
+
       try {
-        const result = self.instrumentCode(code);
+        const result = self.instrumentCode(renamedCode);
         if (typeof result === 'string') {
           instrumentedCode = result;
         } else {
@@ -179,22 +234,22 @@ self.onmessage = async (event) => {
         }
       } catch (e) {
         // If instrumentation fails, use original code (no visualization)
-        instrumentedCode = code;
+        instrumentedCode = renamedCode;
       }
 
       // Build the full code to execute:
       // 1. Trace header (opt_trace.h) — defines singleton, tracer, etc.
       // 2. Reset trace state + start stdout redirect
-      // 3. Instrumented user code
-      // 4. If code has main(), append main() call
+      // 3. Instrumented user code (with main renamed)
+      // 4. Call the renamed main()
       // 5. Finalize: write the trace JSON to temp file
       let execCode = header + '\n';
       execCode += '{ auto& __s__ = __opt_get_state__(); __s__.reset(); }\n';
       execCode += instrumentedCode;
 
-      // If the code defines int main(), append a call to main()
+      // If the code defines main(), call the renamed version
       if (/\bint\s+main\s*\(\s*\)/.test(code) || /\bvoid\s+main\s*\(\s*\)/.test(code)) {
-        execCode += '\nmain();';
+        execCode += `\n${mainAlias}();`;
       }
 
       // Finalize: write the trace JSON to a temp file
