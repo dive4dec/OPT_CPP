@@ -3,20 +3,20 @@
     {
       "_path": "bin/xcpp.data",
       "path_type": "hardlink",
-      "sha256": "8ef84fa6eb7d493697d445a70f02e1cce737ae2d5633ecfa086d016a541363e7",
-      "size_in_bytes": 14977396
+      "sha256": "0a624b0fe46252b3e89a22c366a5d5415cbf22355ae2abd2a007c69040cb5885",
+      "size_in_bytes": 26074947
     },
     {
       "_path": "bin/xcpp.js",
       "path_type": "hardlink",
-      "sha256": "cedb3d13d1a5b1804b8e3eaa0c1da6fff613b35325c1bf4beb83740527206a82",
-      "size_in_bytes": 4077287
+      "sha256": "163ff66cfe1a4f27fd18df5589621eefb0b45d472a729e84c91022a4468ebf9b",
+      "size_in_bytes": 2193469
     },
     {
       "_path": "bin/xcpp.wasm",
       "path_type": "hardlink",
-      "sha256": "f39c49a64ca989a4c63d868e717287782f2412c5c274840c3cf236f7f9539ef5",
-      "size_in_bytes": 2553907
+      "sha256": "a24d80c2f105838b1d7b6986f44fc22dee0a74a6d415d7c79d7022f76331b24b",
+      "size_in_bytes": 2240059
     },
     {
       "_path": "etc/xeus-cpp/tags.d/stl.json",
@@ -27,22 +27,126 @@
     {
       "_path": "lib/cmake/xeus-cpp/xeus-cppConfig.cmake",
       "path_type": "hardlink",
-      "sha256": "488c55ed5c9d3a4cde138660931d73d91b011efc975ee1af4116cdfdd0038ef8",
-      "size_in_bytes": 2795
+      "sha256": "b824e03388c57308c3f1ce025272b29311b67ffb46a14286245b46a638a215e6",
+      "size_in_bytes": 2803
     },
     {
       "_path": "lib/cmake/xeus-cpp/xeus-cppConfigVersion.cmake",
       "path_type": "hardlink",
-      "sha256": "9536effabef4b173ad1321a6052dfeaf18d187f4489b0f0f7110fe108c518712",
-      "size_in_bytes": 1864
+      "sha256": "ba0a71047ab95c7384501f6711f045cfab38e7b33559c89b2c0511963ad1eefa",
+      "size_in_bytes": 1862
+    },
+    {
+      "_path": "share/jupyter/kernels/xc11/kernel.json",
+      "path_type": "hardlink",
+      "file_mode": "text",
+      "prefix_placeholder": "/home/runner/work/recipes/recipes/output/bld/rattler-build_xeus-cpp_1775117927/host_env_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placeho",
+      "sha256": "d76dd48785d114b5fedd8fc2a42ff8b4d8c62acf3a17c1505eeef2102dc8b8f0",
+      "size_in_bytes": 730
+    },
+    {
+      "_path": "share/jupyter/kernels/xc11/logo-32x32.png",
+      "path_type": "hardlink",
+      "sha256": "0a75db5b4bd11342954a136dc6360148133ac510c6392452775eb16881f930aa",
+      "size_in_bytes": 980
+    },
+    {
+      "_path": "share/jupyter/kernels/xc11/logo-64x64.png",
+      "path_type": "hardlink",
+      "sha256": "dbe3715ad118f26ba52a5b60e007329e6db91adfa3fe2e20bd788cf6a681fe49",
+      "size_in_bytes": 1995
+    },
+    {
+      "_path": "share/jupyter/kernels/xc11/logo-svg.svg",
+      "path_type": "hardlink",
+      "sha256": "eb7c33a4d8978c92b95358f227e339dc7e2be77459a90dca6aab6bb526d770bf",
+      "size_in_bytes": 1374
+    },
+    {
+      "_path": "share/jupyter/kernels/xc17/kernel.json",
+      "path_type": "hardlink",
+      "file_mode": "text",
+      "prefix_placeholder": "/home/runner/work/recipes/recipes/output/bld/rattler-build_xeus-cpp_1775117927/host_env_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placeho",
+      "sha256": "575d9b0af36653a51083c1416a13405fa1b9dc1f3a2d686a76a1d9ff19d4dc2a",
+      "size_in_bytes": 730
+    },
+    {
+      "_path": "share/jupyter/kernels/xc17/logo-32x32.png",
+      "path_type": "hardlink",
+      "sha256": "0a75db5b4bd11342954a136dc6360148133ac510c6392452775eb16881f930aa",
+      "size_in_bytes": 980
+    },
+    {
+      "_path": "share/jupyter/kernels/xc17/logo-64x64.png",
+      "path_type": "hardlink",
+      "sha256": "dbe3715ad118f26ba52a5b60e007329e6db91adfa3fe2e20bd788cf6a681fe49",
+      "size_in_bytes": 1995
+    },
+    {
+      "_path": "share/jupyter/kernels/xc17/logo-svg.svg",
+      "path_type": "hardlink",
+      "sha256": "eb7c33a4d8978c92b95358f227e339dc7e2be77459a90dca6aab6bb526d770bf",
+      "size_in_bytes": 1374
+    },
+    {
+      "_path": "share/jupyter/kernels/xc23/kernel.json",
+      "path_type": "hardlink",
+      "file_mode": "text",
+      "prefix_placeholder": "/home/runner/work/recipes/recipes/output/bld/rattler-build_xeus-cpp_1775117927/host_env_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placeho",
+      "sha256": "67ef1045dde2d4a7d85b8c43620bb390b456a3888861527181f47c81313ef1f0",
+      "size_in_bytes": 730
+    },
+    {
+      "_path": "share/jupyter/kernels/xc23/logo-32x32.png",
+      "path_type": "hardlink",
+      "sha256": "0a75db5b4bd11342954a136dc6360148133ac510c6392452775eb16881f930aa",
+      "size_in_bytes": 980
+    },
+    {
+      "_path": "share/jupyter/kernels/xc23/logo-64x64.png",
+      "path_type": "hardlink",
+      "sha256": "dbe3715ad118f26ba52a5b60e007329e6db91adfa3fe2e20bd788cf6a681fe49",
+      "size_in_bytes": 1995
+    },
+    {
+      "_path": "share/jupyter/kernels/xc23/logo-svg.svg",
+      "path_type": "hardlink",
+      "sha256": "eb7c33a4d8978c92b95358f227e339dc7e2be77459a90dca6aab6bb526d770bf",
+      "size_in_bytes": 1374
+    },
+    {
+      "_path": "share/jupyter/kernels/xcpp17/kernel.json",
+      "path_type": "hardlink",
+      "file_mode": "text",
+      "prefix_placeholder": "/home/runner/work/recipes/recipes/output/bld/rattler-build_xeus-cpp_1775117927/host_env_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placeho",
+      "sha256": "3fc86fce3a78b8b39b7275493943440a5de7c1820e9d55e3b28356f65b0e23e1",
+      "size_in_bytes": 723
+    },
+    {
+      "_path": "share/jupyter/kernels/xcpp17/logo-32x32.png",
+      "path_type": "hardlink",
+      "sha256": "4791f59b4d00e1bb09dfaed8707d6a20f047f9ec3a1b9c653039b8d31aeab622",
+      "size_in_bytes": 1520
+    },
+    {
+      "_path": "share/jupyter/kernels/xcpp17/logo-64x64.png",
+      "path_type": "hardlink",
+      "sha256": "4752a7f40d08d9dded322f4feef5ceef3558d5597f0903b72ef1f83bfea795bf",
+      "size_in_bytes": 3113
+    },
+    {
+      "_path": "share/jupyter/kernels/xcpp17/logo-svg.svg",
+      "path_type": "hardlink",
+      "sha256": "bb5916d91e28675dd19e73b1e8a63bc8a3a29ded26c3e28068c945299a9886e6",
+      "size_in_bytes": 1894
     },
     {
       "_path": "share/jupyter/kernels/xcpp20/kernel.json",
       "path_type": "hardlink",
       "file_mode": "text",
-      "prefix_placeholder": "/home/runner/work/recipes/recipes/output/bld/rattler-build_xeus-cpp_1737621162/host_env_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placeho",
-      "sha256": "535526729cd261511c1f6242623d665ea1e3f71697fccb972a062015409e941c",
-      "size_in_bytes": 525
+      "prefix_placeholder": "/home/runner/work/recipes/recipes/output/bld/rattler-build_xeus-cpp_1775117927/host_env_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placeho",
+      "sha256": "30419bc1157722614b2113f7dfb401f3090f687332d96768deb68dd1d4f2451c",
+      "size_in_bytes": 723
     },
     {
       "_path": "share/jupyter/kernels/xcpp20/logo-32x32.png",
@@ -63,10 +167,36 @@
       "size_in_bytes": 1894
     },
     {
+      "_path": "share/jupyter/kernels/xcpp23/kernel.json",
+      "path_type": "hardlink",
+      "file_mode": "text",
+      "prefix_placeholder": "/home/runner/work/recipes/recipes/output/bld/rattler-build_xeus-cpp_1775117927/host_env_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placeho",
+      "sha256": "dfb7e7a5f8709296426e50b4605f85648b558034ba428dbfecf45f68a9863c5d",
+      "size_in_bytes": 723
+    },
+    {
+      "_path": "share/jupyter/kernels/xcpp23/logo-32x32.png",
+      "path_type": "hardlink",
+      "sha256": "4752a7f40d08d9dded322f4feef5ceef3558d5597f0903b72ef1f83bfea795bf",
+      "size_in_bytes": 3113
+    },
+    {
+      "_path": "share/jupyter/kernels/xcpp23/logo-64x64.png",
+      "path_type": "hardlink",
+      "sha256": "4791f59b4d00e1bb09dfaed8707d6a20f047f9ec3a1b9c653039b8d31aeab622",
+      "size_in_bytes": 1520
+    },
+    {
+      "_path": "share/jupyter/kernels/xcpp23/logo-svg.svg",
+      "path_type": "hardlink",
+      "sha256": "bb5916d91e28675dd19e73b1e8a63bc8a3a29ded26c3e28068c945299a9886e6",
+      "size_in_bytes": 1894
+    },
+    {
       "_path": "share/xeus-cpp/tagfiles/cppreference-doxygen-web.tag",
       "path_type": "hardlink",
-      "sha256": "2a098d425027153a091a6748053deaccd74a173d1516c4b7f64beba4b4e4a8c0",
-      "size_in_bytes": 1726240
+      "sha256": "2ef0122a1e1f3903eab4abe0042a6405f2309b64deb0c6a2e975370799985cfa",
+      "size_in_bytes": 2160539
     }
   ],
   "paths_version": 1

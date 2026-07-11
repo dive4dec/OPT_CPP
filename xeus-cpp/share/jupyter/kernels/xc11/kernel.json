@@ -1,0 +1,20 @@
+{
+  "display_name": "C11",
+  "argv": [
+      "/home/runner/work/recipes/recipes/output/bld/rattler-build_xeus-cpp_1775117927/host_env_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placeho/bin/xcpp",
+      "-resource-dir", "/lib/clang/21",
+      "-Xclang", "-iwithsysroot/include/compat",
+      "-xc",
+      "-std=c11",
+      "-fwasm-exceptions", "-mllvm", "-wasm-enable-sjlj", "-msimd128"
+  ],
+  "language": "c",
+  "kernel_protocol_version": "5.6.0", 
+  "metadata": {
+    "debugger": false,
+    "shared": {
+      "libxeus.so": "lib/libxeus.so",
+      "libclangCppInterOp.so": "lib/libclangCppInterOp.so"
+    }
+  }
+}

@@ -1,7 +1,8 @@
 - script:
-  - test -f $PREFIX/bin/xcpp.wasm
-  - test -f $PREFIX/bin/xcpp.data
-  - test -f $PREFIX/bin/xcpp.js
-  - test -f $PREFIX/share/jupyter/kernels/xcpp20/kernel.json
-  - test -f $PREFIX/share/jupyter/kernels/xcpp20/logo-32x32.png
-  - test -f $PREFIX/share/jupyter/kernels/xcpp20/logo-64x64.png
+    content: |-
+      test -f $PREFIX/bin/xcpp.wasm
+      test -f $PREFIX/bin/xcpp.data
+      test -f $PREFIX/bin/xcpp.js
+      test -f $PREFIX/share/jupyter/kernels/xcpp23/kernel.json
+      test -f $PREFIX/share/jupyter/kernels/xcpp23/logo-32x32.png
+      test -f $PREFIX/share/jupyter/kernels/xcpp23/logo-64x64.png
