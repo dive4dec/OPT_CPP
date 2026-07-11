@@ -12,10 +12,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 - Member functions inside local classes (e.g. `class Counter` defined in `main()`) are now instrumented, producing separate visualization steps that step into the function body. Previously only global struct member functions were instrumented; local class member functions were passed through with no trace injection.
 - Reference return types like `int& operator++()` are now matched by the member function detection regex.
+- Production helm values file (`values-live.yaml`) for the opt-cpp chart, with API proxy env vars and ingress config.
 
 ### Fixed
 - `currentFunc` is now tracked via a push/pop stack instead of being derived from line numbers, which was stuck at the last member function name for all subsequent lines.
 - Member function scope close detection now uses `memberFunctionScopeDepth` instead of a hardcoded `scopeStack.length <= 1` check that failed for local classes inside `main()`.
+- Helm chart ingress path corrected from `/OPT_Mentor` to `/OPT_CPP` with proper `socratic.cs.cityu.edu.hk` host (was copied from OPT_Mentor chart).
+- `API_PROXY_TARGET` and `API_PROXY_KEY` env vars are now properly set in the helm deployment, fixing 502 errors on the "Ask AI" button.
 
 ## [0.3.4] - 2026-07-11
 
