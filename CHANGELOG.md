@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.6] - 2026-07-11
+
+### Changed
+- Upgraded xeus-cpp from 0.6.0 (clang 17, C++17) to 0.10.0 (clang 21.1.8, C++23). C++23 features including `std::format` are now available in the live code editor.
+- Switched WASM package source from `emscripten-forge` to `emscripten-forge-4x` (emscripten-abi 4.0.8) to get pre-built clang 21 WASM binaries.
+- Upgraded CppInterOp from 1.5.0 to 1.9.0 and added `xeus 6.0.5` package (provides `libxeus.so` required by the new WASM binary's dylink section).
+
+### Fixed
+- Worker initialization (`cppworker.js`) updated for emscripten 4.x / xeus-cpp 0.10.0 API: dynamic libraries (`libxeus.so`, `libclangCppInterOp.so`) are now auto-loaded by the WASM module's `loadDylibs()` instead of being manually written to the filesystem; `waitRunDependencies` is called on first init to ensure dynamic library loading completes before kernel creation.
+- Full kernel argv now passed to `xkernel()` constructor: `-resource-dir /lib/clang/21`, `-Xclang -iwithsysroot/include/compat`, `-std=c++23`, `-fwasm-exceptions`, `-mllvm -wasm-enable-sjlj`, `-msimd128` — matching the xeus-cpp 0.10.0 `xcpp23` kernel spec.
+- `runner.ts` restructured to terminate and recreate the Web Worker for each execution, since emscripten 4.x does not allow reinstantiating the WASM module within the same worker. This follows the same pattern used by `jupyterlite-xeus`.
+- Cache-busting `?v=0.10.0` added to `importScripts`, `locateFile`, and `.so` fetch URLs to prevent stale cached 0.6.0 binaries from being served alongside the new 0.10.0 `xcpp.js`.
+
+### Known Limitations
+- `set_count` body statements (brace-less `if`/`else`) do not receive per-statement traces — pre-existing `pendingBracelessBody` limitation carried over from v0.3.5.
+- Static state from previous executions is not reset (the WASM module cannot be reinstantiated in emscripten 4.x); each execution gets a fresh Web Worker instead, which provides a clean kernel state but with a small initialization cost per run.
+
 ## [0.3.5] - 2026-07-11
 
 ### Added

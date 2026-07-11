@@ -1,7 +1,9 @@
 import { OptLite, combineDefaults } from './global'
 
 // C++ execution worker — mirrors pyodide/runner.ts but uses xeus-cpp
-const cppWorker = new Worker(new URL("./cppworker.js", import.meta.url));
+// In emscripten 4.x, the WASM module cannot be reinstantiated, so we
+// terminate and recreate the worker for each execution to get a clean state.
+let cppWorker: Worker | null = null;
 const callbacks: Record<number, (data: any) => void> = {};
 
 // Kernel output collector — iopub messages from the C++ runtime arrive here
@@ -33,17 +35,28 @@ const initWorker = (() => {
         if (data.error) reject(new Error(data.error));
         else resolve(data);
       };
-      cppWorker.postMessage({
+      cppWorker!.postMessage({
         id,
         ...OptLite
       });
     });
   }
 })();
+// Create a fresh worker (used for both initial init and recreation)
+function createWorker(): Worker {
+  const w = new Worker(new URL("./cppworker.js", import.meta.url));
+  w.onmessage = handleWorkerMessage;
+  w.onerror = handleWorkerError;
+  return w;
+}
+
+// Create the initial worker BEFORE calling initWorker
+cppWorker = createWorker();
+
 let init = initWorker();
 
 // handle results from worker — both user messages and kernel iopub messages
-cppWorker.onmessage = async (event) => {
+async function handleWorkerMessage(event: MessageEvent) {
   const msg = event.data;
   const { id, ...data } = msg;
 
@@ -259,7 +272,7 @@ cppWorker.onmessage = async (event) => {
 };
 
 // Handle worker errors (e.g., uncaught WASM abort that kills the worker)
-cppWorker.onerror = (event) => {
+function handleWorkerError(event: ErrorEvent) {
   // If we have pending callbacks, reject them with the kernel error if available
   for (const id of Object.keys(callbacks)) {
     const cb = callbacks[id];
@@ -286,29 +299,42 @@ const asyncRun = (() => {
         kernelOutput = [];
         kernelHasError = false;
         kernelErrorText = '';
-        callbacks[id] = (data) => {
-          if (data.error) {
-            // The WASM abort may have sent compiler errors via iopub stderr
-            // messages that haven't been processed yet. Wait briefly for them.
-            setTimeout(() => {
-              if (kernelHasError && kernelErrorText) {
-                let errorMsg = kernelErrorText.split('\n')
-                  .find(l => l.includes('error:')) || 'Compilation error';
-                errorMsg = errorMsg.replace(/^input_line_\d+:\d+:\d+:\s*/, '').trim();
-                errorMsg = errorMsg.replace(/^.*?error:\s*/, 'error: ');
-                reject(new Error(errorMsg));
-              } else {
-                reject(new Error(data.error));
-              }
-            }, 500);
-          } else resolve(data);
-        };
-        cppWorker.postMessage({
-          ...options,
-          script: script,
-          rawInputLst: rawInputLst,
-          id,
-        });
+
+        // Terminate the old worker and create a fresh one for each execution.
+        // In emscripten 4.x, the WASM module cannot be reinstantiated within
+        // the same worker, so we need a new worker to get a clean kernel state.
+        if (cppWorker) {
+          cppWorker.terminate();
+        }
+        cppWorker = createWorker();
+
+        // Re-initialize the new worker before sending the execution request
+        init = initWorker();
+        init.then(() => {
+          callbacks[id] = (data) => {
+            if (data.error) {
+              // The WASM abort may have sent compiler errors via iopub stderr
+              // messages that haven't been processed yet. Wait briefly for them.
+              setTimeout(() => {
+                if (kernelHasError && kernelErrorText) {
+                  let errorMsg = kernelErrorText.split('\n')
+                    .find(l => l.includes('error:')) || 'Compilation error';
+                  errorMsg = errorMsg.replace(/^input_line_\d+:\d+:\d+:\s*/, '').trim();
+                  errorMsg = errorMsg.replace(/^.*?error:\s*/, 'error: ');
+                  reject(new Error(errorMsg));
+                } else {
+                  reject(new Error(data.error));
+                }
+              }, 500);
+            } else resolve(data);
+          };
+          cppWorker!.postMessage({
+            ...options,
+            script: script,
+            rawInputLst: rawInputLst,
+            id,
+          });
+        }).catch(reject);
       }).catch(reject);
     });
   };

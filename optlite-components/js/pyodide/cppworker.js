@@ -46,29 +46,33 @@ async function loadTraceHeader() {
 }
 
 // ── Create a fresh kernel from a clean module ──
-async function createKernel(XEUS_CPP_BASE) {
+async function createKernel(XEUS_CPP_BASE, waitForDeps = false) {
   const M = self.xeusModule;
 
-  // Write the .so into the FS (may already exist from a previous kernel)
-  try {
-    M.FS_createPath('/', 'lib', true, true);
-    M.FS.writeFile('/lib/libclangCppInterOp.so', cachedSoData);
-  } catch (e) {
-    // already exists
+  // Wait for all run dependencies (dynamic library loading) to complete.
+  // Only needed on first init — the WASM module auto-loads .so files.
+  if (waitForDeps) {
+    await new Promise(resolve => {
+      M.monitorRunDependencies = n => { if (n === 0) resolve(); };
+      M.addRunDependency('dummy');
+      M.removeRunDependency('dummy');
+    });
   }
 
-  // Ensure symbols are globally available
-  try {
-    M.loadDynamicLibrary('/lib/libclangCppInterOp.so', { global: true, nodelete: true });
-  } catch (e) {
-    // may already be loaded
-  }
-
-  // Create and start a fresh kernel
+  // Create and start a fresh kernel with C++23 standard
+  // argv matches the xeus-cpp 0.10.0 kernel spec for xcpp23
+  const argv = [
+    'xcpp',
+    '-resource-dir', '/lib/clang/21',
+    '-Xclang', '-iwithsysroot/include/compat',
+    '-std=c++23',
+    '-fwasm-exceptions', '-mllvm', '-wasm-enable-sjlj', '-msimd128'
+  ];
   let xkernel;
   try {
-    xkernel = new M.xkernel(["xcpp"]);
+    xkernel = new M.xkernel(argv);
   } catch (e) {
+    console.error('[cppworker] xkernel(argv) failed, trying default:', e);
     xkernel = new M.xkernel();
   }
   const xserver = xkernel.get_server();
@@ -97,16 +101,11 @@ self.onmessage = async (event) => {
     let results;
     if (id < 0) {
       // ── Initialize worker (one-time setup) ──
-      importScripts(XEUS_CPP_BASE + 'xcpp.js');
-
-      // Fetch the .so once and cache it
-      const soUrl = XEUS_CPP_BASE + 'libclangCppInterOp.so';
-      const soResponse = await fetch(soUrl);
-      const soArrayBuffer = await soResponse.arrayBuffer();
-      cachedSoData = new Uint8Array(soArrayBuffer);
+      // Cache-bust xcpp.js to ensure we get the version matching this build
+      importScripts(XEUS_CPP_BASE + 'xcpp.js?v=0.10.0');
 
       const Module = {
-        locateFile: (file) => XEUS_CPP_BASE + file,
+        locateFile: (file) => XEUS_CPP_BASE + file + '?v=0.10.0',
 
         // Suppress clang/LLVM diagnostic output that floods the console
         // (stdout from user code goes through iopub stream, captured by runner.ts)
@@ -122,22 +121,15 @@ self.onmessage = async (event) => {
             content: { name: 'stderr', text: workerStderr + '\nerror: ' + abortMsg }
           });
         },
-
-        preRun: [
-          function() {
-            const M = self.xeusModule || Module;
-            try {
-              M.FS_createPath('/', 'lib', true, true);
-              M.FS.writeFile('/lib/libclangCppInterOp.so', cachedSoData);
-            } catch (e) { /* may already exist */ }
-          }
-        ],
       };
 
+      console.log('[cppworker] Loading createXeusModule...');
       self.xeusModule = await createXeusModule(Module);
+      console.log('[cppworker] createXeusModule loaded, creating kernel...');
 
-      // Create initial kernel
-      const { xkernel, xserver } = await createKernel(XEUS_CPP_BASE);
+      // Create initial kernel (wait for dynamic library loading on first init)
+      const { xkernel, xserver } = await createKernel(XEUS_CPP_BASE, true);
+      console.log('[cppworker] Kernel created');
       self.xkernel = xkernel;
       self.xserver = xserver;
 
@@ -152,48 +144,9 @@ self.onmessage = async (event) => {
 
       const code = self.script;
 
-      // Recreate the WASM module for a completely clean state
-      // (static variables, global state, JIT state all reset)
-      try {
-        if (self.xkernel && typeof self.xkernel.delete === 'function') {
-          self.xkernel.delete();
-        }
-      } catch (e) {
-        // delete() may not exist; just drop the reference
-      }
-
-      // Create a fresh WASM module to reset all state (including statics)
-      const XEUS_CPP_BASE2 = self.xeusCpp ||
-        new URL('./xeus-cpp/', self.location.href).href;
-      const Module2 = {
-        locateFile: (file) => XEUS_CPP_BASE2 + file,
-        print: () => {},
-        printErr: (text) => { workerStderr += text + '\n'; },
-        onAbort: (reason) => {
-          const abortMsg = typeof reason === 'string' && reason.length > 0 ? reason : 'Compilation error (WASM aborted). Check your code for syntax errors.';
-          // Send as iopub stream so runner.ts captures it as kernelErrorText
-          _origPostMessage({
-            header: { msg_type: 'stream' },
-            content: { name: 'stderr', text: (workerStderr ? workerStderr + '\n' : '') + 'error: ' + abortMsg }
-          });
-        },
-        preRun: [
-          function() {
-            const M = self.xeusModule;
-            try {
-              M.FS_createPath('/', 'lib', true, true);
-              M.FS.writeFile('/lib/libclangCppInterOp.so', cachedSoData);
-            } catch (e) { /* may already exist */ }
-          }
-        ],
-      };
-      self.xeusModule = await createXeusModule(Module2);
-      const { xkernel, xserver } = await createKernel(XEUS_CPP_BASE2);
-      self.xkernel = xkernel;
-      self.xserver = xserver;
-
-      // Tell the main thread to flush any output from kernel init
-      self.postMessage({ type: 'flush' });
+      // Reuse the existing kernel — in emscripten 4.x, the WASM module and
+      // xkernel cannot be cleanly recreated. Static state from previous
+      // executions persists, but the trace header resets it via __s__.reset().
 
       // ── Instrument the user code ──
       const header = optTraceHeader || '';

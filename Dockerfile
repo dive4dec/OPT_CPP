@@ -11,27 +11,34 @@ RUN chmod +x cleanup-index-js.sh \
     && ./cleanup-index-js.sh \
     && test -f lib/index.js
 
-# ── Stage 2: Download xeus-cpp WASM files from conda ──
+# ── Stage 2: Download xeus-cpp WASM files from emscripten-forge-4x ──
 FROM node:22-slim AS xeus-cpp-fetcher
 RUN apt-get update && apt-get install -y --no-install-recommends curl bzip2 ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 WORKDIR /tmp/xeus-cpp
-# xeus-cpp 0.6.0 from emscripten-forge (contains xcpp.js, xcpp.wasm, xcpp.data)
-RUN curl -fsSL "https://repo.mamba.pm/emscripten-forge/emscripten-wasm32/xeus-cpp-0.6.0-h18da88b_1.tar.bz2" -o xcpp.tar.bz2 \
+# xeus-cpp 0.10.0 from emscripten-forge-4x (clang 21.1.8, C++23 support, <format> library)
+# Contains xcpp.js, xcpp.wasm, xcpp.data with C++23 stdlib headers including <format>
+RUN curl -fsSL "https://prefix.dev/emscripten-forge-4x/emscripten-wasm32/xeus-cpp-0.10.0-h0b0027f_0.tar.bz2" -o xcpp.tar.bz2 \
     && tar xf xcpp.tar.bz2 \
     && find . -name "xcpp.js" -o -name "xcpp.wasm" -o -name "xcpp.data" | head -10
-# CppInterOp 1.5.0 — provides libclangCppInterOp.so (WASM side module, ~54MB)
-# Version 1.5.0 h18da88b_3 was built 2025-01-20, matching xeus-cpp 0.6.0 h18da88b_1 (built 2025-01-23)
-# Required by xcpp.wasm's dylink section — provides __clang_Interpreter_SetValueNoAlloc
-RUN curl -fsSL "https://repo.mamba.pm/emscripten-forge/emscripten-wasm32/cppinterop-1.5.0-h18da88b_3.tar.bz2" -o cppinterop.tar.bz2 \
-    && tar xf cppinterop.tar.bz2 lib/libclangCppInterOp.so \
-    && ls -la lib/libclangCppInterOp.so
+# CppInterOp 1.9.0 — provides libclangCppInterOp.so (WASM side module)
+# Required by xeus-cpp 0.10.0 (depends on cppinterop >=1.9.0,<1.10.0)
+# Note: .so is a symlink to .so.21.1, must extract both
+RUN curl -fsSL "https://prefix.dev/emscripten-forge-4x/emscripten-wasm32/cppinterop-1.9.0-h0b0027f_0.tar.bz2" -o cppinterop.tar.bz2 \
+    && tar xf cppinterop.tar.bz2 lib/libclangCppInterOp.so lib/libclangCppInterOp.so.21.1 \
+    && ls -la lib/libclangCppInterOp.so lib/libclangCppInterOp.so.21.1
+# xeus 6.0.5 — provides libxeus.so (WASM side module, required by xcpp.wasm)
+RUN curl -fsSL "https://prefix.dev/emscripten-forge-4x/emscripten-wasm32/xeus-6.0.5-h0b0027f_0.tar.bz2" -o xeus.tar.bz2 \
+    && tar xf xeus.tar.bz2 lib/libxeus.so \
+    && ls -la lib/libxeus.so
 # Copy all WASM files to a known location
+# Use cp -L to dereference the .so symlink and copy the real file
 RUN mkdir -p /xeus-cpp \
     && find . -name "xcpp.js" -exec cp {} /xeus-cpp/ \; \
     && find . -name "xcpp.wasm" -exec cp {} /xeus-cpp/ \; \
     && find . -name "xcpp.data" -exec cp {} /xeus-cpp/ \; \
-    && cp lib/libclangCppInterOp.so /xeus-cpp/libclangCppInterOp.so \
+    && cp -L lib/libclangCppInterOp.so /xeus-cpp/libclangCppInterOp.so \
+    && cp -L lib/libxeus.so /xeus-cpp/libxeus.so \
     && ls -la /xeus-cpp/
 
 # ── Stage 3: Build optlite-components (webpack → build/) ──
