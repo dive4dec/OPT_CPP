@@ -76,16 +76,24 @@ jobs:
       run: |
         mkdir -p optlite-components/build/xeus-cpp
         cd optlite-components/build/xeus-cpp
-        # xeus-cpp 0.6.0 (built 2025-01-23, emscripten-forge)
-        curl -fsSL "https://repo.mamba.pm/emscripten-forge/emscripten-wasm32/xeus-cpp-0.6.0-h18da88b_1.tar.bz2" -o xcpp.tar.bz2
+        # xeus-cpp 0.10.0 (clang 21.1.8, C++23, emscripten-forge-4x)
+        curl -fsSL "https://prefix.dev/emscripten-forge-4x/emscripten-wasm32/xeus-cpp-0.10.0-h0b0027f_0.tar.bz2" -o xcpp.tar.bz2
         tar xf xcpp.tar.bz2
-        cp bin/xcpp.js bin/xcpp.wasm bin/xcpp.data .
+        # Find and copy xcpp.js, xcpp.wasm, xcpp.data to the current dir
+        find . -name "xcpp.js" -exec cp {} . \;
+        find . -name "xcpp.wasm" -exec cp {} . \;
+        find . -name "xcpp.data" -exec cp {} . \;
         rm -rf bin xcpp.tar.bz2
-        # CppInterOp 1.5.0 (built 2025-01-20, matching xeus-cpp 0.6.0)
-        curl -fsSL "https://repo.mamba.pm/emscripten-forge/emscripten-wasm32/cppinterop-1.5.0-h18da88b_3.tar.bz2" -o cppinterop.tar.bz2
-        tar xf cppinterop.tar.bz2 lib/libclangCppInterOp.so
-        cp lib/libclangCppInterOp.so .
+        # CppInterOp 1.9.0 — provides libclangCppInterOp.so (WASM side module)
+        curl -fsSL "https://prefix.dev/emscripten-forge-4x/emscripten-wasm32/cppinterop-1.9.0-h0b0027f_0.tar.bz2" -o cppinterop.tar.bz2
+        tar xf cppinterop.tar.bz2 lib/libclangCppInterOp.so lib/libclangCppInterOp.so.21.1
+        cp -L lib/libclangCppInterOp.so .
         rm -rf lib cppinterop.tar.bz2
+        # xeus 6.0.5 — provides libxeus.so (required by xcpp.wasm)
+        curl -fsSL "https://prefix.dev/emscripten-forge-4x/emscripten-wasm32/xeus-6.0.5-h0b0027f_0.tar.bz2" -o xeus.tar.bz2
+        tar xf xeus.tar.bz2 lib/libxeus.so
+        cp -L lib/libxeus.so .
+        rm -rf lib xeus.tar.bz2
         echo "xeus-cpp files:"
         ls -la
 
