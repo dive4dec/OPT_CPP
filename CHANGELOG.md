@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.8] - 2026-07-11
+
+### Fixed
+- **WASM memory mismatch (LinkError)** — `INITIAL_MEMORY` was 67108864 (64MB = 1024 pages) but xeus-cpp 0.10.0's wasm binary requires 2048 pages (128MB). Increased to 134217728 (128MB). This was the root cause of `Aborted(LinkError: WebAssembly.instantiate(): Import #467 "env" "memory": memory import has 1024 pages which is smaller than the declared initial of 2048)` on both the live site and GitHub Pages.
+- **`#include <format>` crash** — compiling the full `<format>` header exhausted WASM memory and caused an abort. Since `std::format` is already available in clang-repl's preamble without the include, `#include <format>` is now stripped from user code before execution. Code with `#include <format>` and `std::format` works and gets full step-by-step visualization.
+- **GitHub Pages serving xeus-cpp 0.6.0** — the GitHub Actions workflow was still downloading xeus-cpp 0.6.0 from the old `emscripten-forge` channel. Updated to fetch 0.10.0 from `emscripten-forge-4x`, matching the Dockerfile. Also added `libxeus.so` (required by xcpp.wasm 0.10.0 but was missing).
+
+### Changed
+- **Simplified code paths** — removed the separate "heavy header" raw execution path. All code now goes through the single instrumented path. `#include <format>` is transparently stripped, so `std::format` code gets full visualization like any other code.
+
 ## [0.3.7] - 2026-07-11
 
 ### Fixed
