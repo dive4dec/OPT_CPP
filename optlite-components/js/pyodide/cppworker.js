@@ -104,7 +104,8 @@ self.onmessage = async (event) => {
 
       // Track whether user code execution has started (first sentinel seen).
       // Before that, stdout is clang compiler diagnostics which we suppress.
-      let userExecutionStarted = false;
+      // Reset for each execution.
+      self._userExecutionStarted = false;
       const SENTINEL = '\x01\x02__OPT_STEP__\x02\x01';
 
       const Module = {
@@ -116,9 +117,9 @@ self.onmessage = async (event) => {
         print: (text) => {
           const str = text !== undefined ? String(text) : '';
           if (str.includes(SENTINEL)) {
-            userExecutionStarted = true;
+            self._userExecutionStarted = true;
           }
-          if (userExecutionStarted) {
+          if (self._userExecutionStarted) {
             _origPostMessage({
               header: { msg_type: 'stream' },
               content: { name: 'stdout', text: str + '\n' }
@@ -149,6 +150,40 @@ self.onmessage = async (event) => {
       // Pre-load the trace header
       await loadTraceHeader();
 
+      // Pre-compile heavy standard headers so user code that includes them
+      // doesn't have to compile them from scratch each time.
+      // The interpreter caches compiled declarations, so once <format> is
+      // parsed, subsequent #include <format> is instant.
+      try {
+        const precompileRequest = {
+          channel: "shell",
+          header: {
+            msg_id: "opt-precompile",
+            username: "opt",
+            session: "opt-session",
+            msg_type: "execute_request",
+            date: new Date().toISOString(),
+            version: "5.3",
+          },
+          parent_header: {},
+          metadata: {},
+          content: {
+            code: '#include <format>\n#include <iostream>\n#include <vector>\n#include <string>\n#include <map>',
+            silent: true,
+            store_history: false,
+            user_expressions: {},
+            allow_stdin: false,
+            stop_on_error: false,
+          },
+          buffers: [],
+        };
+        self.xserver.notify_listener(precompileRequest);
+        // Wait for pre-compilation to complete (can take 30-60s for <format>)
+        await new Promise(r => setTimeout(r, 60000));
+      } catch (e) {
+        // Pre-compilation failed — not critical, user code will just be slower
+      }
+
       initResolve();
       results = { status: 'ready' };
     } else {
@@ -156,6 +191,9 @@ self.onmessage = async (event) => {
       await initPromise;
 
       const code = self.script;
+
+      // Reset stdout filtering for this execution
+      self._userExecutionStarted = false;
 
       // Reuse the existing kernel — in emscripten 4.x, the WASM module and
       // xkernel cannot be cleanly recreated. Static state from previous

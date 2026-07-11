@@ -37,10 +37,11 @@ const initWorker = (() => {
     }
 
     return new Promise((resolve, reject) => {
-      // Timeout: if the worker doesn't init within 60s, reject (WASM may have crashed)
+      // Timeout: if the worker doesn't init within 120s, reject (WASM may have crashed).
+      // The extra time accounts for pre-compilation of heavy headers like <format>.
       const timeout = setTimeout(() => {
         reject(new Error('Worker initialization timed out (WASM may have crashed)'));
-      }, 60000);
+      }, 120000);
 
       callbacks[id] = (data) => {
         clearTimeout(timeout);
@@ -304,41 +305,33 @@ const asyncRun = (() => {
         kernelHasError = false;
         kernelErrorText = '';
 
-        // Terminate the old worker and create a fresh one for each execution.
-        // In emscripten 4.x, the WASM module cannot be reinstantiated within
-        // the same worker, so we need a new worker to get a clean kernel state.
-        if (cppWorker) {
-          cppWorker.terminate();
-        }
-        cppWorker = createWorker();
-
-        // Re-initialize the new worker before sending the execution request
-        init = initWorker();
-        init.then(() => {
-          callbacks[id] = (data) => {
-            if (data.error) {
-              // The WASM abort may have sent compiler errors via iopub stderr
-              // messages that haven't been processed yet. Wait briefly for them.
-              setTimeout(() => {
-                if (kernelHasError && kernelErrorText) {
-                  let errorMsg = kernelErrorText.split('\n')
-                    .find(l => l.includes('error:')) || 'Compilation error';
-                  errorMsg = errorMsg.replace(/^input_line_\d+:\d+:\d+:\s*/, '').trim();
-                  errorMsg = errorMsg.replace(/^.*?error:\s*/, 'error: ');
-                  reject(new Error(errorMsg));
-                } else {
-                  reject(new Error(data.error));
-                }
-              }, 500);
-            } else resolve(data);
-          };
-          cppWorker!.postMessage({
-            ...options,
-            script: script,
-            rawInputLst: rawInputLst,
-            id,
-          });
-        }).catch(reject);
+        // Reuse the existing worker — the WASM module stays initialized.
+        // State cleanup is handled by __s__.reset() in the instrumented code
+        // (cppworker.js line 188), which clears the trace state, globals,
+        // and heap between executions.
+        callbacks[id] = (data) => {
+          if (data.error) {
+            // The WASM abort may have sent compiler errors via iopub stderr
+            // messages that haven't been processed yet. Wait briefly for them.
+            setTimeout(() => {
+              if (kernelHasError && kernelErrorText) {
+                let errorMsg = kernelErrorText.split('\n')
+                  .find(l => l.includes('error:')) || 'Compilation error';
+                errorMsg = errorMsg.replace(/^input_line_\d+:\d+:\d+:\s*/, '').trim();
+                errorMsg = errorMsg.replace(/^.*?error:\s*/, 'error: ');
+                reject(new Error(errorMsg));
+              } else {
+                reject(new Error(data.error));
+              }
+            }, 500);
+          } else resolve(data);
+        };
+        cppWorker!.postMessage({
+          ...options,
+          script: script,
+          rawInputLst: rawInputLst,
+          id,
+        });
       }).catch(reject);
     });
   };
