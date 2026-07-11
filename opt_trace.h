@@ -3,6 +3,8 @@
 // Produces JSON trace in Python Tutor C++ format.
 //
 // Type support:
+#ifndef OPT_TRACE_H
+#define OPT_TRACE_H
 //   C_DATA:                   bool, char, std::string, arithmetic, pointer
 //   C_ARRAY:                  T arr[N] (1-D arrays)
 //   C_MULTIDIMENSIONAL_ARRAY: T arr[M][N] (2-D+ arrays)
@@ -525,3 +527,5 @@ std::string __opt_finalize__() {
   auto& st = __opt_get_state__();
   return "{\"code\":\"\",\"trace\":[" + st.trace_output + "]}";
 }
+
+#endif // OPT_TRACE_H
