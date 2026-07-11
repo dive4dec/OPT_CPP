@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.5] - 2026-07-11
+
+### Added
+- Member functions inside local classes (e.g. `class Counter` defined in `main()`) are now instrumented, producing separate visualization steps that step into the function body. Previously only global struct member functions were instrumented; local class member functions were passed through with no trace injection.
+- Reference return types like `int& operator++()` are now matched by the member function detection regex.
+
+### Fixed
+- `currentFunc` is now tracked via a push/pop stack instead of being derived from line numbers, which was stuck at the last member function name for all subsequent lines.
+- Member function scope close detection now uses `memberFunctionScopeDepth` instead of a hardcoded `scopeStack.length <= 1` check that failed for local classes inside `main()`.
+
 ## [0.3.4] - 2026-07-11
 
 ### Added
