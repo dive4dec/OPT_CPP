@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.11] - 2026-07-12
+
+### Fixed
+- **Multiple `main` frames in for-loop visualization** — `__opt_ensure_frame__()` incorrectly detected "recursion" when a for-loop went back to an earlier line (the `for` statement) on each iteration. The condition `if(line < st.call_stack.back().line)` triggered a new frame push, creating duplicate `main` frames. Removed the flawed backward-line recursion detection: same function name at top of stack is always a continuation of the same frame.
+
 ## [0.3.10] - 2026-07-12
 
 ### Fixed

@@ -418,15 +418,11 @@ void __opt_ensure_frame__(const char* func_name, int line) {
     __opt_push_frame__(func_name, line);
     return;
   }
-  // If the top frame is already this function, it's either:
-  // 1. A continuation of the same frame (line >= current line) — do nothing
-  // 2. A recursive call (line < current line, i.e., back to entry) — push new frame
+  // If the top frame is already this function, it's a continuation of the
+  // same frame (next line, loop iteration, etc.). Do NOT push a new frame.
+  // (Previous code incorrectly detected "recursion" when line went backwards
+  //  during loop iterations, creating multiple main frames.)
   if(st.call_stack.back().func_name == func_name) {
-    if(line < st.call_stack.back().line) {
-      // Recursive call — push a new frame
-      __opt_push_frame__(func_name, line);
-    }
-    // Otherwise, same frame continuing — do nothing
     return;
   }
   // Check if this function is already on the stack (returning to a parent)
