@@ -10,11 +10,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [0.3.12] - 2026-07-12
 
 ### Added
-- **Struct/class field visualization** — Public fields of struct and class
-  variables are now captured and displayed in the stack. For example,
-  `Point p1` with fields `int x, int y` shows `p1.x` and `p1.y` in the
-  visualization. Uses individual `__opt_cap__("varname.field", varname.field)`
-  calls for each public field — no templates needed (avoids WASM traps).
+- **Struct/class visualization as C_STRUCT objects** — Struct and class
+  variables now display as nested objects (`object Point` with fields
+  `x`, `y`) matching Python Tutor's behavior. Uses non-template
+  `__opt_cap_struct__` + `__opt_field_*__` overloads to avoid WASM traps.
+- **Member function stepping with qualified names** — Method calls like
+  `getX()` now show `Point::getX` in the call stack (was just `getX`).
+  Non-static member functions capture `this` pointer via
+  `__opt_trace_fn_this__`.
+- **Single-line method bodies instrumented** — Methods like
+  `int getX() { return x; }` are now split and instrumented (previously
+  skipped).
 
 ## [0.3.11] - 2026-07-12
 
