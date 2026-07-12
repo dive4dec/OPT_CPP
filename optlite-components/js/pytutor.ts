@@ -3539,12 +3539,15 @@ class DataVisualizer {
       var addr = obj[1];
       var typename = obj[2];
 
+      // Add a cdata_<addr> ID so that pointers (e.g., 'this') can connect to this struct
+      var cdataId = myViz.generateHeapObjID('cdata_' + addr, stepNum);
+
       var leader = '';
       if (myViz.params.lang === 'cpp') {
         // call it 'object' instead of 'struct'
-        d3DomElement.append('<div class="typeLabel">' + leader + 'object ' + typename + '</div>');
+        d3DomElement.append('<div class="typeLabel" id="' + cdataId + '">' + leader + 'object ' + typename + '</div>');
       } else {
-        d3DomElement.append('<div class="typeLabel">' + leader + 'struct ' + typename + '</div>');
+        d3DomElement.append('<div class="typeLabel" id="' + cdataId + '">' + leader + 'struct ' + typename + '</div>');
       }
 
       if (obj.length > 3) {

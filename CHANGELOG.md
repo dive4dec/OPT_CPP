@@ -21,6 +21,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Single-line method bodies instrumented** — Methods like
   `int getX() { return x; }` are now split and instrumented (previously
   skipped).
+- **`this` pointer arrow connects to struct object** — The `this` pointer
+  in member function frames now draws a visual arrow (jsPlumb connector)
+  to the corresponding struct/class object in the calling frame. Fixed
+  by adding `cdata_<addr>` DOM ID to `C_STRUCT` elements in
+  `renderCStructArray` so the pointer connection target exists.
 
 ## [0.3.11] - 2026-07-12
 
