@@ -35,6 +35,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   have no public fields, so instances display as `object ClassName`.
   Private fields are not shown (Clang enforces access control even on
   `offsetof`), but the type name is displayed correctly.
+- **`__opt_cap__` overload mismatch for `auto&` and `const char*`** —
+  Variables of type `auto&` (e.g., `auto &print = Printer::get_print()`)
+  caused `no matching function for call to '__opt_cap__'` because the
+  actual type (e.g., `Printer&`) had no matching overload. Now:
+  (1) `auto` types with reference qualifiers use `__opt_cap_unknown__` or
+  infer the actual class type from the initializer expression (e.g.,
+  `Printer::get_print()` → `Printer`), generating `__opt_cap_struct__`
+  with the inferred type name. (2) Added `const char*` overload for
+  `__opt_cap__` to handle `const char*` pointer variables.
 
 ## [0.3.11] - 2026-07-12
 

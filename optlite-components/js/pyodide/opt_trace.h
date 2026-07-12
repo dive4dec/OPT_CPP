@@ -603,6 +603,11 @@ void __opt_cap__(const char* n, char* v) {
   std::string ptr = v ? __opt_addr__((void*)v) : "0x0";
   __opt_current_tracer__->add(n, "[\"C_DATA\",\""+__opt_addr__(&v)+"\",\"pointer\",\""+ptr+"\",{\"bytes\":8}]");
 }
+void __opt_cap__(const char* n, const char* v) {
+  if(!__opt_current_tracer__) return;
+  std::string ptr = v ? __opt_addr__((void*)v) : "0x0";
+  __opt_current_tracer__->add(n, "[\"C_DATA\",\""+__opt_addr__(&v)+"\",\"pointer\",\""+ptr+"\",{\"bytes\":8}]");
+}
 // Fixed-size int arrays — show as C_ARRAY with element count
 void __opt_cap_array__(const char* n, int* v, int sz) {
   if(!__opt_current_tracer__) return;
