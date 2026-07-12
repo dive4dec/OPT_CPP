@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.10] - 2026-07-12
+
+### Fixed
+- **`auto` type variables** — `auto x=1uLL` produced `__opt_cap_int__("x", x)` which failed with `no matching function for call to '__opt_cap_int__'` because the actual type is `unsigned long long`, not `int`. Replaced all JS-side type-guessed `__opt_cap_*__` functions with C++ overloaded `__opt_cap__` functions so the compiler selects the correct overload based on the actual argument type. No JS type guessing needed.
+- **Array variables** — `int arr[3]`, `int matrix[2][3]`, and `char str[]` all failed because the instrumenter generated `__opt_cap_int__("arr", arr)` but `arr` decays to `int*`, not `int`. Added `__opt_cap_array__` functions for int and char arrays, and updated `genCaptures()` to detect arrays and use the correct function.
+- **Unsized arrays** (`char str[] = "hello"`) — `parseDeclaration()` now matches `[]` (empty brackets) in addition to `[N]`. Unsized `char[]` arrays are captured as `std::string` for readable display; unsized non-char arrays use pointer decay.
+
+### Changed
+- **`opt_trace.h`** — replaced 8 separate `__opt_cap_int__`, `__opt_cap_double__`, etc. functions with overloaded `__opt_cap__(const char*, T)` for: `int`, `unsigned`, `long`, `unsigned long`, `long long`, `unsigned long long`, `double`, `float`, `bool`, `char`, `const std::string&`, `int*`, `char*`. Added `__opt_cap_array__` for `int*` and `char*` with element count.
+- **`instrument.js`** — `genCaptures()` now generates `__opt_cap__("name", var)` for all non-array types (compiler selects overload), `__opt_cap_array__("name", arr, size)` for sized arrays, and `std::string()` wrapping for unsized `char[]` arrays. Removed all JS-side type-to-function-name mapping.
+
+### Known Limitations
+- Same as v0.3.9: local class types, struct field capture, and `this` pointer not yet supported with the new overload pattern.
+
 ## [0.3.9] - 2026-07-12
 
 ### Fixed

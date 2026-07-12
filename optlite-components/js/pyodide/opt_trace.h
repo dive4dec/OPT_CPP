@@ -534,24 +534,55 @@ void __opt_trace_fn_this__(const char* func_name, int line, const char* typeName
                         st.call_stack.back().frame_id.c_str());
   __opt_current_tracer__->cap_this(typeName, thisPtr);
 }
-// ── Non-template cap overloads ──
-// These replace the template cap<T>() method, avoiding per-type template
-// instantiation in clang-repl (which fails silently or causes WASM traps).
-void __opt_cap_int__(const char* n, int v) {
+// ── Overloaded cap functions ──
+// Use C++ function overloading so the compiler selects the correct
+// function based on the actual argument type. No JS-side type guessing
+// needed — the compiler knows the real type (including auto, arrays, etc.)
+void __opt_cap__(const char* n, int v) {
   if(!__opt_current_tracer__) return;
   std::ostringstream os; os<<v;
   __opt_current_tracer__->add(n, "[\"C_DATA\",\""+__opt_addr__(&v)+"\",\"int\","+os.str()+",{\"bytes\":4}]");
 }
-void __opt_cap_double__(const char* n, double v) {
+void __opt_cap__(const char* n, unsigned v) {
+  if(!__opt_current_tracer__) return;
+  std::ostringstream os; os<<v;
+  __opt_current_tracer__->add(n, "[\"C_DATA\",\""+__opt_addr__(&v)+"\",\"unsigned\","+os.str()+",{\"bytes\":4}]");
+}
+void __opt_cap__(const char* n, long v) {
+  if(!__opt_current_tracer__) return;
+  std::ostringstream os; os<<v;
+  __opt_current_tracer__->add(n, "[\"C_DATA\",\""+__opt_addr__(&v)+"\",\"long\","+os.str()+",{\"bytes\":8}]");
+}
+void __opt_cap__(const char* n, unsigned long v) {
+  if(!__opt_current_tracer__) return;
+  std::ostringstream os; os<<v;
+  __opt_current_tracer__->add(n, "[\"C_DATA\",\""+__opt_addr__(&v)+"\",\"unsigned long\","+os.str()+",{\"bytes\":8}]");
+}
+void __opt_cap__(const char* n, long long v) {
+  if(!__opt_current_tracer__) return;
+  std::ostringstream os; os<<v;
+  __opt_current_tracer__->add(n, "[\"C_DATA\",\""+__opt_addr__(&v)+"\",\"long long\","+os.str()+",{\"bytes\":8}]");
+}
+void __opt_cap__(const char* n, unsigned long long v) {
+  if(!__opt_current_tracer__) return;
+  std::ostringstream os; os<<v;
+  __opt_current_tracer__->add(n, "[\"C_DATA\",\""+__opt_addr__(&v)+"\",\"unsigned long long\","+os.str()+",{\"bytes\":8}]");
+}
+void __opt_cap__(const char* n, double v) {
   if(!__opt_current_tracer__) return;
   std::ostringstream os; os<<v;
   __opt_current_tracer__->add(n, "[\"C_DATA\",\""+__opt_addr__(&v)+"\",\"double\","+os.str()+",{\"bytes\":8}]");
 }
-void __opt_cap_bool__(const char* n, bool v) {
+void __opt_cap__(const char* n, float v) {
+  if(!__opt_current_tracer__) return;
+  std::ostringstream os; os<<v;
+  __opt_current_tracer__->add(n, "[\"C_DATA\",\""+__opt_addr__(&v)+"\",\"float\","+os.str()+",{\"bytes\":4}]");
+}
+void __opt_cap__(const char* n, bool v) {
   if(!__opt_current_tracer__) return;
   __opt_current_tracer__->add(n, "[\"C_DATA\",\""+__opt_addr__(&v)+"\",\"bool\","+(v?"true":"false")+",{\"bytes\":1}]");
 }
-void __opt_cap_char__(const char* n, char v) {
+void __opt_cap__(const char* n, char v) {
   if(!__opt_current_tracer__) return;
   std::string charStr;
   if(v>=32&&v<127) { charStr=std::string("'")+v+"'"; }
@@ -561,26 +592,34 @@ void __opt_cap_char__(const char* n, char v) {
   else { char b[8]; snprintf(b,8,"'\\x%02x'",(unsigned char)v); charStr=b; }
   __opt_current_tracer__->add(n, "[\"C_DATA\",\""+__opt_addr__(&v)+"\",\"char\",\""+__opt_esc__(charStr)+"\",{\"bytes\":1}]");
 }
-void __opt_cap_string__(const char* n, const std::string& v) {
+void __opt_cap__(const char* n, const std::string& v) {
   if(!__opt_current_tracer__) return;
   __opt_current_tracer__->add(n, "[\"C_DATA\",\""+__opt_addr__(v.c_str())+"\",\"string\",\""+__opt_esc__(v)+"\",{\"bytes\":"+std::to_string(v.size()+1)+"}]");
 }
-void __opt_cap_long__(const char* n, long v) {
-  if(!__opt_current_tracer__) return;
-  std::ostringstream os; os<<v;
-  __opt_current_tracer__->add(n, "[\"C_DATA\",\""+__opt_addr__(&v)+"\",\"long\","+os.str()+",{\"bytes\":8}]");
-}
-void __opt_cap_float__(const char* n, float v) {
-  if(!__opt_current_tracer__) return;
-  std::ostringstream os; os<<v;
-  __opt_current_tracer__->add(n, "[\"C_DATA\",\""+__opt_addr__(&v)+"\",\"float\","+os.str()+",{\"bytes\":4}]");
-}
-void __opt_cap_int_ptr__(const char* n, int* v) {
+// Pointer overloads — captures the pointer address
+void __opt_cap__(const char* n, int* v) {
   if(!__opt_current_tracer__) return;
   std::string ptr = v ? __opt_addr__((void*)v) : "0x0";
   __opt_current_tracer__->add(n, "[\"C_DATA\",\""+__opt_addr__(&v)+"\",\"pointer\",\""+ptr+"\",{\"bytes\":8}]");
 }
-// Generic fallback for unknown types — just show type name via typeid
+void __opt_cap__(const char* n, char* v) {
+  if(!__opt_current_tracer__) return;
+  std::string ptr = v ? __opt_addr__((void*)v) : "0x0";
+  __opt_current_tracer__->add(n, "[\"C_DATA\",\""+__opt_addr__(&v)+"\",\"pointer\",\""+ptr+"\",{\"bytes\":8}]");
+}
+// Fixed-size int arrays — show as C_ARRAY with element count
+void __opt_cap_array__(const char* n, int* v, int sz) {
+  if(!__opt_current_tracer__) return;
+  std::string ptr = v ? __opt_addr__((void*)v) : "0x0";
+  __opt_current_tracer__->add(n, "[\"C_ARRAY\",\""+ptr+"\",\"int\","+std::to_string(sz)+",\""+ptr+"\",{\"bytes\":4}]");
+}
+// Fixed-size char arrays (strings) — show as C_ARRAY of chars
+void __opt_cap_array__(const char* n, char* v, int sz) {
+  if(!__opt_current_tracer__) return;
+  std::string ptr = v ? __opt_addr__((void*)v) : "0x0";
+  __opt_current_tracer__->add(n, "[\"C_ARRAY\",\""+ptr+"\",\"char\","+std::to_string(sz)+",\""+ptr+"\",{\"bytes\":1}]");
+}
+// Generic fallback for unknown types — just show type name
 void __opt_cap_unknown__(const char* n, const char* typeName, const void* addr) {
   if(!__opt_current_tracer__) return;
   __opt_current_tracer__->add(n, "[\"C_STRUCT\",\""+__opt_addr__(addr)+"\",\""+__opt_esc__(typeName)+"\",[]]");

@@ -186,10 +186,13 @@ function parseDeclaration(line) {
     let arraySize = null;
     let arrayDims = [];
     if (isArray) {
-      // Extract all dimensions: [2][3] → [2, 3]
-      let dimMatches = arrayPart.match(/\[(\d+)\]/g);
+      // Extract all dimensions: [2][3] → [2, 3], [] → [0] (unsized)
+      let dimMatches = arrayPart.match(/\[(\d*)\]/g);
       if (dimMatches) {
-        arrayDims = dimMatches.map(d => parseInt(d.match(/\d+/)[0]));
+        arrayDims = dimMatches.map(d => {
+          let n = d.match(/\d+/);
+          return n ? parseInt(n[0]) : 0;
+        });
         arraySize = arrayDims[0];
       }
     }
@@ -222,17 +225,33 @@ function genCaptures(knownVars, heapPointers, deletedPointers, structDefs, exclu
   for (let [name, info] of knownVars) {
     if (excludeVars && excludeVars.has(name)) continue;
     if (deletedPointers.has(name)) {
-      // Deleted pointer: show as NULL
-      captures.push(`__opt_cap_int_ptr__("${name}", (int*)0);`);
+      // Deleted pointer: show as NULL pointer
+      captures.push(`__opt_cap__("${name}", (int*)0);`);
     } else if (heapPointers.has(name)) {
-      // Heap pointer — use non-template int pointer capture
-      captures.push(`__opt_cap_int_ptr__("${name}", ${name});`);
+      // Heap pointer — use pointer overload
+      captures.push(`__opt_cap__("${name}", ${name});`);
+    } else if (info && info.isArray && info.arrayDims && info.arrayDims.length >= 1) {
+      // Array — use __opt_cap_array__ with element count
+      let totalSize = info.arrayDims.reduce((a, b) => a * b, 1);
+      if (totalSize === 0) {
+        // Unsized array (e.g., char str[] = "hello") — treat char[] as string
+        if (info.type === 'char') {
+          captures.push(`__opt_cap__("${name}", std::string(${name}));`);
+        } else {
+          captures.push(`__opt_cap__("${name}", ${name});`);
+        }
+      } else if (info.type === 'char') {
+        captures.push(`__opt_cap_array__("${name}", ${name}, ${totalSize});`);
+      } else {
+        // For int arrays and other types, cast to int* and use int array cap
+        captures.push(`__opt_cap_array__("${name}", (int*)${name}, ${totalSize});`);
+      }
     } else if (info && info.type && !info.isPointer && structDefs.has(info.type)) {
       // Struct variable: skip for now (struct field capture requires templates)
       // TODO: add non-template struct capture
     } else if (name === 'this') {
       // 'this' pointer — handled by __opt_trace_fn_this__, skip here
-    } else if (info && info.type && !info.isPointer && !structDefs.has(info.type) &&
+    } else if (info && info.type && !info.isPointer && !info.isArray && !structDefs.has(info.type) &&
                info.type !== 'int' && info.type !== 'double' && info.type !== 'float' &&
                info.type !== 'char' && info.type !== 'bool' && info.type !== 'short' &&
                info.type !== 'long' && info.type !== 'unsigned' && info.type !== 'string' &&
@@ -240,33 +259,10 @@ function genCaptures(knownVars, heapPointers, deletedPointers, structDefs, exclu
                info.type !== 'auto' && info.type !== 'size_t') {
       // Unknown class/struct type — skip (can't capture without templates)
     } else {
-      // Primitive types: use non-template overloads
-      let capFn;
-      if (!info || !info.type) {
-        capFn = '__opt_cap_int__';
-      } else if (info.type === 'int' || info.type === 'short' || info.type === 'unsigned') {
-        capFn = '__opt_cap_int__';
-      } else if (info.type === 'double') {
-        capFn = '__opt_cap_double__';
-      } else if (info.type === 'float') {
-        capFn = '__opt_cap_float__';
-      } else if (info.type === 'bool') {
-        capFn = '__opt_cap_bool__';
-      } else if (info.type === 'char') {
-        capFn = '__opt_cap_char__';
-      } else if (info.type === 'long' || info.type === 'size_t') {
-        capFn = '__opt_cap_long__';
-      } else if (info.type === 'string' || info.type === 'std::string') {
-        capFn = '__opt_cap_string__';
-      } else if (info.type.endsWith('*')) {
-        capFn = '__opt_cap_int_ptr__';
-      } else if (info.isPointer) {
-        capFn = '__opt_cap_int_ptr__';
-      } else {
-        // Default to int for unknown primitive types
-        capFn = '__opt_cap_int__';
-      }
-      captures.push(`${capFn}("${name}", ${name});`);
+      // All other types (including auto): use overloaded __opt_cap__
+      // The C++ compiler will select the correct overload based on the
+      // actual type — no JS-side type guessing needed.
+      captures.push(`__opt_cap__("${name}", ${name});`);
     }
   }
   return captures;
