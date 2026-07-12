@@ -22,6 +22,7 @@
 #include <cxxabi.h>
 #include <iostream>
 #include <vector>
+#include <functional>
 
 // ── Persistent trace state ──
 // NOTE: Meyers singleton (static local) doesn't work in clang-repl —
@@ -396,7 +397,15 @@ void __opt_update_frame__(int line, const std::string& locals,
   }
 }
 
+// ── Global current tracer pointer ──
+// Set by __opt_trace_fn_impl__/__opt_trace_impl__ when creating a tracer.
+// Used by __opt_cap__* non-template functions to add variables without
+// requiring template instantiation (which fails in clang-repl WASM).
+__opt_tracer__* __opt_current_tracer__ = nullptr;
+
 // ── Trace macro ──
+// Use std::function instead of template parameter to avoid per-lambda
+// template instantiation in clang-repl, which fails silently for some types.
 #define __opt_trace__(...) __opt_trace_impl__(__VA_ARGS__)
 #define __opt_trace_fn__(...) __opt_trace_fn_impl__(__VA_ARGS__)
 
@@ -432,8 +441,9 @@ void __opt_ensure_frame__(const char* func_name, int line) {
   __opt_push_frame__(func_name, line);
 }
 
-template<typename F>
-void __opt_trace_impl__(int line, F&& lambda) {
+// Use std::function instead of template F&& to avoid per-lambda template
+// instantiation in clang-repl incremental compilation mode.
+void __opt_trace_impl__(int line, const std::function<void(__opt_tracer__&)>& lambda) {
   auto& st = __opt_get_state__();
   if(st.call_stack.empty()) {
     __opt_push_frame__("main", line);
@@ -458,8 +468,9 @@ void __opt_trace_impl__(int line, F&& lambda) {
 }
 
 // Overload with explicit function name for frame management
-template<typename F>
-void __opt_trace_fn_impl__(const char* func_name, int line, F&& lambda) {
+// Use std::function instead of template F&& to avoid per-lambda template
+// instantiation in clang-repl incremental compilation mode.
+void __opt_trace_fn_impl__(const char* func_name, int line, const std::function<void(__opt_tracer__&)>& lambda) {
   __opt_ensure_frame__(func_name, line);
   auto& st = __opt_get_state__();
 
@@ -485,43 +496,96 @@ void __opt_trace_impl__(int line) {
   if(st.call_stack.empty()) {
     __opt_push_frame__("main", line);
   }
-  __opt_tracer__ __t__(line, st.call_stack.back().func_name.c_str(),
+  // Create tracer on heap so it persists for cap() calls
+  // (freed by __opt_trace_end__)
+  if(__opt_current_tracer__) delete __opt_current_tracer__;
+  __opt_current_tracer__ = new __opt_tracer__(line, st.call_stack.back().func_name.c_str(),
                         st.call_stack.back().frame_id.c_str());
+}
+
+// Finalize the current trace step: write sentinel, build entry, update frame
+void __opt_trace_end__() {
+  if(!__opt_current_tracer__) return;
+  auto& st = __opt_get_state__();
   std::cout << __OPT_SENTINEL__;
   std::cout.flush();
-  std::string entry = __t__.finish();
-  __opt_update_frame__(line, __t__.locals, __t__.names);
+  std::string entry = __opt_current_tracer__->finish();
+  __opt_update_frame__(__opt_current_tracer__->ln, __opt_current_tracer__->locals, __opt_current_tracer__->names);
   st.trace_output += (st.step>0 ? ",\n" : "") + entry;
   st.step++;
+  delete __opt_current_tracer__;
+  __opt_current_tracer__ = nullptr;
 }
 
 void __opt_trace_fn_impl__(const char* func_name, int line) {
   __opt_ensure_frame__(func_name, line);
   auto& st = __opt_get_state__();
-  __opt_tracer__ __t__(line, st.call_stack.back().func_name.c_str(),
+  if(__opt_current_tracer__) delete __opt_current_tracer__;
+  __opt_current_tracer__ = new __opt_tracer__(line, st.call_stack.back().func_name.c_str(),
                         st.call_stack.back().frame_id.c_str());
-  std::cout << __OPT_SENTINEL__;
-  std::cout.flush();
-  std::string entry = __t__.finish();
-  __opt_update_frame__(line, __t__.locals, __t__.names);
-  st.trace_output += (st.step>0 ? ",\n" : "") + entry;
-  st.step++;
 }
 
 // Variant for member functions: captures 'this' pointer
 void __opt_trace_fn_this__(const char* func_name, int line, const char* typeName, void* thisPtr) {
   __opt_ensure_frame__(func_name, line);
   auto& st = __opt_get_state__();
-  __opt_tracer__ __t__(line, st.call_stack.back().func_name.c_str(),
+  if(__opt_current_tracer__) delete __opt_current_tracer__;
+  __opt_current_tracer__ = new __opt_tracer__(line, st.call_stack.back().func_name.c_str(),
                         st.call_stack.back().frame_id.c_str());
-  __t__.cap_this(typeName, thisPtr);
-  std::cout << __OPT_SENTINEL__;
-  std::cout.flush();
-  std::string entry = __t__.finish();
-  __opt_update_frame__(line, __t__.locals, __t__.names);
-  st.trace_output += (st.step>0 ? ",\n" : "") + entry;
-  st.step++;
+  __opt_current_tracer__->cap_this(typeName, thisPtr);
 }
+// ── Non-template cap overloads ──
+// These replace the template cap<T>() method, avoiding per-type template
+// instantiation in clang-repl (which fails silently or causes WASM traps).
+void __opt_cap_int__(const char* n, int v) {
+  if(!__opt_current_tracer__) return;
+  std::ostringstream os; os<<v;
+  __opt_current_tracer__->add(n, "[\"C_DATA\",\""+__opt_addr__(&v)+"\",\"int\","+os.str()+",{\"bytes\":4}]");
+}
+void __opt_cap_double__(const char* n, double v) {
+  if(!__opt_current_tracer__) return;
+  std::ostringstream os; os<<v;
+  __opt_current_tracer__->add(n, "[\"C_DATA\",\""+__opt_addr__(&v)+"\",\"double\","+os.str()+",{\"bytes\":8}]");
+}
+void __opt_cap_bool__(const char* n, bool v) {
+  if(!__opt_current_tracer__) return;
+  __opt_current_tracer__->add(n, "[\"C_DATA\",\""+__opt_addr__(&v)+"\",\"bool\","+(v?"true":"false")+",{\"bytes\":1}]");
+}
+void __opt_cap_char__(const char* n, char v) {
+  if(!__opt_current_tracer__) return;
+  std::string charStr;
+  if(v>=32&&v<127) { charStr=std::string("'")+v+"'"; }
+  else if(v=='\n') { charStr="'\\n'"; }
+  else if(v=='\t') { charStr="'\\t'"; }
+  else if(v==0) { charStr="'\\0'"; }
+  else { char b[8]; snprintf(b,8,"'\\x%02x'",(unsigned char)v); charStr=b; }
+  __opt_current_tracer__->add(n, "[\"C_DATA\",\""+__opt_addr__(&v)+"\",\"char\",\""+__opt_esc__(charStr)+"\",{\"bytes\":1}]");
+}
+void __opt_cap_string__(const char* n, const std::string& v) {
+  if(!__opt_current_tracer__) return;
+  __opt_current_tracer__->add(n, "[\"C_DATA\",\""+__opt_addr__(v.c_str())+"\",\"string\",\""+__opt_esc__(v)+"\",{\"bytes\":"+std::to_string(v.size()+1)+"}]");
+}
+void __opt_cap_long__(const char* n, long v) {
+  if(!__opt_current_tracer__) return;
+  std::ostringstream os; os<<v;
+  __opt_current_tracer__->add(n, "[\"C_DATA\",\""+__opt_addr__(&v)+"\",\"long\","+os.str()+",{\"bytes\":8}]");
+}
+void __opt_cap_float__(const char* n, float v) {
+  if(!__opt_current_tracer__) return;
+  std::ostringstream os; os<<v;
+  __opt_current_tracer__->add(n, "[\"C_DATA\",\""+__opt_addr__(&v)+"\",\"float\","+os.str()+",{\"bytes\":4}]");
+}
+void __opt_cap_int_ptr__(const char* n, int* v) {
+  if(!__opt_current_tracer__) return;
+  std::string ptr = v ? __opt_addr__((void*)v) : "0x0";
+  __opt_current_tracer__->add(n, "[\"C_DATA\",\""+__opt_addr__(&v)+"\",\"pointer\",\""+ptr+"\",{\"bytes\":8}]");
+}
+// Generic fallback for unknown types — just show type name via typeid
+void __opt_cap_unknown__(const char* n, const char* typeName, const void* addr) {
+  if(!__opt_current_tracer__) return;
+  __opt_current_tracer__->add(n, "[\"C_STRUCT\",\""+__opt_addr__(addr)+"\",\""+__opt_esc__(typeName)+"\",[]]");
+}
+
 // ── Finalizer ──
 std::string __opt_finalize__() {
   auto& st = __opt_get_state__();
