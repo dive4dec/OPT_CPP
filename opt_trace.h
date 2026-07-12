@@ -418,15 +418,11 @@ void __opt_ensure_frame__(const char* func_name, int line) {
     __opt_push_frame__(func_name, line);
     return;
   }
-  // If the top frame is already this function, it's either:
-  // 1. A continuation of the same frame (line >= current line) — do nothing
-  // 2. A recursive call (line < current line, i.e., back to entry) — push new frame
+  // If the top frame is already this function, it's a continuation of the
+  // same frame (next line, loop iteration, etc.). Do NOT push a new frame.
+  // (Previous code incorrectly detected "recursion" when line went backwards
+  //  during loop iterations, creating multiple main frames.)
   if(st.call_stack.back().func_name == func_name) {
-    if(line < st.call_stack.back().line) {
-      // Recursive call — push a new frame
-      __opt_push_frame__(func_name, line);
-    }
-    // Otherwise, same frame continuing — do nothing
     return;
   }
   // Check if this function is already on the stack (returning to a parent)
@@ -623,6 +619,61 @@ void __opt_cap_array__(const char* n, char* v, int sz) {
 void __opt_cap_unknown__(const char* n, const char* typeName, const void* addr) {
   if(!__opt_current_tracer__) return;
   __opt_current_tracer__->add(n, "[\"C_STRUCT\",\""+__opt_addr__(addr)+"\",\""+__opt_esc__(typeName)+"\",[]]");
+}
+
+// ── Non-template struct field encoding ──
+// Each returns a JSON fragment like: ["x",["C_DATA","addr","int",3,{"bytes":4}]]
+// The value part is a full C_DATA object so the frontend can render it
+std::string __opt_field_int__(const char* name, int v) {
+  std::ostringstream os; os<<v;
+  return "[\""+__opt_esc__(name)+"\",[\"C_DATA\",\""+__opt_addr__(&v)+"\",\"int\","+os.str()+",{\"bytes\":4}]]";
+}
+std::string __opt_field_unsigned__(const char* name, unsigned v) {
+  std::ostringstream os; os<<v;
+  return "[\""+__opt_esc__(name)+"\",[\"C_DATA\",\""+__opt_addr__(&v)+"\",\"unsigned\","+os.str()+",{\"bytes\":4}]]";
+}
+std::string __opt_field_long__(const char* name, long v) {
+  std::ostringstream os; os<<v;
+  return "[\""+__opt_esc__(name)+"\",[\"C_DATA\",\""+__opt_addr__(&v)+"\",\"long\","+os.str()+",{\"bytes\":8}]]";
+}
+std::string __opt_field_ulong__(const char* name, unsigned long v) {
+  std::ostringstream os; os<<v;
+  return "[\""+__opt_esc__(name)+"\",[\"C_DATA\",\""+__opt_addr__(&v)+"\",\"unsigned long\","+os.str()+",{\"bytes\":8}]]";
+}
+std::string __opt_field_double__(const char* name, double v) {
+  std::ostringstream os; os<<v;
+  return "[\""+__opt_esc__(name)+"\",[\"C_DATA\",\""+__opt_addr__(&v)+"\",\"double\","+os.str()+",{\"bytes\":8}]]";
+}
+std::string __opt_field_float__(const char* name, float v) {
+  std::ostringstream os; os<<v;
+  return "[\""+__opt_esc__(name)+"\",[\"C_DATA\",\""+__opt_addr__(&v)+"\",\"float\","+os.str()+",{\"bytes\":4}]]";
+}
+std::string __opt_field_bool__(const char* name, bool v) {
+  return "[\""+__opt_esc__(name)+"\",[\"C_DATA\",\""+__opt_addr__(&v)+"\",\"bool\","+(v?"true":"false")+",{\"bytes\":1}]]";
+}
+std::string __opt_field_char__(const char* name, char v) {
+  std::string charStr;
+  if(v>=32&&v<127) { charStr=std::string("'")+v+"'"; }
+  else if(v=='\n') { charStr="'\\n'"; }
+  else if(v=='\t') { charStr="'\\t'"; }
+  else if(v==0) { charStr="'\\0'"; }
+  else { char b[8]; snprintf(b,8,"'\\x%02x'",(unsigned char)v); charStr=b; }
+  return "[\""+__opt_esc__(name)+"\",[\"C_DATA\",\""+__opt_addr__(&v)+"\",\"char\",\""+__opt_esc__(charStr)+"\",{\"bytes\":1}]]";
+}
+std::string __opt_field_string__(const char* name, const std::string& v) {
+  return "[\""+__opt_esc__(name)+"\",[\"C_DATA\",\""+__opt_addr__(v.c_str())+"\",\"string\",\""+__opt_esc__(v)+"\",{\"bytes\":"+std::to_string(v.size()+1)+"}]]";
+}
+
+// ── Non-template struct capture ──
+// Takes var name, type name, address, and pre-built field JSON string
+// fieldStr is like: ["x","int",3],["y","int",4]
+void __opt_cap_struct__(const char* n, const char* typeName, const void* addr, const char* fieldStr) {
+  if(!__opt_current_tracer__) return;
+  std::string s = "[\"C_STRUCT\",\""+__opt_addr__(addr)+"\",\""+__opt_esc__(typeName)+"\"";
+  std::string fs(fieldStr);
+  if(!fs.empty()) s += "," + fs;
+  s += "]";
+  __opt_current_tracer__->add(n, s);
 }
 
 // ── Finalizer ──

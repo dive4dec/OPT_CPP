@@ -247,8 +247,46 @@ function genCaptures(knownVars, heapPointers, deletedPointers, structDefs, exclu
         captures.push(`__opt_cap_array__("${name}", (int*)${name}, ${totalSize});`);
       }
     } else if (info && info.type && !info.isPointer && structDefs.has(info.type)) {
-      // Struct variable: skip for now (struct field capture requires templates)
-      // TODO: add non-template struct capture
+      // Struct/class variable: capture as C_STRUCT object with fields
+      // Uses non-template __opt_cap_struct__ + __opt_field_*__ overloads
+      // to avoid WASM traps from templates/typeid/__cxa_demangle.
+      const fields = structDefs.get(info.type);
+      const fieldEncoders = [];
+      for (const f of fields) {
+        if (f.isPointer || f.isArray) continue;
+        // Map field type to the appropriate __opt_field_*__ function
+        let fieldFn = null;
+        const ft = f.type;
+        if (ft === 'int' || ft === 'short' || ft === 'size_t') {
+          fieldFn = '__opt_field_int__';
+        } else if (ft === 'unsigned' || ft === 'unsigned int' || ft === 'unsigned short') {
+          fieldFn = '__opt_field_unsigned__';
+        } else if (ft === 'long' || ft === 'long long') {
+          fieldFn = '__opt_field_long__';
+        } else if (ft === 'unsigned long' || ft === 'unsigned long long') {
+          fieldFn = '__opt_field_ulong__';
+        } else if (ft === 'double') {
+          fieldFn = '__opt_field_double__';
+        } else if (ft === 'float') {
+          fieldFn = '__opt_field_float__';
+        } else if (ft === 'bool') {
+          fieldFn = '__opt_field_bool__';
+        } else if (ft === 'char' || ft === 'unsigned char') {
+          fieldFn = '__opt_field_char__';
+        } else if (ft === 'std::string' || ft === 'string') {
+          fieldFn = '__opt_field_string__';
+        }
+        if (fieldFn) {
+          fieldEncoders.push(`${fieldFn}("${f.name}", ${name}.${f.name})`);
+        }
+      }
+      if (fieldEncoders.length > 0) {
+        // Build field JSON by concatenating encoded fields with commas
+        const fieldStr = fieldEncoders.join(' + "," + ');
+        captures.push(`__opt_cap_struct__("${name}", "${info.type}", (void*)&${name}, (${fieldStr}).c_str());`);
+      } else {
+        captures.push(`__opt_cap_struct__("${name}", "${info.type}", (void*)&${name}, "");`);
+      }
     } else if (name === 'this') {
       // 'this' pointer — handled by __opt_trace_fn_this__, skip here
     } else if (info && info.type && !info.isPointer && !info.isArray && !structDefs.has(info.type) &&
@@ -384,7 +422,9 @@ function instrumentCode(sourceCode) {
       }
       // Register the local class when its body ends
       if (localClassBraceDepth <= 0) {
-        if (localClassName && localClassFields.length > 0) {
+        // Always register local classes, even with no public fields.
+        // This ensures they show as "object ClassName" instead of <unknown>.
+        if (localClassName) {
           structDefs.set(localClassName, localClassFields);
         }
         inLocalClassBody = false;
@@ -412,13 +452,19 @@ function instrumentCode(sourceCode) {
       if (memberFuncMatch) {
         let rawName = memberFuncMatch[1].trim();
         let funcName = rawName.split(/\s+/).pop();
+        let qualifiedName = `${localClassName}::${funcName}`;
+        let isStaticMember = stripped.includes('static');
         let params = memberFuncMatch[2].trim();
         // Empty body inline "{}" or "{};"
         if (stripped.match(/\{\s*\}\s*;?$/)) {
           let beforeBrace = line.substring(0, line.indexOf('{') + 1);
           let afterBrace = line.substring(line.indexOf('{') + 1);
           output.push(beforeBrace);
-          output.push(`__opt_trace_fn__("${funcName}", ${lineNum});`);
+          if (isStaticMember) {
+            output.push(`__opt_trace_fn__("${qualifiedName}", ${lineNum});`);
+          } else {
+            output.push(`__opt_trace_fn_this__("${qualifiedName}", ${lineNum}, "${localClassName}", (void*)this);`);
+          }
           output.push(`__opt_trace_end__();`);
           output.push(afterBrace);
           continue;
@@ -432,7 +478,11 @@ function instrumentCode(sourceCode) {
           let bodyContent = line.substring(braceIdx + 1, closeIdx).trim();
           let afterBrace = line.substring(closeIdx);
           output.push(beforeBrace);
-          output.push(`__opt_trace_fn__("${funcName}", ${lineNum});`);
+          if (isStaticMember) {
+            output.push(`__opt_trace_fn__("${qualifiedName}", ${lineNum});`);
+          } else {
+            output.push(`__opt_trace_fn_this__("${qualifiedName}", ${lineNum}, "${localClassName}", (void*)this);`);
+          }
           output.push(`__opt_trace_end__();`);
           if (bodyContent) output.push(bodyContent + ';');
           output.push(afterBrace);
@@ -441,14 +491,18 @@ function instrumentCode(sourceCode) {
         // Multi-line function body — instrument it
         inMemberFunction = true;
         memberFunctionStructName = localClassName;
-        memberFunctionIsStatic = stripped.includes('static');
+        memberFunctionIsStatic = isStaticMember;
         memberFunctionScopeDepth = scopeStack.length;
-        functionDefs.push({name: funcName, startLine: lineNum, params: params, isMember: true, structName: localClassName});
-        currentFunc = funcName;
-        funcNameStack.push(funcName);
+        functionDefs.push({name: qualifiedName, startLine: lineNum, params: params, isMember: true, structName: localClassName});
+        currentFunc = qualifiedName;
+        funcNameStack.push(qualifiedName);
 
         output.push(line);
-        output.push(`__opt_trace_fn__("${funcName}", ${lineNum});`);
+        if (isStaticMember) {
+          output.push(`__opt_trace_fn__("${qualifiedName}", ${lineNum});`);
+        } else {
+          output.push(`__opt_trace_fn_this__("${qualifiedName}", ${lineNum}, "${localClassName}", (void*)this);`);
+        }
         output.push(`__opt_trace_end__();`);
         // Push new scope for member function
         scopeStack.push({ depth: scopeStack[scopeStack.length-1].depth + 1, vars: new Set() });
@@ -488,7 +542,8 @@ function instrumentCode(sourceCode) {
         output.push(line);
         continue;
       }
-      // Parse field declarations — collect only public fields
+      // Parse field declarations — collect only public fields.
+      // Private members can't be accessed from outside the class.
       let fieldDecl = parseDeclaration(stripped);
       for (let d of fieldDecl) {
         d.access = localClassAccessLevel;
@@ -510,7 +565,9 @@ function instrumentCode(sourceCode) {
       // Check if struct body ended
       if (structBraceDepth <= 0) {
         inStructBody = false;
-        if (currentStructName && currentStructFields.length > 0) {
+        // Always register structs/classes, even with no public fields.
+        // This ensures they show as "object ClassName" instead of <unknown>.
+        if (currentStructName) {
           structDefs.set(currentStructName, currentStructFields);
         }
         output.push(line);
@@ -546,18 +603,22 @@ function instrumentCode(sourceCode) {
         // Extract function name — could be "Point", "~Point", "getX", "operator=", etc.
         let rawName = memberFuncMatch[1].trim();
         let funcName = rawName.split(/\s+/).pop(); // take last word (handles "int getX")
+        // Qualify with struct name: Point::getX, Point::Point, etc.
+        let qualifiedName = `${currentStructName}::${funcName}`;
+        let isStaticMember = stripped.includes('static');
         let params = memberFuncMatch[2].trim();
         // Don't instrument if it's an empty body inline "{}" or "{};"
         if (stripped.match(/\{\s*\}\s*;?$/)) {
           // Empty body — inject trace inside the body by splitting the line
-          let funcName = rawName.split(/\s+/).pop();
-          // Split "Point(int x, int y) : x(x), y(y) {}" into
-          // "Point(int x, int y) : x(x), y(y) {" + trace + "}"
           let braceIdx = stripped.indexOf('{');
           let beforeBrace = line.substring(0, line.indexOf('{') + 1);
           let afterBrace = line.substring(line.indexOf('{') + 1);
           output.push(beforeBrace);
-          output.push(`__opt_trace_fn__("${funcName}", ${lineNum});`);
+          if (isStaticMember) {
+            output.push(`__opt_trace_fn__("${qualifiedName}", ${lineNum});`);
+          } else {
+            output.push(`__opt_trace_fn_this__("${qualifiedName}", ${lineNum}, "${currentStructName}", (void*)this);`);
+          }
           output.push(`__opt_trace_end__();`);
           output.push(afterBrace);
           continue;
@@ -565,25 +626,37 @@ function instrumentCode(sourceCode) {
         // Check if the function body is entirely on one line
         let bodyCloseIdx = stripped.lastIndexOf('}');
         if (bodyCloseIdx > stripped.indexOf('{')) {
-          // Single-line function body — output as-is, no instrumentation
-          output.push(line);
+          // Single-line function body — instrument by splitting
+          let beforeBrace = line.substring(0, line.indexOf('{') + 1);
+          let afterBrace = line.substring(line.indexOf('{') + 1);
+          output.push(beforeBrace);
+          if (isStaticMember) {
+            output.push(`__opt_trace_fn__("${qualifiedName}", ${lineNum});`);
+          } else {
+            output.push(`__opt_trace_fn_this__("${qualifiedName}", ${lineNum}, "${currentStructName}", (void*)this);`);
+          }
+          output.push(`__opt_trace_end__();`);
+          output.push(afterBrace);
           continue;
         }
         // Multi-line function body — instrument it
         inFunctionBody = true;
         inMemberFunction = true;
         memberFunctionStructName = currentStructName;
-        memberFunctionIsStatic = stripped.includes('static');
+        memberFunctionIsStatic = isStaticMember;
         memberFunctionScopeDepth = scopeStack.length;
-        functionDefs.push({name: funcName, startLine: lineNum, params: params, isMember: true, structName: currentStructName});
-        currentFunc = funcName;
-        funcNameStack.push(funcName);
+        functionDefs.push({name: qualifiedName, startLine: lineNum, params: params, isMember: true, structName: currentStructName});
+        currentFunc = qualifiedName;
+        funcNameStack.push(qualifiedName);
 
         // Output the function signature line
         output.push(line);
         // Inject a trace call at function entry
-        let entryFnArg = `"${funcName}", `;
-        output.push(`__opt_trace_fn__(${entryFnArg}${lineNum});`);
+        if (isStaticMember) {
+          output.push(`__opt_trace_fn__("${qualifiedName}", ${lineNum});`);
+        } else {
+          output.push(`__opt_trace_fn_this__("${qualifiedName}", ${lineNum}, "${currentStructName}", (void*)this);`);
+        }
         output.push(`__opt_trace_end__();`);
         // Push new scope
         scopeStack.push({ depth: scopeStack[scopeStack.length-1].depth + 1, vars: new Set() });
@@ -626,8 +699,9 @@ function instrumentCode(sourceCode) {
         continue;
       }
       // Parse field declarations — collect only public fields for visualization.
-      // Private members can't be accessed from outside the class in the instrumented
-      // lambda, so accessing them would cause a WASM compilation error.
+      // Private members can't be accessed from outside the class (offsetof also
+      // enforces access control in Clang), so we skip them. Classes with only
+      // private fields will show as "object ClassName" with no field values.
       let fieldDecl = parseDeclaration(stripped);
       for (let d of fieldDecl) {
         d.access = currentAccessLevel;
