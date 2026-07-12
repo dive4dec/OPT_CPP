@@ -168,6 +168,14 @@ function parseDeclaration(line) {
 
   const result = [];
   for (let v of vars) {
+    // Handle pointer/reference prefix on individual variables:
+    // "const char *sep_, *end_" → first var has pointerRef='*', second has '*end_'
+    // Strip leading * or & and merge with pointerRef
+    let varPointerExtra = '';
+    while (v.startsWith('*') || v.startsWith('&')) {
+      varPointerExtra += v[0];
+      v = v.slice(1).trim();
+    }
     // Parse: name [= value] or name[size] or name[] = {...} or name[M][N] = {...}
     //   or name(args) — constructor call (e.g., "s1(\"hello\")" or "p1(3, 4)")
     // Capture multiple array dimensions: name[2][3]
@@ -197,8 +205,8 @@ function parseDeclaration(line) {
       }
     }
 
-    let isPointer = pointerRef.includes('*') || baseType.includes('*');
-    let isReference = pointerRef.includes('&') || baseType.includes('&');
+    let isPointer = pointerRef.includes('*') || baseType.includes('*') || varPointerExtra.includes('*');
+    let isReference = pointerRef.includes('&') || baseType.includes('&') || varPointerExtra.includes('&');
 
     // Clean up baseType (remove trailing * or &)
     let cleanType = baseType.replace(/[*&]/g, '').trim();
@@ -254,11 +262,19 @@ function genCaptures(knownVars, heapPointers, deletedPointers, structDefs, exclu
       const fields = structDefs.get(info.type);
       const fieldEncoders = [];
       for (const f of fields) {
-        if (f.isPointer || f.isArray) continue;
+        if (f.isArray) continue;
         // Map field type to the appropriate __opt_field_*__ function
         let fieldFn = null;
         const ft = f.type;
-        if (ft === 'int' || ft === 'short' || ft === 'size_t') {
+        if (f.isPointer) {
+          // Pointer fields — use const char* overload for char pointers,
+          // generic pointer overload for others
+          if (ft === 'char' || ft === 'const char') {
+            fieldFn = '__opt_field_const_char_ptr__';
+          } else {
+            fieldFn = '__opt_field_ptr__';
+          }
+        } else if (ft === 'int' || ft === 'short' || ft === 'size_t') {
           fieldFn = '__opt_field_int__';
         } else if (ft === 'unsigned' || ft === 'unsigned int' || ft === 'unsigned short') {
           fieldFn = '__opt_field_unsigned__';
@@ -313,10 +329,16 @@ function genCaptures(knownVars, heapPointers, deletedPointers, structDefs, exclu
         const fields = structDefs.get(inferredType);
         const fieldEncoders = [];
         for (const f of fields) {
-          if (f.isPointer || f.isArray) continue;
+          if (f.isArray) continue;
           let fieldFn = null;
           const ft = f.type;
-          if (ft === 'int' || ft === 'short' || ft === 'size_t') {
+          if (f.isPointer) {
+            if (ft === 'char' || ft === 'const char') {
+              fieldFn = '__opt_field_const_char_ptr__';
+            } else {
+              fieldFn = '__opt_field_ptr__';
+            }
+          } else if (ft === 'int' || ft === 'short' || ft === 'size_t') {
             fieldFn = '__opt_field_int__';
           } else if (ft === 'unsigned' || ft === 'unsigned int' || ft === 'unsigned short') {
             fieldFn = '__opt_field_unsigned__';

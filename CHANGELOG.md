@@ -44,6 +44,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `Printer::get_print()` → `Printer`), generating `__opt_cap_struct__`
   with the inferred type name. (2) Added `const char*` overload for
   `__opt_cap__` to handle `const char*` pointer variables.
+- **`const char*` struct fields now visualized** — Public `const char*`
+  fields in structs/classes are now shown as pointers with heap entries
+  containing the string literal as a char array. Added
+  `__opt_field_const_char_ptr__` and `__opt_field_ptr__` functions.
+  Fixed `parseDeclaration` to handle multi-variable pointer declarations
+  like `const char *sep_, *end_` (previously `*end_` was skipped because
+  the `*` prefix on individual variables wasn't handled). Fixed char
+  display: C++ side now sends raw char values without quotes (frontend
+  adds single quotes). Added `addHeapEntry` method to accumulate multiple
+  heap entries per step (previously duplicate `__heap__` keys overwrote
+  each other in JSON). Note: private `const char*` fields (like Printer's
+  `sep_`, `end_`) still can't be accessed without templates (WASM traps).
 
 ## [0.3.11] - 2026-07-12
 
