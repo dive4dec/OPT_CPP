@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.9] - 2026-07-12
+
+### Fixed
+- **Variable capture in trace visualization** — `cap<T>()` template calls inside lambdas failed silently in clang-repl's incremental compilation mode (WASM). The `try/catch` in `__opt_trace_fn_impl__` swallowed the runtime exception, producing trace steps with empty `encoded_locals` and `ordered_varnames` — variables were never shown. Replaced all template-based `cap<T>()` calls with non-template global function overloads: `__opt_cap_int__`, `__opt_cap_double__`, `__opt_cap_float__`, `__opt_cap_bool__`, `__opt_cap_char__`, `__opt_cap_string__`, `__opt_cap_long__`, `__opt_cap_int_ptr__`. No template instantiation is required, eliminating the failure mode entirely.
+- **Lambda elimination in trace instrumentation** — replaced the `[&](__opt_tracer__& __t__) { ... }` lambda pattern with a three-step global-tracer pattern: `__opt_trace_fn__()` creates a heap-allocated tracer, `__opt_cap__*()` functions add variables to it via a global `__opt_current_tracer__` pointer, and `__opt_trace_end__()` finalizes the step. This avoids per-lambda template instantiation in clang-repl entirely.
+- **Function redefinition on re-runs (all functions)** — previous fix only renamed `main()` to `__opt_main_<timestamp>()`. Other user-defined functions still caused redefinition errors on re-runs. Switched from persistent worker to fresh-worker-per-execution, giving a clean clang-repl kernel state every time. No `main` renaming needed.
+- **Missing `__opt_trace_end__()` calls** — some instrumenter code paths generated `__opt_trace_fn__()` without a matching `__opt_trace_end__()`, causing those trace steps to be silently lost when the next `__opt_trace_fn__()` deleted the unfinalized tracer. All `__opt_trace_fn__()` calls now have matching `__opt_trace_end__()` calls.
+
+### Changed
+- **Fresh worker per execution** — `runner.ts` terminates and recreates the Web Worker before each execution. This is the same approach as v0.3.5/v0.3.6 and provides a clean clang-repl kernel, fixing redefinition of all functions. Tradeoff: ~3-5s initialization cost per execution (WASM module reload).
+- **Removed `main` renaming** — no longer needed with fresh worker per execution.
+- **Removed debug logging** — temporary `debug_trace` interceptor in `runner.ts` and `TRACE_PARSED`/`TRACE_FILE_READ` logging in `cppworker.js` removed.
+- **Removed `xkernel.delete()` approach (Option 3)** — tested and confirmed it throws `WebAssembly.Exception` in the WASM environment. The kernel destructor attempts operations not supported by the WASM runtime.
+- **`opt_trace.h`** — added `#include <functional>`; added global `__opt_current_tracer__` pointer; added `__opt_trace_end__()` finalizer; added 8 non-template `__opt_cap__*` overload functions; converted `__opt_trace_impl__` and `__opt_trace_fn_impl__` to no-lambda overloads (heap-allocated tracer); kept old `std::function`-based overloads for backward compatibility (unused by instrumenter).
+- **`instrument.js`** — `genCaptures()` now generates non-template `__opt_cap__*` calls instead of `__t__.cap<T>()` calls; all `__opt_trace_fn__` call sites updated to split pattern (`__opt_trace_fn__()` + captures + `__opt_trace_end__()`); struct field capture and local class type capture disabled (requires templates, will be addressed in future version).
+
+### Known Limitations
+- **Local class types** (e.g., `Counter` class defined inside `main`) — variables of local class types are not captured in the visualization. Template instantiation of `cap<T>` for local class types fails in clang-repl, and the non-template overloads don't support arbitrary class types. The variable exists in scope but won't be shown.
+- **Struct field capture** — struct variables with known field definitions are not expanded to show individual fields. The previous template-based `cap_struct<T>` approach is disabled. Will be addressed with non-template struct capture in a future version.
+- **`this` pointer capture** — `this` is handled by `__opt_trace_fn_this__()` but not yet integrated with the new global-tracer pattern for member functions.
+- **~3-5s init time** per execution due to fresh worker (WASM module reload). This is the tradeoff for clean kernel state on every run.
+
 ## [0.3.8] - 2026-07-11
 
 ### Fixed

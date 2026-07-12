@@ -1,9 +1,13 @@
 // C++ execution worker — loads xeus-cpp (clang-repl WASM) and executes C++ code
 //
-// In emscripten 4.x, the WASM module cannot be reinstantiated within the same
-// worker. runner.ts creates a fresh Web Worker for each execution to get a
-// clean kernel state. The WASM binary is cached by the browser's HTTP cache,
-// so worker creation is fast after the first run.
+// Option 3: Before each execution, try to recreate the xkernel (delete old +
+// create new) to get a clean REPL state. This fixes redefinition of ALL
+// functions, not just main(). The WASM module itself is NOT recreated (that's
+// impossible in emscripten 4.x within the same worker).
+//
+// If xkernel.delete() hangs (as reported in earlier attempts), the main thread
+// (runner.ts) has a 15s timeout — it terminates this worker and creates a fresh
+// one (Option 1 fallback).
 //
 // Code instrumentation: user code is instrumented with __opt_trace__() calls
 // that capture variable state at each step, producing a Python Tutor-compatible
@@ -165,13 +169,14 @@ self.onmessage = async (event) => {
       // Reset stdout filtering for this execution
       self._userExecutionStarted = false;
 
-      // Persistent kernel: clang-repl keeps all previous declarations.
-      // To prevent "redefinition of 'main'" on re-runs, rename main() to
-      // a unique function name for each execution. This is lightweight —
-      // just a symbol table entry, no heavy recompilation (includes are cached
-      // by clang-repl's include guards).
+      // ── Option 1: Fresh worker per execution ──
+      // runner.ts terminates and recreates this worker before each execution,
+      // so we always have a clean clang-repl kernel. No need to delete/recreate
+      // xkernel here (Option 3 doesn't work — throws WebAssembly.Exception).
+      // No main() renaming needed — fresh kernel has no previous declarations.
 
       // ── Instrument the user code ──
+      // No main() renaming needed — fresh kernel has no previous declarations
       const header = optTraceHeader || '';
       let instrumentedCode;
       let globalVarNames = [];
@@ -181,142 +186,118 @@ self.onmessage = async (event) => {
       // exhausts WASM memory and causes an abort.
       const cleanedCode = code.replace(/#include\s*[<"]format[>"]\s*\n?/gi, '');
 
-      // Unique suffix for this execution's main() rename
-      const execId = Date.now();
-      const mainAlias = `__opt_main_${execId}`;
-
-      {
-        // For instrumented path: rename main() before instrumentation
-        const renamedCode = cleanedCode
-          .replace(/\bint\s+main\s*\(\s*\)/g, `int ${mainAlias}()`)
-          .replace(/\bvoid\s+main\s*\(\s*\)/g, `void ${mainAlias}()`);
-
-        try {
-          const result = self.instrumentCode(renamedCode);
-          if (typeof result === 'string') {
-            instrumentedCode = result;
-          } else {
-            instrumentedCode = result.code;
-            globalVarNames = result.globalVars || [];
-          }
-        } catch (e) {
-          // If instrumentation fails, use original code (no visualization)
-          instrumentedCode = renamedCode;
-        }
-
-        // Build the full code to execute:
-        // 1. Trace header (opt_trace.h) — defines singleton, tracer, etc.
-        // 2. Reset trace state + start stdout redirect
-        // 3. Instrumented user code (with main renamed)
-        // 4. Call the renamed main()
-        // 5. Finalize: write the trace JSON to temp file
-        let execCode = header + '\n';
-        execCode += '{ auto& __s__ = __opt_get_state__(); __s__.reset(); }\n';
-        execCode += instrumentedCode;
-
-        // If the code defines main(), call the renamed version
-        if (/\bint\s+main\s*\(\s*\)/.test(code) || /\bvoid\s+main\s*\(\s*\)/.test(code)) {
-          execCode += `\n${mainAlias}();`;
-        }
-
-        // Finalize: write the trace JSON to a temp file
-        execCode += '\n{ FILE* __opt_f__ = fopen("/tmp/opt_trace.json", "w"); fprintf(__opt_f__, "%s", __opt_finalize__().c_str()); fclose(__opt_f__); }';
-
-        // Send execute request
-        const msgId = 'opt-' + Date.now();
-        const executeRequest = {
-          channel: "shell",
-          header: {
-            msg_id: msgId,
-            username: "opt",
-            session: "opt-session",
-            msg_type: "execute_request",
-            date: new Date().toISOString(),
-            version: "5.3",
-          },
-          parent_header: {},
-          metadata: {},
-          content: {
-            code: execCode,
-            silent: false,
-            store_history: true,
-            user_expressions: {},
-            allow_stdin: false,
-            stop_on_error: false,
-          },
-          buffers: [],
-        };
-
-        let execAborted = false;
-        try {
-          self.xserver.notify_listener(executeRequest);
-        } catch (e) {
-          // WASM abort — compiler error was likely sent via stderr.
-          // Wait for iopub messages to be processed by the event loop.
-          execAborted = true;
-          await new Promise(r => setTimeout(r, 1000));
-        }
-
-        // Wait for execution to complete (or extra time after abort)
-        await new Promise(r => setTimeout(r, execAborted ? 0 : 300));
-
-        // If the WASM aborted, extract the real compiler error from stderr
-        // and report it instead of continuing with a fallback trace.
-        if (execAborted) {
-          let errorMsg = '';
-          const allStderr = workerStderr;
-          if (allStderr && allStderr.includes('error:')) {
-            const errorLine = allStderr.split('\n')
-              .find(l => l.includes('error:')) || '';
-            errorMsg = errorLine.replace(/^input_line_\d+:\d+:\d+:\s*/, '').trim()
-              .replace(/^.*?error:\s*/, 'error: ');
-          }
-          if (!errorMsg) {
-            errorMsg = 'Compilation error (WASM aborted). Check your code for syntax errors.';
-          }
-          throw new Error(errorMsg);
-        }
-
-        // Wait for execution to complete (iopub messages are async)
-        await new Promise(r => setTimeout(r, 300));
-
-        // ── Read trace JSON from WASM filesystem ──
-        // opt_trace.h writes the finalized trace to /tmp/opt_trace.json via fopen/fprintf.
-        // We read it back from the WASM filesystem (M.FS) and parse it.
-        const M = self.xeusModule;
-        let traceJson = null;
-        try {
-          const data = M.FS.readFile('/tmp/opt_trace.json', { encoding: 'utf8' });
-          traceJson = typeof data === 'string' ? data : new TextDecoder().decode(data);
-        } catch (e) {
-          // File doesn't exist — fall back
-        }
-
-        if (traceJson) {
-          // Validate it's proper JSON
-          try {
-            const parsed = JSON.parse(traceJson);
-            // Set the code field (opt_trace.h leaves it empty)
-            parsed.code = self.script;
-            // Attach global variable names so the runner can move them
-            // from main's encoded_locals to the globals section
-            if (globalVarNames.length > 0) {
-              parsed.global_vars = globalVarNames;
-            }
-            // If trace is empty (no statements to instrument), use fallback
-            if (!parsed.trace || parsed.trace.length === 0) {
-              results = JSON.stringify({ code: self.script, trace: buildFallbackTrace(code) });
-            } else {
-              results = JSON.stringify(parsed);
-            }
-          } catch (e) {
-            // JSON parse failed — fall back to fake trace
-            results = JSON.stringify({ code: self.script, trace: buildFallbackTrace(code) });
-          }
+      try {
+        const result = self.instrumentCode(cleanedCode);
+        if (typeof result === 'string') {
+          instrumentedCode = result;
         } else {
-          // No trace found — fall back to fake trace
+          instrumentedCode = result.code;
+          globalVarNames = result.globalVars || [];
+        }
+      } catch (e) {
+        // If instrumentation fails, use original code (no visualization)
+        instrumentedCode = cleanedCode;
+      }
+
+      // Build the full code to execute:
+      // 1. Trace header (opt_trace.h) — defines singleton, tracer, etc.
+      // 2. Reset trace state + start stdout redirect
+      // 3. Instrumented user code (main() NOT renamed — fresh kernel)
+      // 4. Call main()
+      // 5. Finalize: write the trace JSON to temp file
+      let execCode = header + '\n';
+      execCode += '{ auto& __s__ = __opt_get_state__(); __s__.reset(); }\n';
+      execCode += instrumentedCode;
+
+      // If the code defines main(), call it
+      if (/\bint\s+main\s*\(\s*\)/.test(code) || /\bvoid\s+main\s*\(\s*\)/.test(code)) {
+        execCode += '\nmain();';
+      }
+
+      // Finalize: write the trace JSON to a temp file
+      execCode += '\n{ FILE* __opt_f__ = fopen("/tmp/opt_trace.json", "w"); fprintf(__opt_f__, "%s", __opt_finalize__().c_str()); fclose(__opt_f__); }';
+
+      // Send execute request
+      const msgId = 'opt-' + Date.now();
+      const executeRequest = {
+        channel: "shell",
+        header: {
+          msg_id: msgId,
+          username: "opt",
+          session: "opt-session",
+          msg_type: "execute_request",
+          date: new Date().toISOString(),
+          version: "5.3",
+        },
+        parent_header: {},
+        metadata: {},
+        content: {
+          code: execCode,
+          silent: false,
+          store_history: true,
+          user_expressions: {},
+          allow_stdin: false,
+          stop_on_error: false,
+        },
+        buffers: [],
+      };
+
+      let execAborted = false;
+      try {
+        self.xserver.notify_listener(executeRequest);
+      } catch (e) {
+        execAborted = true;
+        await new Promise(r => setTimeout(r, 1000));
+      }
+
+      // Wait for execution to complete
+      await new Promise(r => setTimeout(r, execAborted ? 0 : 300));
+
+      // If the WASM aborted, extract the real compiler error from stderr
+      if (execAborted) {
+        let errorMsg = '';
+        const allStderr = workerStderr;
+        if (allStderr && allStderr.includes('error:')) {
+          const errorLine = allStderr.split('\n')
+            .find(l => l.includes('error:')) || '';
+          errorMsg = errorLine.replace(/^input_line_\d+:\d+:\d+:\s*/, '').trim()
+            .replace(/^.*?error:\s*/, 'error: ');
+        }
+        if (!errorMsg) {
+          errorMsg = 'Compilation error (WASM aborted). Check your code for syntax errors.';
+        }
+        throw new Error(errorMsg);
+      }
+
+      await new Promise(r => setTimeout(r, 300));
+
+      // ── Read trace JSON from WASM filesystem ──
+      const M = self.xeusModule;
+      let traceJson = null;
+      try {
+        const data = M.FS.readFile('/tmp/opt_trace.json', { encoding: 'utf8' });
+        traceJson = typeof data === 'string' ? data : new TextDecoder().decode(data);
+      } catch (e) {
+        // File doesn't exist — fall back
+      }
+
+      if (traceJson) {
+        try {
+          const parsed = JSON.parse(traceJson);
+          parsed.code = self.script;
+          if (globalVarNames.length > 0) {
+            parsed.global_vars = globalVarNames;
+          }
+          if (!parsed.trace || parsed.trace.length === 0) {
+            results = JSON.stringify({ code: self.script, trace: buildFallbackTrace(code) });
+          } else {
+            results = JSON.stringify(parsed);
+          }
+        } catch (e) {
           results = JSON.stringify({ code: self.script, trace: buildFallbackTrace(code) });
         }
+      } else {
+        results = JSON.stringify({ code: self.script, trace: buildFallbackTrace(code) });
       }
     }
     self.postMessage({ results, id });

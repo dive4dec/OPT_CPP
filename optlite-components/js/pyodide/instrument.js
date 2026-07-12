@@ -222,20 +222,51 @@ function genCaptures(knownVars, heapPointers, deletedPointers, structDefs, exclu
   for (let [name, info] of knownVars) {
     if (excludeVars && excludeVars.has(name)) continue;
     if (deletedPointers.has(name)) {
-      captures.push(`__t__.cap_deleted_ptr("${name}", ${name});`);
+      // Deleted pointer: show as NULL
+      captures.push(`__opt_cap_int_ptr__("${name}", (int*)0);`);
     } else if (heapPointers.has(name)) {
-      let sz = heapPointers.get(name);
-      captures.push(`__t__.cap_ptr("${name}", ${name}, ${sz});`);
+      // Heap pointer — use non-template int pointer capture
+      captures.push(`__opt_cap_int_ptr__("${name}", ${name});`);
     } else if (info && info.type && !info.isPointer && structDefs.has(info.type)) {
-          // Struct variable: capture with field names
-          let fields = structDefs.get(info.type);
-          let fieldEncoders = fields.map(f => `__t__.__opt_field__("${f.name}", ${name}.${f.name})`).join(" + \",\" + ");
-          captures.push(`__t__.cap_struct("${name}", "${info.type}", ${name}, ${fieldEncoders});`);
+      // Struct variable: skip for now (struct field capture requires templates)
+      // TODO: add non-template struct capture
     } else if (name === 'this') {
-      // 'this' pointer — encode directly (can't take &this in C++)
-      captures.push(`__t__.cap_this("${info.type}", (void*)this);`);
+      // 'this' pointer — handled by __opt_trace_fn_this__, skip here
+    } else if (info && info.type && !info.isPointer && !structDefs.has(info.type) &&
+               info.type !== 'int' && info.type !== 'double' && info.type !== 'float' &&
+               info.type !== 'char' && info.type !== 'bool' && info.type !== 'short' &&
+               info.type !== 'long' && info.type !== 'unsigned' && info.type !== 'string' &&
+               info.type !== 'std::string' && !info.type.endsWith('*') &&
+               info.type !== 'auto' && info.type !== 'size_t') {
+      // Unknown class/struct type — skip (can't capture without templates)
     } else {
-      captures.push(`__t__.cap("${name}", ${name});`);
+      // Primitive types: use non-template overloads
+      let capFn;
+      if (!info || !info.type) {
+        capFn = '__opt_cap_int__';
+      } else if (info.type === 'int' || info.type === 'short' || info.type === 'unsigned') {
+        capFn = '__opt_cap_int__';
+      } else if (info.type === 'double') {
+        capFn = '__opt_cap_double__';
+      } else if (info.type === 'float') {
+        capFn = '__opt_cap_float__';
+      } else if (info.type === 'bool') {
+        capFn = '__opt_cap_bool__';
+      } else if (info.type === 'char') {
+        capFn = '__opt_cap_char__';
+      } else if (info.type === 'long' || info.type === 'size_t') {
+        capFn = '__opt_cap_long__';
+      } else if (info.type === 'string' || info.type === 'std::string') {
+        capFn = '__opt_cap_string__';
+      } else if (info.type.endsWith('*')) {
+        capFn = '__opt_cap_int_ptr__';
+      } else if (info.isPointer) {
+        capFn = '__opt_cap_int_ptr__';
+      } else {
+        // Default to int for unknown primitive types
+        capFn = '__opt_cap_int__';
+      }
+      captures.push(`${capFn}("${name}", ${name});`);
     }
   }
   return captures;
@@ -392,6 +423,7 @@ function instrumentCode(sourceCode) {
           let afterBrace = line.substring(line.indexOf('{') + 1);
           output.push(beforeBrace);
           output.push(`__opt_trace_fn__("${funcName}", ${lineNum});`);
+          output.push(`__opt_trace_end__();`);
           output.push(afterBrace);
           continue;
         }
@@ -405,6 +437,7 @@ function instrumentCode(sourceCode) {
           let afterBrace = line.substring(closeIdx);
           output.push(beforeBrace);
           output.push(`__opt_trace_fn__("${funcName}", ${lineNum});`);
+          output.push(`__opt_trace_end__();`);
           if (bodyContent) output.push(bodyContent + ';');
           output.push(afterBrace);
           continue;
@@ -420,6 +453,7 @@ function instrumentCode(sourceCode) {
 
         output.push(line);
         output.push(`__opt_trace_fn__("${funcName}", ${lineNum});`);
+        output.push(`__opt_trace_end__();`);
         // Push new scope for member function
         scopeStack.push({ depth: scopeStack[scopeStack.length-1].depth + 1, vars: new Set() });
 
@@ -528,6 +562,7 @@ function instrumentCode(sourceCode) {
           let afterBrace = line.substring(line.indexOf('{') + 1);
           output.push(beforeBrace);
           output.push(`__opt_trace_fn__("${funcName}", ${lineNum});`);
+          output.push(`__opt_trace_end__();`);
           output.push(afterBrace);
           continue;
         }
@@ -553,6 +588,7 @@ function instrumentCode(sourceCode) {
         // Inject a trace call at function entry
         let entryFnArg = `"${funcName}", `;
         output.push(`__opt_trace_fn__(${entryFnArg}${lineNum});`);
+        output.push(`__opt_trace_end__();`);
         // Push new scope
         scopeStack.push({ depth: scopeStack[scopeStack.length-1].depth + 1, vars: new Set() });
 
@@ -628,6 +664,7 @@ function instrumentCode(sourceCode) {
         // Inject a trace call at function entry (the opening brace line)
         let entryFnArg = `"${funcName}", `;
         output.push(`__opt_trace_fn__(${entryFnArg}${lineNum});`);
+        output.push(`__opt_trace_end__();`);
         // Push new scope
         scopeStack.push({ depth: scopeStack[scopeStack.length-1].depth + 1, vars: new Set() });
 
@@ -827,9 +864,12 @@ function instrumentCode(sourceCode) {
         let fnArg = `"${currentFunc}", `;
         let captures = genCaptures(knownVars, heapPointers, deletedPointers, structDefs, initVars);
         if (captures.length > 0) {
-          output.push(`__opt_trace_fn__(${fnArg}${lineNum}, [&](auto& __t__) { ${captures.join(' ')} });`);
+          output.push(`__opt_trace_fn__(${fnArg}${lineNum});`);
+          if (captures.length > 0) { output.push(captures.join(' ')); }
+          output.push(`__opt_trace_end__();`);
         } else {
           output.push(`__opt_trace_fn__(${fnArg}${lineNum});`);
+          output.push(`__opt_trace_end__();`);
         }
 
         // Add init vars to knownVars
@@ -847,9 +887,12 @@ function instrumentCode(sourceCode) {
         // Per-iteration trace inside loop body
         let captures2 = genCaptures(knownVars, heapPointers, deletedPointers, structDefs);
         if (captures2.length > 0) {
-          output.push(`__opt_trace_fn__(${fnArg}${lineNum}, [&](auto& __t__) { ${captures2.join(' ')} });`);
+          output.push(`__opt_trace_fn__(${fnArg}${lineNum});`);
+          if (captures2.length > 0) { output.push(captures2.join(' ')); }
+          output.push(`__opt_trace_end__();`);
         } else {
           output.push(`__opt_trace_fn__(${fnArg}${lineNum});`);
+          output.push(`__opt_trace_end__();`);
         }
         output.push(bodyPart);
         output.push(`}`);
@@ -882,9 +925,12 @@ function instrumentCode(sourceCode) {
       let fnArg = `"${currentFunc}", `;
       let captures = genCaptures(knownVars, heapPointers, deletedPointers, structDefs, initVars);
       if (captures.length > 0) {
-        output.push(`__opt_trace_fn__(${fnArg}${lineNum}, [&](auto& __t__) { ${captures.join(' ')} });`);
+        output.push(`__opt_trace_fn__(${fnArg}${lineNum});`);
+          if (captures.length > 0) { output.push(captures.join(' ')); }
+          output.push(`__opt_trace_end__();`);
       } else {
         output.push(`__opt_trace_fn__(${fnArg}${lineNum});`);
+        output.push(`__opt_trace_end__();`);
       }
       // Now add init vars to knownVars (they'll be visible after the for header executes)
       if (initPart) {
@@ -903,7 +949,9 @@ function instrumentCode(sourceCode) {
       if (stripped.includes('{')) {
         let captures2 = genCaptures(knownVars, heapPointers, deletedPointers, structDefs);
         if (captures2.length > 0) {
-          output.push(`__opt_trace_fn__(${fnArg}${lineNum}, [&](auto& __t__) { ${captures2.join(' ')} });`);
+          output.push(`__opt_trace_fn__(${fnArg}${lineNum});`);
+          if (captures2.length > 0) { output.push(captures2.join(' ')); }
+          output.push(`__opt_trace_end__();`);
         }
       }
       continue;
@@ -969,16 +1017,22 @@ function instrumentCode(sourceCode) {
         // access member variables through the this pointer.
         let captures = genCaptures(knownVars, heapPointers, deletedPointers, structDefs);
         if (captures.length > 0) {
-          output.push(`__opt_trace_fn__(${fnArg}${lineNum}, [this](auto& __t__) { ${captures.join(' ')} });`);
+          output.push(`__opt_trace_fn__(${fnArg}${lineNum});`);
+          if (captures.length > 0) { output.push(captures.join(' ')); }
+          output.push(`__opt_trace_end__();`);
         } else {
           output.push(`__opt_trace_fn__(${fnArg}${lineNum});`);
+          output.push(`__opt_trace_end__();`);
         }
       } else {
         let captures = genCaptures(knownVars, heapPointers, deletedPointers, structDefs);
         if (captures.length > 0) {
-          output.push(`__opt_trace_fn__(${fnArg}${lineNum}, [&](auto& __t__) { ${captures.join(' ')} });`);
+          output.push(`__opt_trace_fn__(${fnArg}${lineNum});`);
+          if (captures.length > 0) { output.push(captures.join(' ')); }
+          output.push(`__opt_trace_end__();`);
         } else {
           output.push(`__opt_trace_fn__(${fnArg}${lineNum});`);
+          output.push(`__opt_trace_end__();`);
         }
       }
     }

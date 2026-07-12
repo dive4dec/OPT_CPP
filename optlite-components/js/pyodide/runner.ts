@@ -14,6 +14,10 @@ let kernelOutput: string[] = [];
 let kernelHasError = false;
 let kernelErrorText = '';
 
+// Timeout for kernel recreation (Option 3). If xkernel.delete() hangs,
+// we terminate the worker and create a fresh one.
+let kernelRecreatingTimeout: ReturnType<typeof setTimeout> | null = null;
+
 // ask worker to initialize xeus-cpp based on the configuration
 // in a global OptLite object predefined before loading.
 const initWorker = (() => {
@@ -92,6 +96,14 @@ async function handleWorkerMessage(event: MessageEvent) {
       kernelHasError = true;
       kernelErrorText += msg.content?.evalue || 'Unknown error';
     }
+    return;
+  }
+
+  // ── Kernel recreation messages (from cppworker.js) ──
+  // Not used in Option 1 — worker recreation is handled entirely by
+  // asyncRun() below, which terminates and recreates the worker before
+  // each execution.
+  if (msg && msg.kernel_recreating || msg && msg.kernel_recreated || msg && msg.kernel_recreate_failed) {
     return;
   }
 
@@ -369,6 +381,18 @@ const asyncRun = (() => {
         kernelHasError = false;
         kernelErrorText = '';
 
+        // ── Option 1: Fresh worker per execution ──
+        // Terminate the current worker and create a fresh one to get a clean
+        // clang-repl kernel state. This fixes redefinition of ALL functions
+        // (not just main) and eliminates accumulated REPL state.
+        // The WASM binary is cached by the browser, so worker creation is fast
+        // after the first run (~2-3s for WASM instantiation).
+        if (cppWorker) {
+          cppWorker.terminate();
+        }
+        cppWorker = createWorker();
+        init = initWorker();
+
         // Execution timeout: if the WASM compiler hangs during heavy template
         // instantiation, the worker's event loop is blocked and no result
         // message arrives. This timeout fires on the main thread.
@@ -382,34 +406,33 @@ const asyncRun = (() => {
           }
         }, 300000); // 5 minutes — <format> compilation can take a while
 
-        // Reuse the existing worker — the WASM module stays initialized.
-        // State cleanup is handled by __s__.reset() in the instrumented code
-        // (cppworker.js line 188), which clears the trace state, globals,
-        // and heap between executions.
-        callbacks[id] = (data) => {
-          clearTimeout(execTimeout);
-          if (data.error) {
-            // The WASM abort may have sent compiler errors via iopub stderr
-            // messages that haven't been processed yet. Wait briefly for them.
-            setTimeout(() => {
-              if (kernelHasError && kernelErrorText) {
-                let errorMsg = kernelErrorText.split('\n')
-                  .find(l => l.includes('error:')) || 'Compilation error';
-                errorMsg = errorMsg.replace(/^input_line_\d+:\d+:\d+:\s*/, '').trim();
-                errorMsg = errorMsg.replace(/^.*?error:\s*/, 'error: ');
-                reject(new Error(errorMsg));
-              } else {
-                reject(new Error(data.error));
-              }
-            }, 500);
-          } else resolve(data);
-        };
-        cppWorker!.postMessage({
-          ...options,
-          script: script,
-          rawInputLst: rawInputLst,
-          id,
-        });
+        // Wait for the new worker to initialize, then send the execution request
+        init.then(() => {
+          callbacks[id] = (data) => {
+            clearTimeout(execTimeout);
+            if (data.error) {
+              // The WASM abort may have sent compiler errors via iopub stderr
+              // messages that haven't been processed yet. Wait briefly for them.
+              setTimeout(() => {
+                if (kernelHasError && kernelErrorText) {
+                  let errorMsg = kernelErrorText.split('\n')
+                    .find(l => l.includes('error:')) || 'Compilation error';
+                  errorMsg = errorMsg.replace(/^input_line_\d+:\d+:\d+:\s*/, '').trim();
+                  errorMsg = errorMsg.replace(/^.*?error:\s*/, 'error: ');
+                  reject(new Error(errorMsg));
+                } else {
+                  reject(new Error(data.error));
+                }
+              }, 500);
+            } else resolve(data);
+          };
+          cppWorker!.postMessage({
+            ...options,
+            script: script,
+            rawInputLst: rawInputLst,
+            id,
+          });
+        }).catch(reject);
       }).catch(reject);
     });
   };
