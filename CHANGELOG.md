@@ -27,6 +27,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   by adding `cdata_<addr>` DOM ID to `C_STRUCT` elements in
   `renderCStructArray` so the pointer connection target exists.
 
+### Fixed
+- **Locally-defined class instances show `<unknown>`** — Classes defined
+  inside function bodies (e.g., `class Counter` inside `main()`) were not
+  registered in `structDefs`, causing their instances to show `<unknown>`.
+  Now all struct/class types are registered in `structDefs` even if they
+  have no public fields, so instances display as `object ClassName`.
+  Private fields are not shown (Clang enforces access control even on
+  `offsetof`), but the type name is displayed correctly.
+
 ## [0.3.11] - 2026-07-12
 
 ### Fixed

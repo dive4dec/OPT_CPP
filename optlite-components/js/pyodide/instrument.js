@@ -422,7 +422,9 @@ function instrumentCode(sourceCode) {
       }
       // Register the local class when its body ends
       if (localClassBraceDepth <= 0) {
-        if (localClassName && localClassFields.length > 0) {
+        // Always register local classes, even with no public fields.
+        // This ensures they show as "object ClassName" instead of <unknown>.
+        if (localClassName) {
           structDefs.set(localClassName, localClassFields);
         }
         inLocalClassBody = false;
@@ -540,7 +542,8 @@ function instrumentCode(sourceCode) {
         output.push(line);
         continue;
       }
-      // Parse field declarations — collect only public fields
+      // Parse field declarations — collect only public fields.
+      // Private members can't be accessed from outside the class.
       let fieldDecl = parseDeclaration(stripped);
       for (let d of fieldDecl) {
         d.access = localClassAccessLevel;
@@ -562,7 +565,9 @@ function instrumentCode(sourceCode) {
       // Check if struct body ended
       if (structBraceDepth <= 0) {
         inStructBody = false;
-        if (currentStructName && currentStructFields.length > 0) {
+        // Always register structs/classes, even with no public fields.
+        // This ensures they show as "object ClassName" instead of <unknown>.
+        if (currentStructName) {
           structDefs.set(currentStructName, currentStructFields);
         }
         output.push(line);
@@ -694,8 +699,9 @@ function instrumentCode(sourceCode) {
         continue;
       }
       // Parse field declarations — collect only public fields for visualization.
-      // Private members can't be accessed from outside the class in the instrumented
-      // lambda, so accessing them would cause a WASM compilation error.
+      // Private members can't be accessed from outside the class (offsetof also
+      // enforces access control in Clang), so we skip them. Classes with only
+      // private fields will show as "object ClassName" with no field values.
       let fieldDecl = parseDeclaration(stripped);
       for (let d of fieldDecl) {
         d.access = currentAccessLevel;
