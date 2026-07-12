@@ -247,8 +247,16 @@ function genCaptures(knownVars, heapPointers, deletedPointers, structDefs, exclu
         captures.push(`__opt_cap_array__("${name}", (int*)${name}, ${totalSize});`);
       }
     } else if (info && info.type && !info.isPointer && structDefs.has(info.type)) {
-      // Struct variable: skip for now (struct field capture requires templates)
-      // TODO: add non-template struct capture
+      // Struct/class variable: capture each public field individually
+      // using __opt_cap__("varname.field", varname.field)
+      // This avoids templates (which cause WASM traps) while still
+      // showing the struct's field values in the visualization.
+      const fields = structDefs.get(info.type);
+      for (const f of fields) {
+        if (f.isPointer) continue; // skip pointer fields for now
+        if (f.isArray) continue;   // skip array fields for now
+        captures.push(`__opt_cap__("${name}.${f.name}", ${name}.${f.name});`);
+      }
     } else if (name === 'this') {
       // 'this' pointer — handled by __opt_trace_fn_this__, skip here
     } else if (info && info.type && !info.isPointer && !info.isArray && !structDefs.has(info.type) &&

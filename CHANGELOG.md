@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.12] - 2026-07-12
+
+### Added
+- **Struct/class field visualization** — Public fields of struct and class
+  variables are now captured and displayed in the stack. For example,
+  `Point p1` with fields `int x, int y` shows `p1.x` and `p1.y` in the
+  visualization. Uses individual `__opt_cap__("varname.field", varname.field)`
+  calls for each public field — no templates needed (avoids WASM traps).
+
 ## [0.3.11] - 2026-07-12
 
 ### Fixed
