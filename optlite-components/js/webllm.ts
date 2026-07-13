@@ -528,6 +528,14 @@ function updateUIElements() {
         if (modelSel) modelSel.style.display = '';
         if (downloadBtn) downloadBtn.style.display = '';
     }
+
+    // download-status should only be visible during model download in local
+    // mode. Hide it in API mode (and initially in local mode — it's unhidden
+    // by initializeWebLLMEngine when a download starts).
+    const downloadStatus = document.getElementById("download-status");
+    if (downloadStatus && API_CONFIG.enabled) {
+        downloadStatus.classList.add("hidden");
+    }
     
     // Enable/disable Ask AI button based on mode
     const askAIButton = document.getElementById("askAI") as HTMLButtonElement;

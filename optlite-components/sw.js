@@ -27,7 +27,12 @@ self.addEventListener('fetch', (event) => {
       // Clone the response and add COOP/COEP/CORP headers
       const newHeaders = new Headers(response.headers);
       newHeaders.set('Cross-Origin-Opener-Policy', 'same-origin');
-      newHeaders.set('Cross-Origin-Embedder-Policy', 'require-corp');
+      // Use 'credentialless' instead of 'require-corp' to allow WebLLM to
+      // fetch cross-origin model files (e.g., from Hugging Face CDN) without
+      // requiring those servers to set CORP headers. 'credentialless' strips
+      // credentials from cross-origin requests but still enables
+      // SharedArrayBuffer.
+      newHeaders.set('Cross-Origin-Embedder-Policy', 'credentialless');
       newHeaders.set('Cross-Origin-Resource-Policy', 'same-origin');
 
       return new Response(response.body, {
