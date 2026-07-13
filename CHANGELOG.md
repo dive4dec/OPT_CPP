@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.14] - 2026-07-13
+
+### Fixed
+- **Multi-line expression broken by trace injection** — Valid C++
+  expressions spanning multiple lines (e.g., `std::cout << 1 \n << 2;`)
+  were incorrectly split by trace injection. The instrumenter detected the
+  top-level `;` on the continuation line (`<< 2;`) and injected a trace call
+  before it, breaking the expression into two invalid statements. Added
+  `inMultiLineStmt` tracking: when a line has no top-level `;` but contains
+  expression content, the instrumenter defers trace injection until the
+  statement is complete, then injects a post-statement trace after the
+  completing line. This preserves the expression's integrity while still
+  capturing variable state. Regression tests: for-loop (10 steps), Point
+  class (5 steps), Config struct with `const char*` fields (2 steps),
+  Counter local class (4 steps) — all pass without errors.
+
 ## [0.3.13] - 2026-07-13
 
 ### Fixed
