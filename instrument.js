@@ -140,6 +140,13 @@ function parseDeclaration(line) {
   let pointerRef = tokens[2] || '';
   let rest = tokens[3] || '';
 
+  // Strip 'static' keyword from type and track it separately
+  let isStatic = false;
+  if (baseType.startsWith('static ')) {
+    isStatic = true;
+    baseType = baseType.replace(/^static\s+/, '');
+  }
+
   // Now parse the variable list: name [= value] [, name [= value]]*
   const vars = [];
   // Split by comma, but not inside <>, (), {}, [], or ""
@@ -219,6 +226,7 @@ function parseDeclaration(line) {
       arrayDims: arrayDims,
       isPointer: isPointer,
       isReference: isReference,
+      isStatic: isStatic,
       init: init || null,
     });
   }
@@ -407,6 +415,9 @@ function instrumentCode(sourceCode) {
 
   // Track global (file-scope) variables
   let globalVars = [];
+  // Track static local variables (visible only in their declaring function,
+  // but moved to globals section by runner.ts for visualization)
+  let staticVars = new Set();
 
   // Track heap-allocated pointers: name → arraySize (0 = single value, >0 = array)
   let heapPointers = new Map();
@@ -1249,6 +1260,12 @@ function instrumentCode(sourceCode) {
     for (let d of declared) {
       knownVars.set(d.name, d);
       scopeStack[scopeStack.length-1].vars.add(d.name);
+      // Static local variables: track for globals section, but don't add to
+      // globalVars (which are added to main's knownVars). They are only visible
+      // in their declaring function.
+      if (d.isStatic) {
+        staticVars.add(d.name);
+      }
     }
 
     // Detect heap allocations: new T(value) or new T[size]
@@ -1281,7 +1298,7 @@ function instrumentCode(sourceCode) {
   }
 
   // Return both the instrumented code and the list of global variable names
-  return { code: output.join('\n'), globalVars: globalVars.map(g => g.name) };
+  return { code: output.join('\n'), globalVars: globalVars.map(g => g.name), staticVars: Array.from(staticVars) };
 }
 
 // Backward-compatible string return for any code that expects a string
