@@ -630,17 +630,17 @@ void __opt_cap__(const char* n, const std::string& v) {
   __opt_current_tracer__->add(n, "[\"C_DATA\",\""+__opt_addr__(v.c_str())+"\",\"string\",\""+__opt_esc__(v)+"\",{\"bytes\":"+std::to_string(v.size()+1)+"}]");
 }
 // Pointer overloads — captures the pointer address
-void __opt_cap__(const char* n, int* v) {
+void __opt_cap__(const char* n, int*& v) {
   if(!__opt_current_tracer__) return;
   std::string ptr = v ? __opt_addr__((void*)v) : "0x0";
   __opt_current_tracer__->add(n, "[\"C_DATA\",\""+__opt_addr__(&v)+"\",\"pointer\",\""+ptr+"\",{\"bytes\":8}]");
 }
-void __opt_cap__(const char* n, char* v) {
+void __opt_cap__(const char* n, char*& v) {
   if(!__opt_current_tracer__) return;
   std::string ptr = v ? __opt_addr__((void*)v) : "0x0";
   __opt_current_tracer__->add(n, "[\"C_DATA\",\""+__opt_addr__(&v)+"\",\"pointer\",\""+ptr+"\",{\"bytes\":8}]");
 }
-void __opt_cap__(const char* n, const char* v) {
+void __opt_cap__(const char* n, const char*& v) {
   if(!__opt_current_tracer__) return;
   std::string ptr = v ? __opt_addr__((void*)v) : "0x0";
   __opt_current_tracer__->add(n, "[\"C_DATA\",\""+__opt_addr__(&v)+"\",\"pointer\",\""+ptr+"\",{\"bytes\":8}]");
@@ -660,7 +660,7 @@ void __opt_cap_array__(const char* n, char* v, int sz) {
 
 // ── Heap pointer capture ──
 // For new int(42): capture pointer on stack + create heap entry with the int value
-void __opt_cap_heap__(const char* n, int* v) {
+void __opt_cap_heap__(const char* n, int*& v) {
   if(!__opt_current_tracer__) return;
   std::string ptr = v ? __opt_addr__((void*)v) : "0x0";
   // Stack: pointer C_DATA
@@ -672,7 +672,7 @@ void __opt_cap_heap__(const char* n, int* v) {
   }
 }
 // For new int[size]: capture pointer on stack + create heap entry with array elements
-void __opt_cap_heap_arr__(const char* n, int* v, int sz) {
+void __opt_cap_heap_arr__(const char* n, int*& v, int sz) {
   if(!__opt_current_tracer__) return;
   std::string ptr = v ? __opt_addr__((void*)v) : "0x0";
   // Stack: pointer C_DATA

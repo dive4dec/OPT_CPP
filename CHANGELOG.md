@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.17] - 2026-07-13
+
+### Fixed
+- **Heap pointer arrows originate from wrong source element** — When
+  multiple heap pointers existed (e.g., `p` and `arr`), both had the same
+  C_DATA address because `__opt_cap__`, `__opt_cap_heap__`, and
+  `__opt_cap_heap_arr__` took `int* v` by value. `&v` returned the function
+  parameter's stack slot, which is reused across calls. Changed all pointer
+  overloads to take `int*& v` / `char*& v` / `const char*& v` by reference,
+  so `&v` returns the actual variable's stack address, giving each pointer
+  a unique DOM element ID for jsPlumb arrow targeting.
+
 ## [0.3.16] - 2026-07-13
 
 ### Fixed
