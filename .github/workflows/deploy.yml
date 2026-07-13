@@ -18,12 +18,13 @@ jobs:
   build:
     runs-on: ubuntu-latest
     env:
-      SINGLE_MODE: 'local'
+      # Flexible mode: users can choose WebLLM (local) or enter their own API endpoint/key
+      # No SINGLE_MODE lock, no API key baked in, API panel visible
       INJECT_API_CONFIG: 'true'
       API_INJECT_TARGET: 'define'
-      API_BASE_URL: 'https://dive.cs.cityu.edu.hk/ai-test/v1'
-      API_KEY: 'apikey123456'
-      API_MODEL: 'test'
+      API_BASE_URL: ''
+      API_KEY: ''
+      API_MODEL: ''
       API_HIDE_API_PANEL: ''
 
     steps:
