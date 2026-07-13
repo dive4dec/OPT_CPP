@@ -630,17 +630,17 @@ void __opt_cap__(const char* n, const std::string& v) {
   __opt_current_tracer__->add(n, "[\"C_DATA\",\""+__opt_addr__(v.c_str())+"\",\"string\",\""+__opt_esc__(v)+"\",{\"bytes\":"+std::to_string(v.size()+1)+"}]");
 }
 // Pointer overloads — captures the pointer address
-void __opt_cap__(const char* n, int* v) {
+void __opt_cap__(const char* n, int*& v) {
   if(!__opt_current_tracer__) return;
   std::string ptr = v ? __opt_addr__((void*)v) : "0x0";
   __opt_current_tracer__->add(n, "[\"C_DATA\",\""+__opt_addr__(&v)+"\",\"pointer\",\""+ptr+"\",{\"bytes\":8}]");
 }
-void __opt_cap__(const char* n, char* v) {
+void __opt_cap__(const char* n, char*& v) {
   if(!__opt_current_tracer__) return;
   std::string ptr = v ? __opt_addr__((void*)v) : "0x0";
   __opt_current_tracer__->add(n, "[\"C_DATA\",\""+__opt_addr__(&v)+"\",\"pointer\",\""+ptr+"\",{\"bytes\":8}]");
 }
-void __opt_cap__(const char* n, const char* v) {
+void __opt_cap__(const char* n, const char*& v) {
   if(!__opt_current_tracer__) return;
   std::string ptr = v ? __opt_addr__((void*)v) : "0x0";
   __opt_current_tracer__->add(n, "[\"C_DATA\",\""+__opt_addr__(&v)+"\",\"pointer\",\""+ptr+"\",{\"bytes\":8}]");
@@ -657,6 +657,42 @@ void __opt_cap_array__(const char* n, char* v, int sz) {
   std::string ptr = v ? __opt_addr__((void*)v) : "0x0";
   __opt_current_tracer__->add(n, "[\"C_ARRAY\",\""+ptr+"\",\"char\","+std::to_string(sz)+",\""+ptr+"\",{\"bytes\":1}]");
 }
+
+// ── Heap pointer capture ──
+// For new int(42): capture pointer on stack + create heap entry with the int value
+void __opt_cap_heap__(const char* n, int*& v) {
+  if(!__opt_current_tracer__) return;
+  std::string ptr = v ? __opt_addr__((void*)v) : "0x0";
+  // Stack: pointer C_DATA
+  __opt_current_tracer__->add(n, "[\"C_DATA\",\""+__opt_addr__(&v)+"\",\"pointer\",\""+ptr+"\",{\"bytes\":8}]");
+  if(v) {
+    // Heap: single int value as C_ARRAY with one element
+    std::string heapEntry = "\""+ptr+"\":[\"C_ARRAY\",\""+ptr+"\",[\"C_DATA\",\""+ptr+"\",\"int\","+std::to_string(*v)+",{\"bytes\":4}]]";
+    __opt_current_tracer__->addHeapEntry(heapEntry);
+  }
+}
+// For new int[size]: capture pointer on stack + create heap entry with array elements
+void __opt_cap_heap_arr__(const char* n, int*& v, int sz) {
+  if(!__opt_current_tracer__) return;
+  std::string ptr = v ? __opt_addr__((void*)v) : "0x0";
+  // Stack: pointer C_DATA
+  __opt_current_tracer__->add(n, "[\"C_DATA\",\""+__opt_addr__(&v)+"\",\"pointer\",\""+ptr+"\",{\"bytes\":8}]");
+  if(v && sz > 0) {
+    // Heap: array of int elements
+    std::string heapEntry = "\""+ptr+"\":[\"C_ARRAY\",\""+ptr+"\"";
+    for(int i = 0; i < sz; i++) {
+      heapEntry += ",[\"C_DATA\",\""+ptr+"\",\"int\","+std::to_string(v[i])+",{\"bytes\":4}]";
+    }
+    heapEntry += "]";
+    __opt_current_tracer__->addHeapEntry(heapEntry);
+  }
+}
+// Deleted pointer — show as NULL pointer, no heap entry
+void __opt_cap_deleted__(const char* n) {
+  if(!__opt_current_tracer__) return;
+  __opt_current_tracer__->add(n, "[\"C_DATA\",\"0x0\",\"pointer\",\"0x0\",{\"bytes\":8}]");
+}
+
 // Generic fallback for unknown types — just show type name
 void __opt_cap_unknown__(const char* n, const char* typeName, const void* addr) {
   if(!__opt_current_tracer__) return;

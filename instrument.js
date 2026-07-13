@@ -234,11 +234,20 @@ function genCaptures(knownVars, heapPointers, deletedPointers, structDefs, exclu
   for (let [name, info] of knownVars) {
     if (excludeVars && excludeVars.has(name)) continue;
     if (deletedPointers.has(name)) {
-      // Deleted pointer: show as NULL pointer
-      captures.push(`__opt_cap__("${name}", (int*)0);`);
-    } else if (heapPointers.has(name)) {
-      // Heap pointer — use pointer overload
+      // Deleted pointer: show actual dangling address (NOT 0x0).
+      // delete/delete[] does NOT null the pointer — it still holds the old
+      // heap address (dangling pointer). We just don't create a heap entry.
       captures.push(`__opt_cap__("${name}", ${name});`);
+    } else if (heapPointers.has(name)) {
+      // Heap pointer — use heap capture that creates both stack pointer and heap entry
+      let sz = heapPointers.get(name);
+      if (sz > 0) {
+        // Heap array: new int[size]
+        captures.push(`__opt_cap_heap_arr__("${name}", ${name}, ${sz});`);
+      } else {
+        // Single heap value: new int(42)
+        captures.push(`__opt_cap_heap__("${name}", ${name});`);
+      }
     } else if (info && info.isArray && info.arrayDims && info.arrayDims.length >= 1) {
       // Array — use __opt_cap_array__ with element count
       let totalSize = info.arrayDims.reduce((a, b) => a * b, 1);
