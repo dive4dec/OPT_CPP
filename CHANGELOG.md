@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.16] - 2026-07-13
+
+### Fixed
+- **Dangling pointers after `delete` show actual address, not NULL** —
+  `delete`/`delete[]` does not null the pointer; it still holds the old heap
+  address (dangling pointer). Previously `__opt_cap_deleted__` forced the
+  pointer to `0x0`. Now deleted pointers use the regular `__opt_cap__` `int*`
+  overload, which shows the real dangling address while omitting the heap
+  entry (since the memory has been freed).
+
 ## [0.3.15] - 2026-07-13
 
 ### Added
