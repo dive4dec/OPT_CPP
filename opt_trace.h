@@ -175,6 +175,7 @@ struct __opt_tracer__ {
   int ln;
   std::string func_name;
   std::string frame_id;
+  std::string heapAccumulator; // accumulates multiple heap entries for one step
 
   __opt_tracer__(int line, const char* fn = "main", const char* fid = nullptr)
     : ln(line), func_name(fn) {
@@ -286,6 +287,41 @@ struct __opt_tracer__ {
     if(locals.size()>1) locals+=",";
     locals+="\""+__opt_esc__(n)+"\":"+encoded;
     names.push_back(n);
+  }
+
+  // Accumulate heap entries and add as a single __heap__ variable.
+  // Multiple const char* fields may each emit a heap entry; this method
+  // concatenates them so runner.ts sees one __heap__ with all entries.
+  void addHeapEntry(const std::string& entry) {
+    if(!heapAccumulator.empty()) heapAccumulator += ",";
+    heapAccumulator += entry;
+    // Register __heap__ name only once
+    bool found = false;
+    for(const auto& n : names) if(n == "__heap__") { found = true; break; }
+    if(!found) names.push_back("__heap__");
+    // Update or add the __heap__ local
+    std::string val = "\"HEAP:"+__opt_esc__(heapAccumulator)+"\"";
+    // Check if __heap__ already in locals
+    std::string key = "\"__heap__\":";
+    size_t pos = locals.find(key);
+    if(pos != std::string::npos) {
+      // Replace existing value
+      size_t valStart = pos + key.length();
+      size_t valEnd = valStart;
+      // The value is a quoted string, find matching close quote
+      if(locals[valStart] == '"') {
+        valEnd = valStart + 1;
+        while(valEnd < locals.size() && locals[valEnd] != '"') {
+          if(locals[valEnd] == '\\') valEnd++; // skip escaped char
+          valEnd++;
+        }
+        valEnd++; // include closing quote
+      }
+      locals.replace(pos + key.length(), valEnd - (pos + key.length()), val);
+    } else {
+      if(locals.size()>1) locals+=",";
+      locals += key + val;
+    }
   }
 
   std::string finish() {
@@ -580,13 +616,14 @@ void __opt_cap__(const char* n, bool v) {
 }
 void __opt_cap__(const char* n, char v) {
   if(!__opt_current_tracer__) return;
-  std::string charStr;
-  if(v>=32&&v<127) { charStr=std::string("'")+v+"'"; }
-  else if(v=='\n') { charStr="'\\n'"; }
-  else if(v=='\t') { charStr="'\\t'"; }
-  else if(v==0) { charStr="'\\0'"; }
-  else { char b[8]; snprintf(b,8,"'\\x%02x'",(unsigned char)v); charStr=b; }
-  __opt_current_tracer__->add(n, "[\"C_DATA\",\""+__opt_addr__(&v)+"\",\"char\",\""+__opt_esc__(charStr)+"\",{\"bytes\":1}]");
+  // Frontend adds single quotes for char display, so send raw char value
+  std::string charVal;
+  if(v>=32&&v<127) { charVal=std::string(1,v); }
+  else if(v=='\n') { charVal="\\n"; }
+  else if(v=='\t') { charVal="\\t"; }
+  else if(v==0) { charVal="\\0"; }
+  else { char b[8]; snprintf(b,8,"\\x%02x",(unsigned char)v); charVal=b; }
+  __opt_current_tracer__->add(n, "[\"C_DATA\",\""+__opt_addr__(&v)+"\",\"char\",\""+__opt_esc__(charVal)+"\",{\"bytes\":1}]");
 }
 void __opt_cap__(const char* n, const std::string& v) {
   if(!__opt_current_tracer__) return;
@@ -599,6 +636,11 @@ void __opt_cap__(const char* n, int* v) {
   __opt_current_tracer__->add(n, "[\"C_DATA\",\""+__opt_addr__(&v)+"\",\"pointer\",\""+ptr+"\",{\"bytes\":8}]");
 }
 void __opt_cap__(const char* n, char* v) {
+  if(!__opt_current_tracer__) return;
+  std::string ptr = v ? __opt_addr__((void*)v) : "0x0";
+  __opt_current_tracer__->add(n, "[\"C_DATA\",\""+__opt_addr__(&v)+"\",\"pointer\",\""+ptr+"\",{\"bytes\":8}]");
+}
+void __opt_cap__(const char* n, const char* v) {
   if(!__opt_current_tracer__) return;
   std::string ptr = v ? __opt_addr__((void*)v) : "0x0";
   __opt_current_tracer__->add(n, "[\"C_DATA\",\""+__opt_addr__(&v)+"\",\"pointer\",\""+ptr+"\",{\"bytes\":8}]");
@@ -652,16 +694,50 @@ std::string __opt_field_bool__(const char* name, bool v) {
   return "[\""+__opt_esc__(name)+"\",[\"C_DATA\",\""+__opt_addr__(&v)+"\",\"bool\","+(v?"true":"false")+",{\"bytes\":1}]]";
 }
 std::string __opt_field_char__(const char* name, char v) {
-  std::string charStr;
-  if(v>=32&&v<127) { charStr=std::string("'")+v+"'"; }
-  else if(v=='\n') { charStr="'\\n'"; }
-  else if(v=='\t') { charStr="'\\t'"; }
-  else if(v==0) { charStr="'\\0'"; }
-  else { char b[8]; snprintf(b,8,"'\\x%02x'",(unsigned char)v); charStr=b; }
-  return "[\""+__opt_esc__(name)+"\",[\"C_DATA\",\""+__opt_addr__(&v)+"\",\"char\",\""+__opt_esc__(charStr)+"\",{\"bytes\":1}]]";
+  // Frontend adds single quotes for char display, so send raw char value
+  std::string charVal;
+  if(v>=32&&v<127) { charVal=std::string(1,v); }
+  else if(v=='\n') { charVal="\\n"; }
+  else if(v=='\t') { charVal="\\t"; }
+  else if(v==0) { charVal="\\0"; }
+  else { char b[8]; snprintf(b,8,"\\x%02x",(unsigned char)v); charVal=b; }
+  return "[\""+__opt_esc__(name)+"\",[\"C_DATA\",\""+__opt_addr__(&v)+"\",\"char\",\""+__opt_esc__(charVal)+"\",{\"bytes\":1}]]";
 }
 std::string __opt_field_string__(const char* name, const std::string& v) {
   return "[\""+__opt_esc__(name)+"\",[\"C_DATA\",\""+__opt_addr__(v.c_str())+"\",\"string\",\""+__opt_esc__(v)+"\",{\"bytes\":"+std::to_string(v.size()+1)+"}]]";
+}
+// Pointer field — encodes as pointer type with target address
+std::string __opt_field_ptr__(const char* name, const void*& v) {
+  std::string ptr = v ? __opt_addr__(const_cast<void*>(v)) : "0x0";
+  return "[\""+__opt_esc__(name)+"\",[\"C_DATA\",\""+__opt_addr__(&v)+"\",\"pointer\",\""+ptr+"\",{\"bytes\":8}]]";
+}
+// const char* field — encodes as pointer, and if non-null, also emits a heap
+// entry for the string literal so the frontend can show the pointed-to chars.
+// String literals reside in read-only storage, not the heap, but Python Tutor
+// visualizes them in the heap area with a note.
+std::string __opt_field_const_char_ptr__(const char* name, const char*& v) {
+  std::string ptr = v ? __opt_addr__((void*)v) : "0x0";
+  std::string result = "[\""+__opt_esc__(name)+"\",[\"C_DATA\",\""+__opt_addr__(&v)+"\",\"pointer\",\""+ptr+"\",{\"bytes\":8}]]";
+  if(v && __opt_current_tracer__) {
+    // Build a heap entry: a C_ARRAY of individual char elements
+    // Frontend adds single quotes for char display, so send raw char value
+    std::string str = v;
+    std::string heapEntry = "\""+ptr+"\":[\"C_ARRAY\",\""+ptr+"\"";
+    for(size_t i = 0; i <= str.size(); i++) {
+      char c = str[i];
+      std::string charVal;
+      if(c>=32&&c<127) { charVal=std::string(1,c); }
+      else if(c=='\n') { charVal="\\n"; }
+      else if(c=='\t') { charVal="\\t"; }
+      else if(c==0) { charVal="\\0"; }
+      else { char b[8]; snprintf(b,8,"\\x%02x",(unsigned char)c); charVal=b; }
+      heapEntry += ",[\"C_DATA\",\""+ptr+"\",\"char\",\""+__opt_esc__(charVal)+"\",{\"bytes\":1}]";
+    }
+    heapEntry += "]";
+    // Accumulate heap entries: if __heap__ already exists, append; else create
+    __opt_current_tracer__->addHeapEntry(heapEntry);
+  }
+  return result;
 }
 
 // ── Non-template struct capture ──

@@ -168,6 +168,14 @@ function parseDeclaration(line) {
 
   const result = [];
   for (let v of vars) {
+    // Handle pointer/reference prefix on individual variables:
+    // "const char *sep_, *end_" → first var has pointerRef='*', second has '*end_'
+    // Strip leading * or & and merge with pointerRef
+    let varPointerExtra = '';
+    while (v.startsWith('*') || v.startsWith('&')) {
+      varPointerExtra += v[0];
+      v = v.slice(1).trim();
+    }
     // Parse: name [= value] or name[size] or name[] = {...} or name[M][N] = {...}
     //   or name(args) — constructor call (e.g., "s1(\"hello\")" or "p1(3, 4)")
     // Capture multiple array dimensions: name[2][3]
@@ -197,8 +205,8 @@ function parseDeclaration(line) {
       }
     }
 
-    let isPointer = pointerRef.includes('*') || baseType.includes('*');
-    let isReference = pointerRef.includes('&') || baseType.includes('&');
+    let isPointer = pointerRef.includes('*') || baseType.includes('*') || varPointerExtra.includes('*');
+    let isReference = pointerRef.includes('&') || baseType.includes('&') || varPointerExtra.includes('&');
 
     // Clean up baseType (remove trailing * or &)
     let cleanType = baseType.replace(/[*&]/g, '').trim();
@@ -211,6 +219,7 @@ function parseDeclaration(line) {
       arrayDims: arrayDims,
       isPointer: isPointer,
       isReference: isReference,
+      init: init || null,
     });
   }
 
@@ -253,11 +262,19 @@ function genCaptures(knownVars, heapPointers, deletedPointers, structDefs, exclu
       const fields = structDefs.get(info.type);
       const fieldEncoders = [];
       for (const f of fields) {
-        if (f.isPointer || f.isArray) continue;
+        if (f.isArray) continue;
         // Map field type to the appropriate __opt_field_*__ function
         let fieldFn = null;
         const ft = f.type;
-        if (ft === 'int' || ft === 'short' || ft === 'size_t') {
+        if (f.isPointer) {
+          // Pointer fields — use const char* overload for char pointers,
+          // generic pointer overload for others
+          if (ft === 'char' || ft === 'const char') {
+            fieldFn = '__opt_field_const_char_ptr__';
+          } else {
+            fieldFn = '__opt_field_ptr__';
+          }
+        } else if (ft === 'int' || ft === 'short' || ft === 'size_t') {
           fieldFn = '__opt_field_int__';
         } else if (ft === 'unsigned' || ft === 'unsigned int' || ft === 'unsigned short') {
           fieldFn = '__opt_field_unsigned__';
@@ -289,17 +306,83 @@ function genCaptures(knownVars, heapPointers, deletedPointers, structDefs, exclu
       }
     } else if (name === 'this') {
       // 'this' pointer — handled by __opt_trace_fn_this__, skip here
+    } else if (info && info.type === 'auto') {
+      // auto type — try to infer actual type from initializer expression.
+      // Pattern: auto [&]var = ClassName::method() or ClassName constructor
+      let inferredType = null;
+      if (info.init) {
+        // Check for ClassName::method() pattern
+        let m = info.init.match(/(\w+)::\w+\(/);
+        if (m && structDefs.has(m[1])) {
+          inferredType = m[1];
+        }
+        // Check for ClassName constructor call: ClassName(...)
+        if (!inferredType) {
+          m = info.init.match(/^=(\w+)\(/);
+          if (m && structDefs.has(m[1])) {
+            inferredType = m[1];
+          }
+        }
+      }
+      if (inferredType && structDefs.has(inferredType)) {
+        // Use struct capture with inferred type
+        const fields = structDefs.get(inferredType);
+        const fieldEncoders = [];
+        for (const f of fields) {
+          if (f.isArray) continue;
+          let fieldFn = null;
+          const ft = f.type;
+          if (f.isPointer) {
+            if (ft === 'char' || ft === 'const char') {
+              fieldFn = '__opt_field_const_char_ptr__';
+            } else {
+              fieldFn = '__opt_field_ptr__';
+            }
+          } else if (ft === 'int' || ft === 'short' || ft === 'size_t') {
+            fieldFn = '__opt_field_int__';
+          } else if (ft === 'unsigned' || ft === 'unsigned int' || ft === 'unsigned short') {
+            fieldFn = '__opt_field_unsigned__';
+          } else if (ft === 'long' || ft === 'long long') {
+            fieldFn = '__opt_field_long__';
+          } else if (ft === 'unsigned long' || ft === 'unsigned long long') {
+            fieldFn = '__opt_field_ulong__';
+          } else if (ft === 'double') {
+            fieldFn = '__opt_field_double__';
+          } else if (ft === 'float') {
+            fieldFn = '__opt_field_float__';
+          } else if (ft === 'bool') {
+            fieldFn = '__opt_field_bool__';
+          } else if (ft === 'char' || ft === 'unsigned char') {
+            fieldFn = '__opt_field_char__';
+          } else if (ft === 'std::string' || ft === 'string') {
+            fieldFn = '__opt_field_string__';
+          }
+          if (fieldFn) {
+            fieldEncoders.push(`${fieldFn}("${f.name}", ${name}.${f.name})`);
+          }
+        }
+        if (fieldEncoders.length > 0) {
+          const fieldStr = fieldEncoders.join(' + "," + ');
+          captures.push(`__opt_cap_struct__("${name}", "${inferredType}", (void*)&${name}, (${fieldStr}).c_str());`);
+        } else {
+          captures.push(`__opt_cap_struct__("${name}", "${inferredType}", (void*)&${name}, "");`);
+        }
+      } else if (info.isReference) {
+        // Unknown reference type — use __opt_cap_unknown__
+        captures.push(`__opt_cap_unknown__("${name}", "auto", (void*)&${name});`);
+      } else {
+        // Non-reference auto (int, double, etc.) — try __opt_cap__
+        captures.push(`__opt_cap__("${name}", ${name});`);
+      }
     } else if (info && info.type && !info.isPointer && !info.isArray && !structDefs.has(info.type) &&
                info.type !== 'int' && info.type !== 'double' && info.type !== 'float' &&
                info.type !== 'char' && info.type !== 'bool' && info.type !== 'short' &&
                info.type !== 'long' && info.type !== 'unsigned' && info.type !== 'string' &&
                info.type !== 'std::string' && !info.type.endsWith('*') &&
-               info.type !== 'auto' && info.type !== 'size_t') {
+               info.type !== 'size_t') {
       // Unknown class/struct type — skip (can't capture without templates)
     } else {
-      // All other types (including auto): use overloaded __opt_cap__
-      // The C++ compiler will select the correct overload based on the
-      // actual type — no JS-side type guessing needed.
+      // All other types: use overloaded __opt_cap__
       captures.push(`__opt_cap__("${name}", ${name});`);
     }
   }
