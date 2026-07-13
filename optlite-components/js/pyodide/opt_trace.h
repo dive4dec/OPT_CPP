@@ -707,7 +707,7 @@ std::string __opt_field_string__(const char* name, const std::string& v) {
   return "[\""+__opt_esc__(name)+"\",[\"C_DATA\",\""+__opt_addr__(v.c_str())+"\",\"string\",\""+__opt_esc__(v)+"\",{\"bytes\":"+std::to_string(v.size()+1)+"}]]";
 }
 // Pointer field — encodes as pointer type with target address
-std::string __opt_field_ptr__(const char* name, const void* v) {
+std::string __opt_field_ptr__(const char* name, const void*& v) {
   std::string ptr = v ? __opt_addr__(const_cast<void*>(v)) : "0x0";
   return "[\""+__opt_esc__(name)+"\",[\"C_DATA\",\""+__opt_addr__(&v)+"\",\"pointer\",\""+ptr+"\",{\"bytes\":8}]]";
 }
@@ -715,7 +715,7 @@ std::string __opt_field_ptr__(const char* name, const void* v) {
 // entry for the string literal so the frontend can show the pointed-to chars.
 // String literals reside in read-only storage, not the heap, but Python Tutor
 // visualizes them in the heap area with a note.
-std::string __opt_field_const_char_ptr__(const char* name, const char* v) {
+std::string __opt_field_const_char_ptr__(const char* name, const char*& v) {
   std::string ptr = v ? __opt_addr__((void*)v) : "0x0";
   std::string result = "[\""+__opt_esc__(name)+"\",[\"C_DATA\",\""+__opt_addr__(&v)+"\",\"pointer\",\""+ptr+"\",{\"bytes\":8}]]";
   if(v && __opt_current_tracer__) {
