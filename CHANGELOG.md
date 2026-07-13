@@ -11,15 +11,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 - **Static local variable visualization** — Static local variables (e.g.,
-  `static int count=0;`) now appear in the "Static fields" (globals) section
-  of the visualization, matching Python Tutor behavior. Previously static
-  variables were silently dropped because their type was parsed as
-  `"static int"` instead of `"int"`, causing them to fall into the unknown-type
-  skip branch. Fixed `parseDeclaration` to strip the `static` keyword and
-  track it as an `isStatic` flag. Added `staticVars` tracking in instrument.js,
-  passed through cppworker.js as `static_vars` in the trace JSON, and
-  processed by runner.ts to move static variables from any frame's
-  `encoded_locals` to the `globals` section.
+  `static int count=0;`) now appear in their declaring function's stack frame
+  with a ` [static]` marker suffix (e.g., `count [static]`), matching Python
+  Tutor behavior exactly. Statics stay in scope of the function where they
+  are declared, not in the globals section.
 
 ## [0.3.17] - 2026-07-13
 
