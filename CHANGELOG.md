@@ -7,7 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.3.14] - 2026-07-13
+## [0.3.15] - 2026-07-13
+
+### Added
+- **Heap memory visualization for `new`/`delete`** — Heap-allocated pointers
+  (`int *p = new int(42)`, `int *arr = new int[3]`) now show both the pointer
+  on the stack and the allocated data in the heap area, matching Python Tutor
+  behavior. Added three new functions in opt_trace.h:
+  - `__opt_cap_heap__` — single value: `new int(42)` → heap C_ARRAY with one int
+  - `__opt_cap_heap_arr__` — array: `new int[3]` → heap C_ARRAY with N int elements
+  - `__opt_cap_deleted__` — after `delete`/`delete[]`: pointer shows as 0x0, heap
+    entry removed
 
 ### Fixed
 - **Multi-line expression broken by trace injection** — Valid C++

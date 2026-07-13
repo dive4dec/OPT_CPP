@@ -235,10 +235,17 @@ function genCaptures(knownVars, heapPointers, deletedPointers, structDefs, exclu
     if (excludeVars && excludeVars.has(name)) continue;
     if (deletedPointers.has(name)) {
       // Deleted pointer: show as NULL pointer
-      captures.push(`__opt_cap__("${name}", (int*)0);`);
+      captures.push(`__opt_cap_deleted__("${name}");`);
     } else if (heapPointers.has(name)) {
-      // Heap pointer — use pointer overload
-      captures.push(`__opt_cap__("${name}", ${name});`);
+      // Heap pointer — use heap capture that creates both stack pointer and heap entry
+      let sz = heapPointers.get(name);
+      if (sz > 0) {
+        // Heap array: new int[size]
+        captures.push(`__opt_cap_heap_arr__("${name}", ${name}, ${sz});`);
+      } else {
+        // Single heap value: new int(42)
+        captures.push(`__opt_cap_heap__("${name}", ${name});`);
+      }
     } else if (info && info.isArray && info.arrayDims && info.arrayDims.length >= 1) {
       // Array — use __opt_cap_array__ with element count
       let totalSize = info.arrayDims.reduce((a, b) => a * b, 1);
