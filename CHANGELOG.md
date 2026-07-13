@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.13] - 2026-07-13
+
+### Fixed
+- **`const char*` pointer field arrows point to wrong/missing heap arrays** —
+  When a struct had multiple `const char*` fields (e.g., `name` and `version`),
+  both pointer fields shared the same `ptrSrc_<addr>` DOM ID because
+  `__opt_field_const_char_ptr__` took `const char* v` by value. `&v` gave the
+  address of the function parameter (same stack slot for both calls), so the
+  second field's connection overwrote the first in the frontend's
+  `connectionEndpointIDs` map. Changed to take `const char*& v` (by reference)
+  so `&v` gives the address of the actual struct field, ensuring each pointer
+  field gets a unique `ptrSrc` ID. Same fix applied to `__opt_field_ptr__`.
+
 ## [0.3.12] - 2026-07-12
 
 ### Added
