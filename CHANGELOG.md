@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.19] - 2026-07-13
+
+### Fixed
+- **`__opt_cap__` overload mismatch for `auto` types with complex deduced
+  types** — When `auto` variables deduced to types without a matching
+  `__opt_cap__` overload (e.g., `std::function`, lambdas), the instrumenter
+  generated `__opt_cap__("name", name)` which failed to compile. Now the
+  instrumenter infers simple types from initializer literals (int, unsigned
+  long, double, float, bool, char, string) and uses `static_cast` to select
+  the correct overload. For complex types that can't be inferred
+  (`std::function`, lambdas, function parameters), it falls back to
+  `__opt_cap_unknown__` which shows the variable as an opaque object instead
+  of crashing.
+
 ## [0.3.18] - 2026-07-13
 
 ### Added
