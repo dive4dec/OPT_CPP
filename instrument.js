@@ -433,6 +433,9 @@ function instrumentCode(sourceCode) {
 
   // Track brace-less control flow (for/while/if without {) — next line is the body
   let pendingBracelessBody = false;
+  // Track multi-line statement continuation (expression spanning multiple lines
+  // without a top-level semicolon, e.g. `std::cout << 1 \n << 2;`)
+  let inMultiLineStmt = false;
   let currentStructName = '';
   let currentStructFields = [];
   let currentAccessLevel = 'public'; // default for struct
@@ -1137,6 +1140,49 @@ function instrumentCode(sourceCode) {
       if (c === ';' && parenDepth === 0 && braceDepth === 0 && bracketDepth === 0) {
         stmtComplete = true;
       }
+    }
+
+    // If the previous line started a multi-line statement (no top-level ';' was
+    // found), this line is a continuation. We must NOT inject a trace call
+    // between the continuation and the start of the expression — that would
+    // break the expression (e.g. `std::cout << 1 \n __trace; \n << 2;` is a
+    // syntax error).  Instead, we only check whether the statement is now
+    // complete.  If it is, inject the trace AFTER outputting the line (as a
+    // post-statement trace) so the expression stays intact.
+    if (inMultiLineStmt) {
+      // This line is a continuation of a multi-line statement.
+      // If the statement is now complete (has a top-level ';'), we can inject
+      // a trace AFTER the line.  Otherwise, keep accumulating.
+      // Output the continuation line first — do NOT inject trace before it.
+      let declared2 = parseDeclaration(line);
+      for (let d of declared2) {
+        knownVars.set(d.name, d);
+        scopeStack[scopeStack.length-1].vars.add(d.name);
+      }
+      output.push(line);
+      if (stmtComplete) {
+        // The multi-line statement is now complete.  Inject a trace call
+        // AFTER the line to capture state.  This is a post-statement trace
+        // (different from the normal pre-statement convention), but it's the
+        // only way to avoid breaking the expression.
+        let fnArg = `"${currentFunc}", `;
+        let captures = genCaptures(knownVars, heapPointers, deletedPointers, structDefs);
+        output.push(`__opt_trace_fn__(${fnArg}${lineNum});`);
+        if (captures.length > 0) { output.push(captures.join(' ')); }
+        output.push(`__opt_trace_end__();`);
+        inMultiLineStmt = false;
+      }
+      continue;
+    }
+
+    // Detect start of a multi-line statement: the line has no top-level ';'
+    // but does have expression content (not just a brace, preprocessor, etc.).
+    // We set inMultiLineStmt so the next line is treated as a continuation.
+    // Skip control-flow keywords and lines that are obviously not expressions.
+    if (!stmtComplete && stripped && !stripped.match(/^\s*(for|while|if|else|switch|do|try|catch)\b/)
+        && !stripped.endsWith('{') && !stripped.match(/^[};\s]*$/)
+        && !stripped.startsWith('#')) {
+      inMultiLineStmt = true;
     }
 
     // Inject trace BEFORE the statement (Python Tutor convention):
