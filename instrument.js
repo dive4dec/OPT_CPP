@@ -388,8 +388,49 @@ function genCaptures(knownVars, heapPointers, deletedPointers, structDefs, exclu
         // Unknown reference type — use __opt_cap_unknown__
         captures.push(`__opt_cap_unknown__("${name}", "auto", (void*)&${name});`);
       } else {
-        // Non-reference auto (int, double, etc.) — try __opt_cap__
-        captures.push(`__opt_cap__("${name}", ${name});`);
+        // Non-reference auto — try to infer simple type from initializer
+        // to pick the right __opt_cap__ overload. Fall back to __opt_cap_unknown__
+        // for complex types (std::function, lambdas, etc.) that have no overload.
+        let inferredSimpleType = null;
+        if (info.init) {
+          const initStr = info.init.trim();
+          // Integer literals with suffixes
+          if (/^=-?\d+[uU]?[lL]?[lL]?$/.test(initStr)) {
+            if (/[uU]/.test(initStr) && /[lL]/.test(initStr)) inferredSimpleType = 'unsigned long';
+            else if (/[lL]{2}/.test(initStr)) inferredSimpleType = 'long long';
+            else if (/[uU]/.test(initStr)) inferredSimpleType = 'unsigned';
+            else if (/[lL]/.test(initStr)) inferredSimpleType = 'long';
+            else inferredSimpleType = 'int';
+          }
+          // Floating point literals
+          else if (/^=-?\d+\.\d*[fF]?$/.test(initStr) || /^=-?\d+[eE][+-]?\d+$/.test(initStr)) {
+            if (/[fF]$/.test(initStr)) inferredSimpleType = 'float';
+            else inferredSimpleType = 'double';
+          }
+          // Boolean literals
+          else if (/^=(true|false)$/.test(initStr)) {
+            inferredSimpleType = 'bool';
+          }
+          // Character literals
+          else if (/^='.'$/.test(initStr) || /^='\\.'$/.test(initStr)) {
+            inferredSimpleType = 'char';
+          }
+          // String literals → const char*
+          else if (/^=".*"$/.test(initStr)) {
+            inferredSimpleType = 'const char*';
+          }
+        }
+        if (inferredSimpleType) {
+          // We know the simple type — cast and use the right overload
+          if (inferredSimpleType === 'const char*') {
+            captures.push(`__opt_cap__("${name}", ${name});`);
+          } else {
+            captures.push(`__opt_cap__("${name}", (static_cast<${inferredSimpleType}>(${name})));`);
+          }
+        } else {
+          // Can't determine type (std::function, lambda, etc.) — use fallback
+          captures.push(`__opt_cap_unknown__("${name}", "auto", (void*)&${name});`);
+        }
       }
     } else if (info && info.type && !info.isPointer && !info.isArray && !structDefs.has(info.type) &&
                info.type !== 'int' && info.type !== 'double' && info.type !== 'float' &&
