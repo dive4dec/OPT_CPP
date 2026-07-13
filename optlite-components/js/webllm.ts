@@ -518,6 +518,16 @@ function updateUIElements() {
     } else {
         apiElements.forEach(el => (el as HTMLElement).style.display = API_CONFIG.enabled ? "block" : "none");
     }
+
+    // In local mode, show the model dropdown and Pull Model button so users
+    // can select and download a model. These have display:none in the HTML
+    // template; we unhide them here when not in API mode.
+    const modelSel = document.getElementById("model-selection") as HTMLElement | null;
+    const downloadBtn = document.getElementById("download") as HTMLElement | null;
+    if (!API_CONFIG.enabled) {
+        if (modelSel) modelSel.style.display = '';
+        if (downloadBtn) downloadBtn.style.display = '';
+    }
     
     // Enable/disable Ask AI button based on mode
     const askAIButton = document.getElementById("askAI") as HTMLButtonElement;
