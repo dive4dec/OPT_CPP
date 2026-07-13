@@ -217,33 +217,39 @@ async function handleWorkerMessage(event: MessageEvent) {
 
         // Move global variables from main's encoded_locals to globals section
         // so they appear in the "Global variables" frame like Python Tutor
-        if (parsed.global_vars && parsed.trace) {
-          const gvarNames: string[] = parsed.global_vars;
+        // Also move static local variables from ALL frames to globals section
+        if ((parsed.global_vars || parsed.static_vars) && parsed.trace) {
+          const gvarNames: string[] = parsed.global_vars || [];
+          const svarNames: string[] = parsed.static_vars || [];
           for (const entry of parsed.trace) {
             if (!entry.stack_to_render || entry.stack_to_render.length === 0) continue;
-            // Find the main frame (first frame or the one with func_name 'main')
-            const mainFrame = entry.stack_to_render.find(f => f.func_name === 'main');
-            if (!mainFrame || !mainFrame.encoded_locals || !mainFrame.ordered_varnames) continue;
-            const newGlobals = {};
-            const newOrderedGlobals: string[] = [];
-            const newLocals = {};
-            const newOrderedLocals: string[] = [];
-            for (const varname of mainFrame.ordered_varnames) {
-              if (gvarNames.includes(varname)) {
-                newGlobals[varname] = mainFrame.encoded_locals[varname];
-                newOrderedGlobals.push(varname);
-              } else {
-                newLocals[varname] = mainFrame.encoded_locals[varname];
-                newOrderedLocals.push(varname);
+            const newGlobals = entry.globals || {};
+            const newOrderedGlobals: string[] = entry.ordered_globals || [];
+            for (const frame of entry.stack_to_render) {
+              if (!frame.encoded_locals || !frame.ordered_varnames) continue;
+              const newLocals = {};
+              const newOrderedLocals = [];
+              for (const varname of frame.ordered_varnames) {
+                if (gvarNames.includes(varname) && frame.func_name === 'main') {
+                  newGlobals[varname] = frame.encoded_locals[varname];
+                  if (!newOrderedGlobals.includes(varname)) newOrderedGlobals.push(varname);
+                } else if (svarNames.includes(varname)) {
+                  // Static locals go to globals regardless of which frame they're in
+                  newGlobals[varname] = frame.encoded_locals[varname];
+                  if (!newOrderedGlobals.includes(varname)) newOrderedGlobals.push(varname);
+                } else {
+                  newLocals[varname] = frame.encoded_locals[varname];
+                  newOrderedLocals.push(varname);
+                }
               }
+              frame.encoded_locals = newLocals;
+              frame.ordered_varnames = newOrderedLocals;
             }
             entry.globals = newGlobals;
             entry.ordered_globals = newOrderedGlobals;
-            mainFrame.encoded_locals = newLocals;
-            mainFrame.ordered_varnames = newOrderedLocals;
           }
-          // Remove global_vars so the frontend doesn't see it
           delete parsed.global_vars;
+          delete parsed.static_vars;
         }
 
         // Extract __heap__ entries from all frames' encoded_locals and build heap

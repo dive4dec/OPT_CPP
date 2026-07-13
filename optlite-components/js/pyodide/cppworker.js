@@ -180,6 +180,7 @@ self.onmessage = async (event) => {
       const header = optTraceHeader || '';
       let instrumentedCode;
       let globalVarNames = [];
+      let staticVarNames = [];
 
       // Strip #include <format> — std::format is available without it
       // in clang-repl's preamble, and compiling the full <format> header
@@ -193,6 +194,7 @@ self.onmessage = async (event) => {
         } else {
           instrumentedCode = result.code;
           globalVarNames = result.globalVars || [];
+          staticVarNames = result.staticVars || [];
         }
       } catch (e) {
         // If instrumentation fails, use original code (no visualization)
@@ -287,6 +289,9 @@ self.onmessage = async (event) => {
           parsed.code = self.script;
           if (globalVarNames.length > 0) {
             parsed.global_vars = globalVarNames;
+          }
+          if (staticVarNames.length > 0) {
+            parsed.static_vars = staticVarNames;
           }
           if (!parsed.trace || parsed.trace.length === 0) {
             results = JSON.stringify({ code: self.script, trace: buildFallbackTrace(code) });
