@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.21] - 2026-07-14
+
+### Changed
+- **"Configure" button renamed to "AI Tutor"** and moved to the left of the
+  status text in the status bar, making the button the primary entry point
+  for AI Tutor settings.
+
 ## [0.3.20] - 2026-07-14
 
 ### Added
