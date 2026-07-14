@@ -196,6 +196,8 @@ async function initializeWebLLMEngine() {
     isEngineReady = true;
     // Mark this model as downloaded
     downloadedModels.add(selectedModel);
+    // Persist the active model so reloads can collapse the config
+    localStorage.setItem('webllm_active_model', selectedModel);
     // Update UI to reflect downloaded state
     await updateModelStatusLine();
     // Collapse config to status bar
@@ -526,8 +528,11 @@ function isAIConfigured(): boolean {
         // API mode: configured if baseUrl or apiKey is set
         return !!(API_CONFIG.baseUrl || API_CONFIG.apiKey);
     } else {
-        // Local mode: configured if engine is ready
-        return isEngineReady;
+        // Local mode: configured if engine is ready OR a model was previously downloaded
+        if (isEngineReady) return true;
+        // Check localStorage for a previously pulled model
+        const savedModel = localStorage.getItem('webllm_active_model');
+        return !!savedModel;
     }
 }
 
@@ -551,8 +556,9 @@ function collapseAIConfig() {
         const model = API_CONFIG.model || '(not set)';
         if (statusText) statusText.textContent = '✓ API: ' + endpoint + ' · Model: ' + model;
     } else {
-        // Local mode status
-        const model = isEngineReady ? selectedModel : '(not loaded)';
+        // Local mode status — show saved model name even if engine not ready (on reload)
+        const savedModel = localStorage.getItem('webllm_active_model') || '';
+        const model = isEngineReady ? selectedModel : (savedModel || '(not loaded)');
         if (statusText) statusText.textContent = '✓ Local: ' + model;
     }
 
@@ -574,6 +580,10 @@ function expandAIConfig() {
 
     const statusBar = document.getElementById("ai-status-bar");
     if (statusBar) statusBar.style.display = 'none';
+
+    // Show mode controls (they were hidden by collapseAIConfig)
+    const modeControls = document.getElementById("mode-controls-div");
+    if (modeControls) modeControls.style.display = '';
 
     // Show mode controls and appropriate panel
     updateModeDisplay();
@@ -932,6 +942,11 @@ document.addEventListener('DOMContentLoaded', function() {
             }
             modelSelect.appendChild(option);
         });
+        // If a model was previously pulled, select it
+        const savedModel = localStorage.getItem('webllm_active_model');
+        if (savedModel && availableModels.includes(savedModel)) {
+            selectedModel = savedModel;
+        }
         modelSelect.value = selectedModel;
         // Update status line when model selection changes
         modelSelect.addEventListener('change', () => {
