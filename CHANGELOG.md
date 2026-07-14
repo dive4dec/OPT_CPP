@@ -7,6 +7,61 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.20] - 2026-07-14
+
+### Added
+- **Flexible deployment at `/OPT_CPP_`** — separate helm release
+  `opt-cpp-flex` that lets users choose between WebLLM (local) and API key
+  (remote) modes, with no server-side API proxy or mode lock. Build args:
+  `PUBLIC_PATH=/OPT_CPP_/`, empty `API_BASE_URL`/`API_KEY`/`API_MODEL`/
+  `SINGLE_MODE`/`API_HIDE_API_PANEL`.
+- **AI Tutor config redesign** — compact status bar (always visible),
+  Configure button toggles config panel, buffered API inputs with
+  Confirm/Cancel buttons, expanded WebLLM model list (7 models with
+  ★ recommended marker).
+
+### Changed
+- **COEP changed from `require-corp` to `credentialless`** in `sw.js` and
+  `nginx.conf` — allows WebLLM cross-origin model fetches from Hugging Face
+  CDN while still enabling SharedArrayBuffer for WASM. Applied to both
+  deployments.
+- **Config panel hidden by default** — status bar always visible, Configure
+  button shows/hides config, Confirm/Cancel hides it again. Eliminates all
+  async timing issues with download detection. Switching modes stays in the
+  config panel (does not collapse).
+- **"Current Mode: " prefix removed** from mode display — now just
+  "Local Mode" / "API Mode".
+
+### Fixed
+- **Model dropdown and API panel not showing in flexible deployment** —
+  `webpack.config.js` `hideApiPanel` no longer falls back to
+  `INJECT_API_CONFIG`; HTML template inline `display:none` on
+  `#model-selection` and `#download` removed by `updateUIElements()`.
+- **API inputs pre-filled with build-time values** —
+  `__API_BASE_URL__`/`__API_MODEL__` injection disabled by passing empty
+  build args.
+- **Auto-pull triggered on page load in flexible mode** — `webllm.ts`
+  auto-clicks download button if `!API_CONFIG.enabled && navigator.gpu`;
+  now gated behind `SINGLE_MODE=local`.
+- **Config collapse on reload** — `isAIConfigured()` checked `isEngineReady`
+  (false on reload); now checks `localStorage` fallback and
+  `webllm.hasModelInCache()`.
+- **Simultaneous visibility of status bar and config dropdown** — async
+  `collapseAIConfig()` was overridden by `updateUIElements()` which re-shows
+  `.local-only` elements. Replaced with sync `hideConfigPanel()`.
+- **Download status inconsistently hides/shows after refresh** — eliminated
+  by removing all async collapse/expand logic; config is always hidden by
+  default regardless of download state.
+
+### Removed
+- **Dead code cleanup** (net -47 lines): `$("#send").click()` handler
+  (element doesn't exist in HTML), redundant toggle click listener
+  (`showConfigPanel()` already restores saved values), `enforceSingleModelSetting()`
+  IIFE (`updateModeDisplay()` handles locked mode), `loadAPIConfig()` input
+  echo (`showConfigPanel()` populates on demand), `updateModeDisplay()` call
+  from DOMContentLoaded (`hideConfigPanel()` hides everything), duplicate
+  `lock` variable declaration.
+
 ## [0.3.19] - 2026-07-13
 
 ### Fixed
