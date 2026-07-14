@@ -101,18 +101,12 @@ let selectedModel = RECOMMENDED_MODEL;
 // Track which models are already downloaded (cached in browser)
 const downloadedModels = new Set<string>();
 
-/** Check if a model is already cached in the browser's Cache API */
+/** Check if a model is already cached in the browser */
 async function isModelDownloaded(modelId: string): Promise<boolean> {
     if (downloadedModels.has(modelId)) return true;
     try {
-        const modelRecord = webllm.prebuiltAppConfig.model_list.find(
-            (m) => m.model_id === modelId
-        );
-        if (!modelRecord) return false;
-        const cache = await caches.open('webllm-models');
-        // Check if the model URL is cached
-        const cached = await cache.match(modelRecord.model);
-        if (cached) {
+        const isCached = await webllm.hasModelInCache(modelId);
+        if (isCached) {
             downloadedModels.add(modelId);
             return true;
         }
@@ -523,25 +517,25 @@ function initializeErrorObserver() {
 /*************** Mode Switching Functions ***************/
 
 /** Check if AI is currently configured (model ready in local, or API config set in API mode) */
-function isAIConfigured(): boolean {
+async function isAIConfigured(): Promise<boolean> {
     if (API_CONFIG.enabled) {
         // API mode: configured if baseUrl or apiKey is set
         return !!(API_CONFIG.baseUrl || API_CONFIG.apiKey);
     } else {
-        // Local mode: configured if engine is ready OR a model was previously downloaded
+        // Local mode: configured if engine is ready OR model is cached
         if (isEngineReady) return true;
-        // Check localStorage for a previously pulled model
         const savedModel = localStorage.getItem('webllm_active_model');
-        return !!savedModel;
+        if (!savedModel) return false;
+        return await isModelDownloaded(savedModel);
     }
 }
 
 /** Collapse the config panel and show the compact status bar */
-function collapseAIConfig() {
+async function collapseAIConfig() {
     const lock = getSingleModelSetting();
     if (lock === 'local' || lock === 'api') return; // no collapse in locked mode
 
-    if (!isAIConfigured()) return; // only collapse if actually configured
+    if (!(await isAIConfigured())) return; // only collapse if actually configured
 
     const statusBar = document.getElementById("ai-status-bar");
     const statusText = document.getElementById("ai-status-text");
@@ -640,7 +634,7 @@ function confirmAPIConfig() {
 }
 
 /** Restore buffered API inputs to saved config values */
-function cancelAPIConfigEdit() {
+async function cancelAPIConfigEdit() {
     const urlInput = document.getElementById("api-url") as HTMLInputElement | null;
     const keyInput = document.getElementById("api-key") as HTMLInputElement | null;
     const modelInput = document.getElementById("api-model") as HTMLInputElement | null;
@@ -649,7 +643,7 @@ function cancelAPIConfigEdit() {
     if (modelInput) modelInput.value = API_CONFIG.model;
     updateAPIConfirmButtonState();
     // If already configured, collapse back; otherwise stay expanded
-    if (isAIConfigured()) {
+    if (await isAIConfigured()) {
         collapseAIConfig();
     }
 }
@@ -665,14 +659,12 @@ function toggleAPIMode() {
     persistAPIConfig(); // Save the mode preference immediately
 
     // If the newly-selected mode is already configured, collapse to status bar
-    if (isAIConfigured()) {
-        collapseAIConfig();
-    } else {
-        // Update model status line if switching to local mode
-        if (!API_CONFIG.enabled) {
+    collapseAIConfig().then(() => {
+        if (!API_CONFIG.enabled && document.getElementById("ai-status-bar").style.display === 'none') {
+            // Not collapsed — update model status line if in local mode
             updateModelStatusLine();
         }
-    }
+    });
 }
 
 function updateModeDisplay() {
@@ -745,7 +737,28 @@ function updateUIElements() {
         if (API_CONFIG.enabled) {
             askAIButton.disabled = false;
         } else {
+            // In local mode, enable if engine is ready
             askAIButton.disabled = !isEngineReady;
+            // If engine not ready but model may be cached, auto-initialize
+            if (!isEngineReady) {
+                const savedModel = (typeof localStorage !== 'undefined') ? localStorage.getItem('webllm_active_model') : null;
+                if (savedModel) {
+                    isModelDownloaded(savedModel).then(async (cached) => {
+                        if (cached) {
+                            // Auto-initialize engine with cached model (fast — no download)
+                            try {
+                                const downloadBtn = document.getElementById("download") as HTMLButtonElement;
+                                if (downloadBtn) downloadBtn.disabled = true;
+                                await initializeWebLLMEngine();
+                                if (downloadBtn) downloadBtn.disabled = false;
+                                updateUIElements();
+                            } catch {
+                                // If auto-init fails, leave disabled
+                            }
+                        }
+                    });
+                }
+            }
         }
     }
 
