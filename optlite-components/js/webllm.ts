@@ -448,11 +448,6 @@ document.getElementById("download").addEventListener("click", function () {
     });
 });
 
-$("#send").click(() => {
-    var inputElement = document.getElementById("user-input") as HTMLInputElement;
-    onMessageSend(inputElement.value);
-});
-
 function extractText() {
     const container = document.querySelector('.ace_layer.ace_text-layer');
     const lines = container.querySelectorAll('.ace_line');
@@ -653,7 +648,7 @@ function updateModeDisplay() {
             (statusElement as HTMLElement).style.display = 'none';
         } else {
             (statusElement as HTMLElement).style.display = '';
-            statusElement.textContent = `Current Mode: ${API_CONFIG.enabled ? "API Mode" : "Local Mode"}`;
+            statusElement.textContent = API_CONFIG.enabled ? "API Mode" : "Local Mode";
             statusElement.className = API_CONFIG.enabled ? "mode-status api-mode" : "mode-status local-mode";
         }
     }
@@ -763,15 +758,7 @@ function loadAPIConfig() {
         }
     }
 
-    // 3) 回显（仅未隐藏）
-    if (!hidePanel) {
-        const urlInput = document.getElementById("api-url") as HTMLInputElement | null;
-        const keyInput = document.getElementById("api-key") as HTMLInputElement | null;
-        const modelInput = document.getElementById("api-model") as HTMLInputElement | null;
-        if (urlInput) urlInput.value = API_CONFIG.baseUrl;
-        if (keyInput) keyInput.value = API_CONFIG.apiKey;
-        if (modelInput) modelInput.value = API_CONFIG.model;
-    }
+    // Note: input field values are populated by showConfigPanel() when Configure is clicked
 }
 
 // Bind API input fields — BUFFERED (changes don't take effect until Confirm)
@@ -840,39 +827,21 @@ document.addEventListener('DOMContentLoaded', function() {
         });
     }
 
-    // Enforce SINGLE_MODEL behavior if provided via define/window injection
-    (function enforceSingleModelSetting() {
-        const lock = getSingleModelSetting();
-        const toggleBtn = document.getElementById("toggle-api") as HTMLButtonElement | null;
-        if (lock === 'local') {
-            API_CONFIG.enabled = false; // force local mode
-            if (toggleBtn) toggleBtn.style.display = 'none';
-        } else if (lock === 'api') {
-            API_CONFIG.enabled = true; // force api mode
-            if (toggleBtn) toggleBtn.style.display = 'none';
-        } else {
-            if (toggleBtn) toggleBtn.style.display = '';
-        }
-    })();
+    // Enforce SINGLE_MODEL behavior: force mode and hide toggle in locked mode
+    const lock = getSingleModelSetting();
+    if (lock === 'local') {
+        API_CONFIG.enabled = false;
+    } else if (lock === 'api') {
+        API_CONFIG.enabled = true;
+    }
     
-    // If user switches to API mode for the first time in this browser session,
-    // use the in-code defaults immediately (so displayed values match actual usage)
+    // Bind mode toggle button (actual toggle)
     const toggleBtn = document.getElementById("toggle-api");
     if (toggleBtn) {
-        toggleBtn.addEventListener("click", () => {
-            // After toggle, API_CONFIG.enabled state will flip in toggleAPIMode
-            // We just ensure inputs reflect current runtime values before first save
-            const urlInput = document.getElementById("api-url") as HTMLInputElement | null;
-            const keyInput = document.getElementById("api-key") as HTMLInputElement | null;
-            const modelInput = document.getElementById("api-model") as HTMLInputElement | null;
-            if (urlInput && !urlInput.value) urlInput.value = API_CONFIG.baseUrl;
-            if (keyInput && !keyInput.value) keyInput.value = API_CONFIG.apiKey;
-            if (modelInput && !modelInput.value) modelInput.value = API_CONFIG.model;
-        });
+        toggleBtn.addEventListener("click", toggleAPIMode);
     }
 
-    // Update UI based on loaded configuration
-    updateModeDisplay();
+    // Enable Ask AI button based on mode, and auto-init engine if model is cached
     updateUIElements();
     
     // Populate model dropdown with recommended marker
@@ -963,9 +932,7 @@ document.addEventListener('DOMContentLoaded', function() {
     }
 
     // Auto-trigger model download on page load ONLY when SINGLE_MODE is
-    // locked to 'local'. In flexible mode, the user should click Pull Model
-    // manually.
-    const lock = getSingleModelSetting();
+    // locked to 'local'. In flexible mode, the user clicks Confirm manually.
     const downloadBtn = document.getElementById("download") as HTMLButtonElement | null;
     if (downloadBtn && lock === 'local' && !API_CONFIG.enabled && ('gpu' in navigator)) {
         downloadBtn.click();
