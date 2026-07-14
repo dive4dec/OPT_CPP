@@ -535,7 +535,21 @@ async function collapseAIConfig() {
     const lock = getSingleModelSetting();
     if (lock === 'local' || lock === 'api') return; // no collapse in locked mode
 
-    if (!(await isAIConfigured())) return; // only collapse if actually configured
+    // Fast sync check first: collapse immediately if localStorage says configured
+    const savedModel = (typeof localStorage !== 'undefined') ? localStorage.getItem('webllm_active_model') : null;
+    const apiConfigured = !!(API_CONFIG.baseUrl || API_CONFIG.apiKey);
+
+    if (!API_CONFIG.enabled && !savedModel && !apiConfigured) return; // nothing configured
+
+    // For local mode, verify model is actually cached (async) before collapsing
+    if (!API_CONFIG.enabled && savedModel && !isEngineReady) {
+        try {
+            const cached = await isModelDownloaded(savedModel);
+            if (!cached) return; // model not actually cached, don't collapse
+        } catch {
+            return; // cache check failed, don't collapse
+        }
+    }
 
     const statusBar = document.getElementById("ai-status-bar");
     const statusText = document.getElementById("ai-status-text");
@@ -551,7 +565,6 @@ async function collapseAIConfig() {
         if (statusText) statusText.textContent = '✓ API: ' + endpoint + ' · Model: ' + model;
     } else {
         // Local mode status — show saved model name even if engine not ready (on reload)
-        const savedModel = localStorage.getItem('webllm_active_model') || '';
         const model = isEngineReady ? selectedModel : (savedModel || '(not loaded)');
         if (statusText) statusText.textContent = '✓ Local: ' + model;
     }
@@ -561,6 +574,11 @@ async function collapseAIConfig() {
     if (apiPanel) apiPanel.style.display = 'none';
     if (localControls) localControls.style.display = 'none';
     if (modelStatusLine) modelStatusLine.style.display = 'none';
+
+    // Hide ALL .local-only elements (covers reset button container, etc.)
+    document.querySelectorAll(".local-only").forEach((el) => {
+        (el as HTMLElement).style.display = 'none';
+    });
 
     // Hide download-status when collapsed
     const downloadStatus = document.getElementById("download-status");
@@ -978,7 +996,56 @@ document.addEventListener('DOMContentLoaded', function() {
     updateModelStatusLine();
 
     // After everything is loaded, collapse if already configured
-    collapseAIConfig();
+    // First try immediate sync collapse (works for API mode and local mode with savedModel)
+    (function immediateCollapse() {
+        const lock = getSingleModelSetting();
+        if (lock === 'local' || lock === 'api') return;
+
+        const savedModel = (typeof localStorage !== 'undefined') ? localStorage.getItem('webllm_active_model') : null;
+        const apiConfigured = !!(API_CONFIG.baseUrl || API_CONFIG.apiKey);
+
+        if (API_CONFIG.enabled && apiConfigured) {
+            // API mode: collapse immediately (all data is sync)
+            doCollapse();
+        } else if (!API_CONFIG.enabled && savedModel) {
+            // Local mode with saved model: collapse optimistically, verify async
+            doCollapse();
+            // Async verify — if model not actually cached, expand back
+            isModelDownloaded(savedModel).then((cached) => {
+                if (!cached) {
+                    // Model not in cache anymore — expand back
+                    localStorage.removeItem('webllm_active_model');
+                    expandAIConfig();
+                } else if (!isEngineReady) {
+                    // Model IS cached — auto-initialize engine in background
+                    initializeWebLLMEngine().then(() => {
+                        updateUIElements();
+                    }).catch(() => {});
+                }
+            }).catch(() => {});
+        }
+
+        function doCollapse() {
+            const statusBar = document.getElementById("ai-status-bar");
+            const statusText = document.getElementById("ai-status-text");
+            const modeControls = document.getElementById("mode-controls-div");
+            if (API_CONFIG.enabled) {
+                const endpoint = API_CONFIG.baseUrl || '(not set)';
+                const model = API_CONFIG.model || '(not set)';
+                if (statusText) statusText.textContent = '✓ API: ' + endpoint + ' · Model: ' + model;
+            } else {
+                const model = savedModel || '(not loaded)';
+                if (statusText) statusText.textContent = '✓ Local: ' + model;
+            }
+            if (statusBar) statusBar.style.display = 'block';
+            if (modeControls) modeControls.style.display = 'none';
+            // Hide ALL .local-only and .api-only elements
+            document.querySelectorAll(".local-only").forEach((el) => { (el as HTMLElement).style.display = 'none'; });
+            document.querySelectorAll(".api-only").forEach((el) => { (el as HTMLElement).style.display = 'none'; });
+            const downloadStatus = document.getElementById("download-status");
+            if (downloadStatus) downloadStatus.classList.add("hidden");
+        }
+    })();
     
     // Bind API configuration reset button
     const resetBtn = document.getElementById("reset-api-config");
