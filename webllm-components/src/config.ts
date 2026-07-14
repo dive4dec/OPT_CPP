@@ -309,6 +309,7 @@ export const functionCallingModelIds = [
 export const prebuiltAppConfig: AppConfig = {
   useIndexedDBCache: false,
   model_list: [
+    // ★ Recommended model — trained specifically for Socratic AI tutoring
     {
       model: "https://huggingface.co/yoaocopy/sft_model_1.5B-q4f16_1-MLC",
       model_id: "sft_model_1.5B-q4f16_1-MLC (Hugging Face)",
@@ -320,29 +321,78 @@ export const prebuiltAppConfig: AppConfig = {
       }
     },
 
-    // // Deep Server models
-    // {
-    //   model: "https://deep.cs.cityu.edu.hk/optmentor/ai-model/models/sft_model_1.5B-q4f16_1-MLC",
-    //   model_id: "sft_model_1.5B-q4f16_1-MLC (Deep Server)",
-    //   model_lib: "https://deep.cs.cityu.edu.hk/optmentor/ai-model/libs/Qwen2-1.5B-Instruct-q4f16_1-ctx4k_cs1k-webgpu.wasm",
-    //   vram_required_MB: 1629.75,
-    //   low_resource_required: true,
-    //   overrides: {
-    //     context_window_size: 4096,
-    //   }
-    // },
-    // //localhost models
-    // {
-    //   model: "http://localhost:5050/models/sft_model_1.5B-q4f16_1-MLC",
-    //   model_id: "sft_model_1.5B-q4f16_1-MLC (Localhost)",
-    //   model_lib: "http://localhost:5050/libs/Qwen2-1.5B-Instruct-q4f16_1-ctx4k_cs1k-webgpu.wasm",
-    //   vram_required_MB: 1629.75,
-    //   low_resource_required: true,
-    //   overrides: {
-    //     context_window_size: 4096,
-    //   }
-    // },
-]
+    // Llama-3.2-1B — small, fast, good for low-VRAM devices
+    {
+      model: "https://huggingface.co/mlc-ai/Llama-3.2-1B-Instruct-q4f16_1-MLC",
+      model_id: "Llama-3.2-1B-Instruct-q4f16_1-MLC",
+      model_lib: "https://raw.githubusercontent.com/mlc-ai/binary-mlc-llm-libs/main/web-llm-models/v0_2_48/Llama-3.2-1B-Instruct-q4f16_1-ctx4k_cs1k-webgpu.wasm",
+      vram_required_MB: 879.04,
+      low_resource_required: true,
+      overrides: {
+        context_window_size: 4096,
+      }
+    },
+
+    // Llama-3.2-3B — larger, better quality, needs more VRAM
+    {
+      model: "https://huggingface.co/mlc-ai/Llama-3.2-3B-Instruct-q4f16_1-MLC",
+      model_id: "Llama-3.2-3B-Instruct-q4f16_1-MLC",
+      model_lib: "https://raw.githubusercontent.com/mlc-ai/binary-mlc-llm-libs/main/web-llm-models/v0_2_48/Llama-3.2-3B-Instruct-q4f16_1-ctx4k_cs1k-webgpu.wasm",
+      vram_required_MB: 2263.69,
+      low_resource_required: true,
+      overrides: {
+        context_window_size: 4096,
+      }
+    },
+
+    // Qwen2.5-0.5B — very small, fastest, lowest quality
+    {
+      model: "https://huggingface.co/mlc-ai/Qwen2.5-0.5B-Instruct-q4f16_1-MLC",
+      model_id: "Qwen2.5-0.5B-Instruct-q4f16_1-MLC",
+      model_lib: "https://raw.githubusercontent.com/mlc-ai/binary-mlc-llm-libs/main/web-llm-models/v0_2_48/Qwen2.5-0.5B-Instruct-q4f16_1-ctx4k_cs1k-webgpu.wasm",
+      vram_required_MB: 637.27,
+      low_resource_required: true,
+      overrides: {
+        context_window_size: 4096,
+      }
+    },
+
+    // Qwen2.5-1.5B — same size family as the recommended model
+    {
+      model: "https://huggingface.co/mlc-ai/Qwen2.5-1.5B-Instruct-q4f16_1-MLC",
+      model_id: "Qwen2.5-1.5B-Instruct-q4f16_1-MLC",
+      model_lib: "https://raw.githubusercontent.com/mlc-ai/binary-mlc-llm-libs/main/web-llm-models/v0_2_48/Qwen2.5-1.5B-Instruct-q4f16_1-ctx4k_cs1k-webgpu.wasm",
+      vram_required_MB: 1629.75,
+      low_resource_required: true,
+      overrides: {
+        context_window_size: 4096,
+      }
+    },
+
+    // Qwen2.5-3B — larger Qwen variant
+    {
+      model: "https://huggingface.co/mlc-ai/Qwen2.5-3B-Instruct-q4f16_1-MLC",
+      model_id: "Qwen2.5-3B-Instruct-q4f16_1-MLC",
+      model_lib: "https://raw.githubusercontent.com/mlc-ai/binary-mlc-llm-libs/main/web-llm-models/v0_2_48/Qwen2.5-3B-Instruct-q4f16_1-ctx4k_cs1k-webgpu.wasm",
+      vram_required_MB: 2263.69,
+      low_resource_required: true,
+      overrides: {
+        context_window_size: 4096,
+      }
+    },
+
+    // Phi-3.5-mini — Microsoft's small model, good reasoning
+    {
+      model: "https://huggingface.co/mlc-ai/Phi-3.5-mini-instruct-q4f16_1-MLC",
+      model_id: "Phi-3.5-mini-instruct-q4f16_1-MLC",
+      model_lib: "https://raw.githubusercontent.com/mlc-ai/binary-mlc-llm-libs/main/web-llm-models/v0_2_48/Phi-3.5-mini-instruct-q4f16_1-ctx4k_cs1k-webgpu.wasm",
+      vram_required_MB: 2528.66,
+      low_resource_required: false,
+      overrides: {
+        context_window_size: 4096,
+      }
+    },
+  ]
 };
 
 /** example

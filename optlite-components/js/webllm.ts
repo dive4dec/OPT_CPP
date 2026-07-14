@@ -95,7 +95,61 @@ const messages = [
 const availableModels = webllm.prebuiltAppConfig.model_list.map(
     (m) => m.model_id,
 );
-let selectedModel = "sft_model_1.5B-q4f16_1-MLC (Hugging Face)";
+const RECOMMENDED_MODEL = "sft_model_1.5B-q4f16_1-MLC (Hugging Face)";
+let selectedModel = RECOMMENDED_MODEL;
+
+// Track which models are already downloaded (cached in browser)
+const downloadedModels = new Set<string>();
+
+/** Check if a model is already cached in the browser's Cache API */
+async function isModelDownloaded(modelId: string): Promise<boolean> {
+    if (downloadedModels.has(modelId)) return true;
+    try {
+        const modelRecord = webllm.prebuiltAppConfig.model_list.find(
+            (m) => m.model_id === modelId
+        );
+        if (!modelRecord) return false;
+        const cache = await caches.open('webllm-models');
+        // Check if the model URL is cached
+        const cached = await cache.match(modelRecord.model);
+        if (cached) {
+            downloadedModels.add(modelId);
+            return true;
+        }
+    } catch {
+        // Cache API might not be available
+    }
+    return false;
+}
+
+/** Update the model status line showing download state and VRAM requirement */
+async function updateModelStatusLine() {
+    const statusLine = document.getElementById("model-status-line");
+    const modelSel = document.getElementById("model-selection") as HTMLSelectElement | null;
+    if (!statusLine || !modelSel) return;
+
+    const modelId = modelSel.value;
+    const modelRecord = webllm.prebuiltAppConfig.model_list.find(
+        (m) => m.model_id === modelId
+    );
+    if (!modelRecord) {
+        statusLine.textContent = '';
+        return;
+    }
+
+    const isDownloaded = await isModelDownloaded(modelId);
+    const vram = Math.round(modelRecord.vram_required_MB);
+    const isRecommended = modelId === RECOMMENDED_MODEL;
+    const recommendedTag = isRecommended ? ' ★ recommended' : '';
+
+    if (isDownloaded) {
+        statusLine.innerHTML = '✓ Downloaded' + recommendedTag + ' (' + vram + ' MB VRAM)';
+        statusLine.style.color = '#2a7a2a';
+    } else {
+        statusLine.innerHTML = 'Not downloaded (' + vram + ' MB VRAM)' + recommendedTag;
+        statusLine.style.color = '#666';
+    }
+}
 
 // Callback function for initializing progress
 function updateEngineInitProgressCallback(report) {
@@ -140,6 +194,12 @@ async function initializeWebLLMEngine() {
     await engine.reload(selectedModel, config);
     // Mark engine as ready after successful reload
     isEngineReady = true;
+    // Mark this model as downloaded
+    downloadedModels.add(selectedModel);
+    // Update UI to reflect downloaded state
+    await updateModelStatusLine();
+    // Collapse config to status bar
+    collapseAIConfig();
 }
 
 /*************** API Calling Functions ***************/
@@ -382,13 +442,7 @@ document.getElementById("askAI").addEventListener("click", function () {
 });
 
 /*************** UI binding ***************/
-availableModels.forEach((modelId) => {
-    const option = document.createElement("option");
-    option.value = modelId;
-    option.textContent = modelId;
-    document.getElementById("model-selection").appendChild(option);
-});
-(document.getElementById("model-selection") as HTMLSelectElement).value = selectedModel;
+// Model dropdown population and selection binding moved to DOMContentLoaded
 document.getElementById("download").addEventListener("click", function () {
     initializeWebLLMEngine().then(() => {
         (document.getElementById("askAI") as HTMLButtonElement).disabled = false;
@@ -465,6 +519,131 @@ function initializeErrorObserver() {
 }
 
 /*************** Mode Switching Functions ***************/
+
+/** Check if AI is currently configured (model ready in local, or API config set in API mode) */
+function isAIConfigured(): boolean {
+    if (API_CONFIG.enabled) {
+        // API mode: configured if baseUrl or apiKey is set
+        return !!(API_CONFIG.baseUrl || API_CONFIG.apiKey);
+    } else {
+        // Local mode: configured if engine is ready
+        return isEngineReady;
+    }
+}
+
+/** Collapse the config panel and show the compact status bar */
+function collapseAIConfig() {
+    const lock = getSingleModelSetting();
+    if (lock === 'local' || lock === 'api') return; // no collapse in locked mode
+
+    if (!isAIConfigured()) return; // only collapse if actually configured
+
+    const statusBar = document.getElementById("ai-status-bar");
+    const statusText = document.getElementById("ai-status-text");
+    const modeControls = document.getElementById("mode-controls-div");
+    const apiPanel = document.querySelector(".api-only.api-panel") as HTMLElement;
+    const localControls = document.querySelector(".download-container.local-only") as HTMLElement;
+    const modelStatusLine = document.getElementById("model-status-line");
+
+    if (API_CONFIG.enabled) {
+        // API mode status
+        const endpoint = API_CONFIG.baseUrl || '(not set)';
+        const model = API_CONFIG.model || '(not set)';
+        if (statusText) statusText.textContent = '✓ API: ' + endpoint + ' · Model: ' + model;
+    } else {
+        // Local mode status
+        const model = isEngineReady ? selectedModel : '(not loaded)';
+        if (statusText) statusText.textContent = '✓ Local: ' + model;
+    }
+
+    if (statusBar) statusBar.style.display = 'block';
+    if (modeControls) modeControls.style.display = 'none';
+    if (apiPanel) apiPanel.style.display = 'none';
+    if (localControls) localControls.style.display = 'none';
+    if (modelStatusLine) modelStatusLine.style.display = 'none';
+
+    // Hide download-status when collapsed
+    const downloadStatus = document.getElementById("download-status");
+    if (downloadStatus) downloadStatus.classList.add("hidden");
+}
+
+/** Expand the config panel (show full configuration UI) */
+function expandAIConfig() {
+    const lock = getSingleModelSetting();
+    if (lock === 'local' || lock === 'api') return; // no expand in locked mode
+
+    const statusBar = document.getElementById("ai-status-bar");
+    if (statusBar) statusBar.style.display = 'none';
+
+    // Show mode controls and appropriate panel
+    updateModeDisplay();
+    updateUIElements();
+
+    // For API mode, restore current saved values to inputs (not buffered)
+    if (API_CONFIG.enabled) {
+        const urlInput = document.getElementById("api-url") as HTMLInputElement | null;
+        const keyInput = document.getElementById("api-key") as HTMLInputElement | null;
+        const modelInput = document.getElementById("api-model") as HTMLInputElement | null;
+        if (urlInput) urlInput.value = API_CONFIG.baseUrl;
+        if (keyInput) keyInput.value = API_CONFIG.apiKey;
+        if (modelInput) modelInput.value = API_CONFIG.model;
+        // Reset confirm button state
+        updateAPIConfirmButtonState();
+    }
+
+    // For local mode, update model status line
+    if (!API_CONFIG.enabled) {
+        updateModelStatusLine();
+    }
+}
+
+/** Check if buffered API inputs differ from saved config */
+function apiInputsDifferFromSaved(): boolean {
+    const urlInput = document.getElementById("api-url") as HTMLInputElement | null;
+    const keyInput = document.getElementById("api-key") as HTMLInputElement | null;
+    const modelInput = document.getElementById("api-model") as HTMLInputElement | null;
+    if (!urlInput || !keyInput || !modelInput) return false;
+    return urlInput.value.trim() !== API_CONFIG.baseUrl ||
+           keyInput.value !== API_CONFIG.apiKey ||
+           modelInput.value.trim() !== API_CONFIG.model;
+}
+
+/** Enable/disable the API Confirm button based on whether inputs have changed */
+function updateAPIConfirmButtonState() {
+    const confirmBtn = document.getElementById("api-confirm-btn") as HTMLButtonElement | null;
+    if (confirmBtn) {
+        confirmBtn.disabled = !apiInputsDifferFromSaved();
+    }
+}
+
+/** Apply buffered API inputs to API_CONFIG and persist */
+function confirmAPIConfig() {
+    const urlInput = document.getElementById("api-url") as HTMLInputElement | null;
+    const keyInput = document.getElementById("api-key") as HTMLInputElement | null;
+    const modelInput = document.getElementById("api-model") as HTMLInputElement | null;
+    if (urlInput) API_CONFIG.baseUrl = urlInput.value.trim();
+    if (keyInput) API_CONFIG.apiKey = keyInput.value;
+    if (modelInput) API_CONFIG.model = modelInput.value.trim();
+    persistAPIConfig();
+    updateAPIConfirmButtonState();
+    collapseAIConfig();
+}
+
+/** Restore buffered API inputs to saved config values */
+function cancelAPIConfigEdit() {
+    const urlInput = document.getElementById("api-url") as HTMLInputElement | null;
+    const keyInput = document.getElementById("api-key") as HTMLInputElement | null;
+    const modelInput = document.getElementById("api-model") as HTMLInputElement | null;
+    if (urlInput) urlInput.value = API_CONFIG.baseUrl;
+    if (keyInput) keyInput.value = API_CONFIG.apiKey;
+    if (modelInput) modelInput.value = API_CONFIG.model;
+    updateAPIConfirmButtonState();
+    // If already configured, collapse back; otherwise stay expanded
+    if (isAIConfigured()) {
+        collapseAIConfig();
+    }
+}
+
 function toggleAPIMode() {
     const lock = getSingleModelSetting();
     if (lock === 'local' || lock === 'api') {
@@ -474,11 +653,22 @@ function toggleAPIMode() {
     updateModeDisplay();
     updateUIElements();
     persistAPIConfig(); // Save the mode preference immediately
+
+    // If the newly-selected mode is already configured, collapse to status bar
+    if (isAIConfigured()) {
+        collapseAIConfig();
+    } else {
+        // Update model status line if switching to local mode
+        if (!API_CONFIG.enabled) {
+            updateModelStatusLine();
+        }
+    }
 }
 
 function updateModeDisplay() {
     const lock = getSingleModelSetting();
     const statusElement = document.getElementById("mode-status");
+    const modeControlsDiv = document.getElementById("mode-controls-div");
     if (statusElement) {
         if (lock === 'local' || lock === 'api') {
             (statusElement as HTMLElement).style.display = 'none';
@@ -498,6 +688,13 @@ function updateModeDisplay() {
             toggleBtn.textContent = API_CONFIG.enabled ? "Switch to Local Mode" : "Switch to API Mode";
         }
     }
+
+    // Hide the entire mode-controls div in locked mode
+    if (modeControlsDiv) {
+        if (lock === 'local' || lock === 'api') {
+            (modeControlsDiv as HTMLElement).style.display = 'none';
+        }
+    }
 }
 
 function updateUIElements() {
@@ -510,7 +707,6 @@ function updateUIElements() {
 
     localElements.forEach(el => (el as HTMLElement).style.display = API_CONFIG.enabled ? "none" : "block");
     if (hideApiPanel) {
-        // Only hide the API configuration panel area; reset group still follows mode
         const apiPanels = document.querySelectorAll('.api-only.api-panel');
         apiPanels.forEach(el => (el as HTMLElement).style.display = 'none');
         const apiResetGroup = document.getElementById('api-reset-group');
@@ -519,9 +715,7 @@ function updateUIElements() {
         apiElements.forEach(el => (el as HTMLElement).style.display = API_CONFIG.enabled ? "block" : "none");
     }
 
-    // In local mode, show the model dropdown and Pull Model button so users
-    // can select and download a model. These have display:none in the HTML
-    // template; we unhide them here when not in API mode.
+    // In local mode, show the model dropdown and Confirm button
     const modelSel = document.getElementById("model-selection") as HTMLElement | null;
     const downloadBtn = document.getElementById("download") as HTMLElement | null;
     if (!API_CONFIG.enabled) {
@@ -529,9 +723,7 @@ function updateUIElements() {
         if (downloadBtn) downloadBtn.style.display = '';
     }
 
-    // download-status should only be visible during model download in local
-    // mode. Hide it in API mode (and initially in local mode — it's unhidden
-    // by initializeWebLLMEngine when a download starts).
+    // download-status should only be visible during model download in local mode.
     const downloadStatus = document.getElementById("download-status");
     if (downloadStatus && API_CONFIG.enabled) {
         downloadStatus.classList.add("hidden");
@@ -541,12 +733,15 @@ function updateUIElements() {
     const askAIButton = document.getElementById("askAI") as HTMLButtonElement;
     if (askAIButton) {
         if (API_CONFIG.enabled) {
-            // In API mode, enable Ask AI button immediately
             askAIButton.disabled = false;
         } else {
-            // In local mode, enable only if engine is ready (model pulled)
             askAIButton.disabled = !isEngineReady;
         }
+    }
+
+    // Update API Confirm button state when UI updates
+    if (API_CONFIG.enabled) {
+        updateAPIConfirmButtonState();
     }
 }
 
@@ -620,32 +815,34 @@ function loadAPIConfig() {
     }
 }
 
-// Bind input fields so changes take effect immediately
+// Bind API input fields — BUFFERED (changes don't take effect until Confirm)
 function bindAPIInputsImmediate() {
     const urlInput = document.getElementById("api-url") as HTMLInputElement | null;
     const keyInput = document.getElementById("api-key") as HTMLInputElement | null;
     const modelInput = document.getElementById("api-model") as HTMLInputElement | null;
+    const confirmBtn = document.getElementById("api-confirm-btn") as HTMLButtonElement | null;
+    const cancelBtn = document.getElementById("api-cancel-btn") as HTMLButtonElement | null;
     const w = (window as any) || {};
     if (w.API_HIDE_API_PANEL) {
         return;
     }
+    // Buffer inputs — update Confirm button state, but DON'T apply to API_CONFIG
     if (urlInput) {
-        urlInput.addEventListener('input', () => {
-            API_CONFIG.baseUrl = urlInput.value.trim();
-            persistAPIConfig();
-        });
+        urlInput.addEventListener('input', updateAPIConfirmButtonState);
     }
     if (keyInput) {
-        keyInput.addEventListener('input', () => {
-            API_CONFIG.apiKey = keyInput.value; // allow empty to clear
-            persistAPIConfig();
-        });
+        keyInput.addEventListener('input', updateAPIConfirmButtonState);
     }
     if (modelInput) {
-        modelInput.addEventListener('input', () => {
-            API_CONFIG.model = modelInput.value.trim();
-            persistAPIConfig();
-        });
+        modelInput.addEventListener('input', updateAPIConfirmButtonState);
+    }
+    // Confirm button applies buffered values
+    if (confirmBtn) {
+        confirmBtn.addEventListener('click', confirmAPIConfig);
+    }
+    // Cancel button restores saved values
+    if (cancelBtn) {
+        cancelBtn.addEventListener('click', cancelAPIConfigEdit);
     }
 }
 
@@ -662,6 +859,7 @@ function resetAPIConfigToDefaults() {
     if (keyInput) keyInput.value = API_CONFIG.apiKey;
     if (modelInput) modelInput.value = API_CONFIG.model;
     persistAPIConfig();
+    updateAPIConfirmButtonState();
 }
 
 /*************** Event Listeners ***************/
@@ -717,6 +915,42 @@ document.addEventListener('DOMContentLoaded', function() {
     // Update UI based on loaded configuration
     updateModeDisplay();
     updateUIElements();
+    
+    // Populate model dropdown with recommended marker
+    const modelSelect = document.getElementById("model-selection") as HTMLSelectElement | null;
+    if (modelSelect) {
+        // Clear existing options
+        modelSelect.innerHTML = '';
+        availableModels.forEach((modelId) => {
+            const option = document.createElement("option");
+            option.value = modelId;
+            // Mark recommended model
+            if (modelId === RECOMMENDED_MODEL) {
+                option.textContent = modelId + " ★ recommended";
+            } else {
+                option.textContent = modelId;
+            }
+            modelSelect.appendChild(option);
+        });
+        modelSelect.value = selectedModel;
+        // Update status line when model selection changes
+        modelSelect.addEventListener('change', () => {
+            selectedModel = modelSelect.value;
+            updateModelStatusLine();
+        });
+    }
+
+    // Bind edit button (expand config from status bar)
+    const editBtn = document.getElementById("ai-edit-btn");
+    if (editBtn) {
+        editBtn.addEventListener("click", expandAIConfig);
+    }
+
+    // Initial model status line update
+    updateModelStatusLine();
+
+    // After everything is loaded, collapse if already configured
+    collapseAIConfig();
     
     // Bind API configuration reset button
     const resetBtn = document.getElementById("reset-api-config");
