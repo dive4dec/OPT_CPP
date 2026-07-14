@@ -194,8 +194,23 @@ async function initializeWebLLMEngine() {
     localStorage.setItem('webllm_active_model', selectedModel);
     // Update UI to reflect downloaded state
     await updateModelStatusLine();
-    // Collapse config to status bar
-    collapseAIConfig();
+    // Collapse config to status bar and hide all config elements
+    const lock = getSingleModelSetting();
+    if (lock !== 'local' && lock !== 'api') {
+        const sb = document.getElementById("ai-status-bar");
+        const st = document.getElementById("ai-status-text");
+        if (st) st.textContent = '✓ Local: ' + selectedModel;
+        if (sb) sb.style.display = 'block';
+        document.querySelectorAll(".local-only").forEach((el) => { (el as HTMLElement).style.display = 'none'; });
+        document.querySelectorAll(".api-only").forEach((el) => { (el as HTMLElement).style.display = 'none'; });
+        const mc = document.getElementById("mode-controls-div");
+        if (mc) mc.style.display = 'none';
+        const ds = document.getElementById("download-status");
+        if (ds) ds.classList.add("hidden");
+        // Enable Ask AI button
+        const askBtn = document.getElementById("askAI") as HTMLButtonElement;
+        if (askBtn) askBtn.disabled = false;
+    }
 }
 
 /*************** API Calling Functions ***************/
@@ -1019,7 +1034,19 @@ document.addEventListener('DOMContentLoaded', function() {
                 } else if (!isEngineReady) {
                     // Model IS cached — auto-initialize engine in background
                     initializeWebLLMEngine().then(() => {
-                        updateUIElements();
+                        // Re-collapse after engine init, since initializeWebLLMEngine()
+                        // calls updateUIElements() which shows .local-only elements
+                        const lock2 = getSingleModelSetting();
+                        if (lock2 !== 'local' && lock2 !== 'api') {
+                            const sb = document.getElementById("ai-status-bar");
+                            if (sb && sb.style.display === 'block') {
+                                // Already collapsed — re-hide elements that updateUIElements un-hid
+                                document.querySelectorAll(".local-only").forEach((el) => { (el as HTMLElement).style.display = 'none'; });
+                                document.querySelectorAll(".api-only").forEach((el) => { (el as HTMLElement).style.display = 'none'; });
+                                const mc = document.getElementById("mode-controls-div");
+                                if (mc) mc.style.display = 'none';
+                            }
+                        }
                     }).catch(() => {});
                 }
             }).catch(() => {});
