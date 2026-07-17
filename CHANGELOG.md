@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.22] - 2026-07-17
+
+### Fixed
+- **AI Tutor config panel hidden in exam mode** (`API_HIDE_API_PANEL=true`)
+  - `hideConfigPanel()` and `showConfigPanel()` now respect the
+    `__API_HIDE_API_PANEL__` build flag instead of always setting
+    `ai-status-bar` to `display: block`
+  - On init, `ai-status-bar`, `ai-edit-btn`, and `mode-controls-div` are
+    hidden when the flag is set — students cannot change the API endpoint
+    or model during exams
+  - `loadAPIConfig()` skips localStorage, `bindAPIInputsImmediate()` returns
+    early when the flag is set
+
 ## [0.3.21] - 2026-07-14
 
 ### Changed
