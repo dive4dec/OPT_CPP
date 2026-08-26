@@ -282,24 +282,133 @@ self.onmessage = async (event) => {
       } catch (e) {
         // File doesn't exist — fall back
       }
-
+      let parsedTrace = null;
       if (traceJson) {
-        try {
-          const parsed = JSON.parse(traceJson);
-          parsed.code = self.script;
-          if (globalVarNames.length > 0) {
-            parsed.global_vars = globalVarNames;
+        try { parsedTrace = JSON.parse(traceJson); } catch (e) { parsedTrace = null; }
+      }
+      const traceArr = (parsedTrace && Array.isArray(parsedTrace.trace))
+        ? parsedTrace.trace : null;
+
+      // ── Post-execution guardrail: nothing visualizable ran ──
+      // The static heuristic (checkMainlessTopLevelCode) cannot classify all
+      // top-level code reliably (top-level expression statements, bare blocks,
+      // multi-line statements, ...). The reliable check happens HERE, after
+      // the kernel has compiled and run the code — the compiler is the source
+      // of truth.
+      //
+      // Why this works: instrument.js only instruments FUNCTION BODIES, and
+      // this worker only appends a `main();` call when the user defined
+      // main() (see the execCode construction above). Every step executed
+      // inside a function appears as a trace entry whose TOP frame is a real
+      // frame (frame_id from the counter: 0x00000001, ... — the
+      // "0xFFF000BE0" placeholder only exists in buildFallbackTrace below).
+      // instrument.js injects exactly ONE trace call for each function's
+      // ENTRY (right after the opening brace); each executed statement adds
+      // at least one more step. So:
+      //   * no main + no real steps at all → no-main advisory
+      //   * main + only its entry step     → "nothing ran" advisory
+      //     (covers int main() {} and one-line bodies like
+      //      int main() { return 0; } whose statement shares the signature
+      //      line and is therefore not instrumented)
+      //   * main called a helper one-line  (int main() { foo(); }) → helper
+      //     steps have real top frames → visualize
+      // In the advisory cases the line-stepping fallback would be
+      // meaningless (empty variable panes), so we replace it with a single
+      // advisory entry that explains what happened and shows the main()
+      // template. `advisory: true` tells the frontend this is guidance, not
+      // a compiler/runtime failure (so no "UNSUPPORTED FEATURES" tag).
+      const willCallMain =
+        /\bint\s+main\s*\(\s*\)/.test(code) ||
+        /\bvoid\s+main\s*\(\s*\)/.test(code);
+
+      // Count trace steps by their TOP frame. Real frames have counter
+      // frame_ids (0x00000001, ...); the fallback placeholder is 0xFFF000BE0.
+      function countTopSteps(trace) {
+        let topMainC = 0, otherRealC = 0;
+        if (Array.isArray(trace)) {
+          for (const entry of trace) {
+            const frames = (entry && entry.stack_to_render) || [];
+            const top = frames[frames.length - 1];
+            if (top && typeof top.frame_id === 'string' &&
+                top.frame_id !== '0xFFF000BE0') {
+              if (top.func_name === 'main') topMainC++;
+              else otherRealC++;
+            }
           }
-          if (staticVarNames.length > 0) {
-            parsed.static_vars = staticVarNames;
-          }
-          if (!parsed.trace || parsed.trace.length === 0) {
-            results = JSON.stringify({ code: self.script, trace: buildFallbackTrace(code) });
-          } else {
-            results = JSON.stringify(parsed);
-          }
-        } catch (e) {
+        }
+        return { topMain: topMainC, otherReal: otherRealC };
+      }
+
+      function advisoryTrace(msg) {
+        return {
+          code: self.script,
+          trace: [{
+            line: 1,
+            event: 'uncaught_exception',
+            func_name: 'main',
+            advisory: true,
+            globals: {},
+            ordered_globals: [],
+            stack_to_render: [{
+              func_name: 'main',
+              frame_id: '1',
+              encoded_locals: {},
+              ordered_varnames: [],
+              unique_hash: 'f1',
+              is_parent: false,
+              parent_frame_id: [],
+              is_zombie: false,
+            }],
+            heap: {},
+            stdout: '',
+            exception_msg: msg,
+          }],
+        };
+      }
+
+      let advisory = null;
+      const { topMain, otherReal } = countTopSteps(traceArr);
+      if (!willCallMain) {
+        // No main(): real steps can only come from global/static initializers
+        // or global constructors. If any real step happened, let it render
+        // (rare but legitimate); otherwise explain that there's nothing to run.
+        if (topMain === 0 && otherReal === 0) {
+          advisory = advisoryTrace(
+            'Your code has no main() function, so there is nothing for OPT_CPP to ' +
+            'run and visualize. OPT_CPP visualizes the code inside main() (and the ' +
+            'functions it calls); statements outside of any function are not ' +
+            'visualized. Please wrap the code you want to visualize in a main() ' +
+            'function:\n\n' +
+            'int main() {\n    ...your code...\n    return 0;\n}'
+          );
+        }
+      } else if (topMain < 2 && otherReal === 0) {
+        // main() was defined and called, but it executed no statements
+        // (empty body, or a one-line body whose statement shares the
+        // signature line and is not instrumented). The trace holds only the
+        // function-entry step, so the fallback line-stepping would show an
+        // empty panes anyway — explain instead.
+        advisory = advisoryTrace(
+          'Your code defines main(), but nothing was executed inside it, so there ' +
+          'is nothing to visualize. Add statements to main():\n\n' +
+          'int main() {\n    ...your code...\n    return 0;\n}'
+        );
+      }
+
+      if (advisory) {
+        results = JSON.stringify(advisory);
+      } else if (parsedTrace) {
+        parsedTrace.code = self.script;
+        if (globalVarNames.length > 0) {
+          parsedTrace.global_vars = globalVarNames;
+        }
+        if (staticVarNames.length > 0) {
+          parsedTrace.static_vars = staticVarNames;
+        }
+        if (!parsedTrace.trace || parsedTrace.trace.length === 0) {
           results = JSON.stringify({ code: self.script, trace: buildFallbackTrace(code) });
+        } else {
+          results = JSON.stringify(parsedTrace);
         }
       } else {
         results = JSON.stringify({ code: self.script, trace: buildFallbackTrace(code) });

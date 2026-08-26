@@ -286,9 +286,10 @@ export abstract class AbstractBaseFrontend {
         this.handleUncaughtException(trace);
 
         if (trace.length == 1) {
-          this.setFronendError([trace[0].exception_msg]);
+          this.setFronendError([trace[0].exception_msg], !!trace[0].advisory);
         } else if (trace.length > 0 && trace[trace.length - 1].exception_msg) {
-          this.setFronendError([trace[trace.length - 1].exception_msg]);
+          this.setFronendError([trace[trace.length - 1].exception_msg],
+            !!trace[trace.length - 1].advisory);
         } else {
           this.setFronendError(nullTraceErrorLst);
         }

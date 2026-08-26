@@ -7,6 +7,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.26] - 2026-08-26
+
+### Added
+- **Reliable post-execution "nothing to visualize" guardrail (Option A)** —
+  the v0.3.25 static heuristic could not cover all no-`main()` shapes
+  (top-level expression statements like `std::cout << 1;`, top-level `{ }`
+  blocks, multi-line statements), which still produced the misleading
+  empty line-stepping fallback. The check now happens in `cppworker.js`
+  **after** the kernel has compiled and run the code, using the trace
+  itself as the source of truth (the tracer only instruments function
+  bodies; the worker only calls `main()` when defined):
+  - no `main()` and no real trace steps → advisory: "no main() function…
+    wrap your code in a main()"
+  - `main()` defined but only its entry step ran (e.g. `int main() {}`,
+    `int main() { return 0; }`) → advisory: "nothing was executed inside
+    main()"
+  - real execution (≥1 executed statement, or a called helper) → normal
+    visualization, unchanged
+  Advisory entries carry `advisory: true` so the frontend renders them as
+  guidance — no "(UNSUPPORTED FEATURES)" tag, no red X gutter annotation,
+  no red error-line highlight (fixes a cosmetic regression path in
+  `opt-live.ts` / `opt-frontend.ts`).
+- Fixed the v0.3.25 no-`main()` static-guard message: the suggested
+  `main()` template was missing its closing `}`.
+
+### Changed
+- The static pre-flight guard in `runner.ts` is unchanged from v0.3.25 in
+  behavior (instant reject for unambiguous depth-0 executable shapes); all
+  other shapes now flow through the kernel and are handled by the
+  post-execution check, so no heuristic extension is needed.
+
 ## [0.3.25] - 2026-08-26
 
 ### Fixed

@@ -247,7 +247,11 @@ export class OptLiveFrontend extends OptFrontend {
     if (curEntry.event === 'exception' ||
       curEntry.event === 'uncaught_exception') {
       assert(curEntry.exception_msg);
-      if (curEntry.exception_msg == "Unknown error") {
+      if (curEntry.advisory) {
+        // Advisory (explanatory) messages — e.g. "no main()" — are guidance,
+        // not compiler/runtime failures: no UNSUPPORTED FEATURES tag.
+        $("#frontendErrorOutput").html(htmlspecialchars(curEntry.exception_msg));
+      } else if (curEntry.exception_msg == "Unknown error") {
         $("#frontendErrorOutput").html('Unknown error: ' + unsupportedFeaturesStr);
 
       } else {
@@ -255,7 +259,7 @@ export class OptLiveFrontend extends OptFrontend {
         
       }
 
-      if (myVisualizer.curLineNumber) {
+      if (myVisualizer.curLineNumber && !curEntry.advisory) {
         var Range = ace.require('ace/range').Range;
         var markerId = s.addMarker(new Range(myVisualizer.curLineNumber - 1, 0,
           myVisualizer.curLineNumber - 1, 1), "errorLine", "fullLine");
@@ -437,7 +441,7 @@ export class OptLiveFrontend extends OptFrontend {
 
   // a syntax-/compile-time error, rather than a runtime error
   handleUncaughtException(trace) {
-    if (trace.length == 1 && trace[0].line) {
+    if (trace.length == 1 && trace[0].line && !trace[0].advisory) {
       var errorLineNo = trace[0].line - 1; /* Ace lines are zero-indexed */
       if (errorLineNo !== undefined 
         // && errorLineNo != NaN
@@ -580,9 +584,10 @@ export class OptLiveFrontend extends OptFrontend {
         this.handleUncaughtException(trace);
 
         if (trace.length === 1) {
-          this.setFronendError([trace[0].exception_msg]);
+          this.setFronendError([trace[0].exception_msg], !!trace[0].advisory);
         } else if (trace.length > 0 && trace[trace.length - 1].exception_msg) {
-          this.setFronendError([trace[trace.length - 1].exception_msg]);
+          this.setFronendError([trace[trace.length - 1].exception_msg],
+            !!trace[trace.length - 1].advisory);
         } else {
           this.setFronendError(nullTraceErrorLst);
         }

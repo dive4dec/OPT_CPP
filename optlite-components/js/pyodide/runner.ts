@@ -460,7 +460,7 @@ const asyncRun = (() => {
         const isCall = !isFunctionDef &&
           !DECL_KEYWORD.test(trimmed) && /^[A-Za-z_]\w*\s*\(/.test(trimmed);
         if (isKeywordStmt || isCall) {
-          return 'Line ' + lineNum + ': your code has no main() function, but this is top-level executable code. OPT_CPP runs and visualizes the code inside main() (and the functions it calls); top-level statements without main() are never called, so nothing would be visualized.\nPlease wrap your top-level statements in a main() function:\n\nint main() {\n    ...your code...\n    return 0;';
+          return 'Line ' + lineNum + ': your code has no main() function, but this is top-level executable code. OPT_CPP runs and visualizes the code inside main() (and the functions it calls); top-level statements without main() are never called, so nothing would be visualized.\nPlease wrap your top-level statements in a main() function:\n\nint main() {\n    ...your code...\n    return 0;\n}';
         }
       }
 
