@@ -391,6 +391,88 @@ const asyncRun = (() => {
     return null;
   }
 
+  // ── Pre-execution guardrail: mainless top-level executable code ──
+  // OPT_CPP visualizes by instrumenting function bodies and (when present)
+  // calling main(). Code that has no main() but contains top-level
+  // executable statements (a top-level for/while loop, a bare call, ...)
+  // compiles in the clang-repl kernel but is never called and never
+  // instrumented, so it previously produced a silent "fallback" trace:
+  // line-stepping with empty variable panes — which looked like a broken
+  // or wrong execution (and misled Ask AI). Detect the common shapes of
+  // top-level executable code and explain, instead of running.
+  //
+  // Only unambiguously executable top-level shapes are flagged:
+  //   - loop / control-flow keywords: for, while, do, if, else, switch
+  //   - statements: return, break, continue
+  //   - a call expression at the start of a line: foo(  /  x = bar(
+  // Declarations and definitions (variables, arrays, functions, classes,
+  // enums, namespaces, using, typedefs, function pointers) never match,
+  // so "just define some functions" (no main) still works as before.
+  function checkMainlessTopLevelCode(code: string): string | null {
+    // If main() is defined, the normal path applies.
+    if (/\b(int|void|auto|long|short|unsigned|signed|float|double|char)\s+main\s*\(/.test(code)) {
+      return null;
+    }
+    const lines = code.split('\n');
+    let inBlockComment = false;
+    let depth = 0; // rough brace depth — only used to find the top level
+
+    const DECL_KEYWORD =
+      /^(int|void|float|double|char|long|short|unsigned|signed|auto|static|const|constexpr|mutable|struct|class|enum|union|typedef|template|using|namespace|extern|virtual|operator|friend)\b/;
+
+    for (let i = 0; i < lines.length; i++) {
+      let line = lines[i];
+      const lineNum = i + 1;
+
+      // Track block comments (same convention as checkSyntax)
+      if (inBlockComment) {
+        const endIdx = line.indexOf('*/');
+        if (endIdx >= 0) {
+          line = line.substring(endIdx + 2);
+          inBlockComment = false;
+        } else {
+          continue; // entire line is inside a block comment
+        }
+      }
+      const blockStart = line.indexOf('/*');
+      const blockEnd = line.indexOf('*/');
+      if (blockStart >= 0 && (blockEnd < 0 || blockEnd < blockStart)) {
+        line = line.substring(0, blockStart);
+        inBlockComment = true;
+      }
+
+      const trimmed = line.trim();
+      if (!trimmed || trimmed.startsWith('#') || trimmed.startsWith('//')) {
+        continue;
+      }
+
+      if (depth === 0) {
+        const isKeywordStmt =
+          /^(for|while|do|if|else|switch|return|break|continue)\b/.test(trimmed);
+        // Function DEFINITIONS are not calls — same heuristic as the
+        // instrumenter's function detection (name (params) {, control-flow
+        // keywords excluded). Excluding them also keeps the brace depth
+        // update below correct (otherwise we'd count their opening brace
+        // after having already reported a false positive).
+        const fnDefMatch = trimmed.match(/^(\w[\w:]*)\s+(\w+)\s*\(([^)]*)\)\s*\{/);
+        const isFunctionDef = !!(fnDefMatch &&
+          !['if', 'for', 'while', 'switch', 'else', 'do', 'catch', 'try'].includes(fnDefMatch[2]));
+        const isCall = !isFunctionDef &&
+          !DECL_KEYWORD.test(trimmed) && /^[A-Za-z_]\w*\s*\(/.test(trimmed);
+        if (isKeywordStmt || isCall) {
+          return 'Line ' + lineNum + ': your code has no main() function, but this is top-level executable code. OPT_CPP runs and visualizes the code inside main() (and the functions it calls); top-level statements without main() are never called, so nothing would be visualized.\nPlease wrap your top-level statements in a main() function:\n\nint main() {\n    ...your code...\n    return 0;';
+        }
+      }
+
+      // Update rough brace depth for the next line
+      for (let j = 0; j < line.length; j++) {
+        if (line[j] === '{') depth++;
+        else if (line[j] === '}') { if (depth > 0) depth--; }
+      }
+    }
+    return null;
+  }
+
   return (script: string, rawInputLst: string[], options: any) => {
     id = (id + 1) % Number.MAX_SAFE_INTEGER;
     return new Promise((resolve, reject) => {
@@ -399,6 +481,13 @@ const asyncRun = (() => {
       const syntaxError = checkSyntax(script);
       if (syntaxError) {
         reject(new Error(syntaxError));
+        return;
+      }
+
+      // ── Pre-execution guardrail: no main() + top-level executable code ──
+      const mainlessError = checkMainlessTopLevelCode(script);
+      if (mainlessError) {
+        reject(new Error(mainlessError));
         return;
       }
 

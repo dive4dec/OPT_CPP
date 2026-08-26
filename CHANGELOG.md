@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.25] - 2026-08-26
+
+### Fixed
+- **Guardrail for no-`main()` top-level code** — code without a `main()`
+  function that contains top-level executable statements (e.g. a top-level
+  `for` loop) was silently "visualized": the tracer only instruments
+  function bodies and the worker only calls `main()` when defined, so such
+  code produced a fallback line-stepping trace with empty variable panes —
+  which looked like a broken or wrong execution (and fed misleading context
+  to Ask AI). A pre-flight check in `runner.ts`
+  (`checkMainlessTopLevelCode`) now detects the unambiguous executable
+  shapes (top-level `for`/`while`/`do`/`if`/`switch`/`return`/`break`/
+  `continue`, and call statements) when no `main()` is defined, and explains
+  the cause with a `main()` template to paste, instead of running.
+  Declarations and definitions (variables, arrays, functions, classes,
+  enums, namespaces, function pointers, templates) are never flagged, so
+  "just define some functions" without `main()` still works as before.
+
 ## [0.3.24] - 2026-08-25
 
 ### Changed
