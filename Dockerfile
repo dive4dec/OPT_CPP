@@ -61,12 +61,18 @@ ARG API_MODEL=""
 ARG API_DEFAULT_MODE=""
 ARG SINGLE_MODE=""
 ARG API_HIDE_API_PANEL=""
+# Ask AI prompt overrides (empty = C++ defaults baked in js/ai-prompt.ts).
+# Pass via --build-arg to customize per deployment without code changes.
+ARG AI_SYSTEM_PROMPT=""
+ARG AI_CODE_LANG=""
 ENV API_BASE_URL=${API_BASE_URL}
 ENV API_KEY=${API_KEY}
 ENV API_MODEL=${API_MODEL}
 ENV API_DEFAULT_MODE=${API_DEFAULT_MODE}
 ENV SINGLE_MODE=${SINGLE_MODE}
 ENV API_HIDE_API_PANEL=${API_HIDE_API_PANEL}
+ENV AI_SYSTEM_PROMPT=${AI_SYSTEM_PROMPT}
+ENV AI_CODE_LANG=${AI_CODE_LANG}
 
 RUN npm run build:prod \
     && test -f build/index.html \

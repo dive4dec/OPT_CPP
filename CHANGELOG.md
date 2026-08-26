@@ -7,6 +7,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.24] - 2026-08-25
+
+### Changed
+- **Ask AI now instructs the LLM that the code is C++, not Python** — the
+  system prompt and the code-fence language tag were hardcoded to
+  `"You are a Python tutor."` and ```` ```python ```` in both
+  `webllm.ts` (live mode) and `visualize-ai.ts` (visualize mode), so
+  every Ask AI request claimed the code was Python
+  - New `optlite-components/js/ai-prompt.ts` is the single source of
+    truth: `getAiSystemPrompt()` / `getAiCodeLang()` default to
+    `"You are a C++ tutor. ..."` and `cpp`
+  - Removed the duplicated prompt strings and the dead commented-out
+    prompt in `webllm.ts`
+
+### Added
+- **Build-time Ask AI prompt override** — deployments can customize the
+  system prompt and code-fence language without code changes:
+  - `Dockerfile` — new `AI_SYSTEM_PROMPT` / `AI_CODE_LANG` ARG/ENV
+    passthrough to webpack
+  - `webpack.config.js` — defines `__AI_SYSTEM_PROMPT__` /
+    `__AI_CODE_LANG__` (define target) and `window.AI_SYSTEM_PROMPT` /
+    `window.AI_CODE_LANG` (window target); empty = C++ defaults
+  - `dive-deploy/Makefile` `opt-cpp-push.%` / `opt-cpp-flex-push.%` and
+    `.github/workflows/deploy.yml` — pass `AI_SYSTEM_PROMPT=` /
+    `AI_CODE_LANG=` explicitly (empty) so Docker builds are
+    deterministic and a future deployment can set a value without chart
+    edits
+
+### Fixed
+- **VERSION file out of sync** — was `0.3.22` after the v0.3.23 release
+  (the release commit forgot to bump it); now `0.3.24`
+
 ## [0.3.23] - 2026-08-11
 
 ### Added

@@ -6,6 +6,7 @@ declare const __API_DEFAULT_MODE__: string | undefined;
 declare const __SINGLE_MODE__: string | undefined;
 
 import * as webllm from "../../webllm-components";
+import { getAiSystemPrompt, getAiCodeLang } from './ai-prompt';
 
 type VisualizeAIInitParams = {
   getCode: () => string;
@@ -39,7 +40,7 @@ if (lock === 'api') {
 
 const messages: any[] = [
   {
-    content: "You are a Python tutor. Respond ONLY with Socratic-style hints: short, guiding QUESTIONS (no solutions, no code, no imperative fixes). At most 100 words.",
+    content: getAiSystemPrompt(),
     role: "system",
   },
 ];
@@ -151,7 +152,7 @@ async function initializeWebLLMEngine() {
 
 function buildQuestion(code: string, frontendError: string): string {
   const cleanedError = (frontendError || "").replace("(UNSUPPORTED FEATURES)", "").trim();
-  return "## Code ```python  " + code + "  ```  ## Error  ```text  " + cleanedError +
+  return "## Code ```" + getAiCodeLang() + "  " + code + "  ```  ## Error  ```text  " + cleanedError +
     "  ```  ## Task  Ask guiding questions that help me discover the mistake.";
 }
 
