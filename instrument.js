@@ -1345,5 +1345,109 @@ function instrumentCode(sourceCode) {
 // Backward-compatible string return for any code that expects a string
 // (instrumentCode now returns an object; cppworker.js handles both)
 
+// ── cin-prompt protocol: post-read marker injection ──
+// Appends a post-read check right after each plain `cin >>` read STATEMENT so
+// the runtime can tell when the pre-seeded input runs out:
+//   * `__opt_cin_read_done__();` — the statement is NOT inside a for/while/do
+//     loop body (i.e. the innermost open block is a function/if/else/switch
+//     body). A failed read here means the pre-seeded input is exhausted: the
+//     runtime freezes the trace and longjmps back to the worker, which flags
+//     the prompt; __opt_finalize__ appends the {"event":"raw_input"} marker
+//     the frontend turns into "Enter user input:", then re-executes the whole
+//     program with the typed value appended to the input list (matching
+//     Python Tutor's input() behavior).
+//   * `__opt_cin_read_done_quiet__();` — the statement IS inside a for/while/
+//     do loop body. A failed read here ends naturally, exactly like a real
+//     C++ stream at EOF (the loop body has already run once on the input).
+//     Loop-CONDITION reads (`while (cin >> x)`) are excluded outright — a
+//     `while (cin >> x) sum += x;` "sum all inputs" idiom must be able to
+//     finish on its own, and its terminating "value" is EOF, which the user
+//     cannot type into the input box (a prompt there would be un-breakable).
+// Chained reads (`cin >> a >> b;`) need no special handling: if any read in
+// the statement fails, failbit stays set (until cin.clear()), so the single
+// post-statement check sees it.
+// This runs on the FINAL instrumented lines (after line-number remapping), so
+// injected marker lines shift nothing and are safe for both the v2 and legacy
+// instrumenter outputs.
+const __CIN_MARK__ = '__opt_cin_read_done__();';
+const __CIN_MARK_QUIET__ = '__opt_cin_read_done_quiet__();';
+
+function __opt_cin_mask__(s) {
+  // Blank out string/char literal CONTENTS (keep quote chars) so brace and
+  // operator counting is not fooled by literals like "a{b" or '>>'.
+  let out = '';
+  let inStr = false, inChar = false;
+  for (let i = 0; i < s.length; i++) {
+    const c = s[i];
+    if (inStr) {
+      if (c === '\\' && i + 1 < s.length) { out += '  '; i++; }
+      else if (c === '"') { out += '"'; inStr = false; }
+      else out += ' ';
+      continue;
+    }
+    if (inChar) {
+      if (c === '\\' && i + 1 < s.length) { out += '  '; i++; }
+      else if (c === "'") { out += "'"; inChar = false; }
+      else out += ' ';
+      continue;
+    }
+    if (c === '"') { inStr = true; out += c; continue; }
+    if (c === "'") { inChar = true; out += c; continue; }
+    out += c;
+  }
+  return out;
+}
+
+function __opt_is_cin_read_stmt__(maskedLine) {
+  if (!maskedLine || maskedLine.endsWith('{') || maskedLine === '}') return false;
+  // Loop/control headers never get a marker: their conditions keep natural
+  // EOF semantics, and their bodies are handled by the block-kind check.
+  if (/^\s*(for|while|do|if|else|switch|return|break|continue)\b/.test(maskedLine)) return false;
+  if (!/(^|[^A-Za-z0-9_])cin\s*>>/.test(maskedLine)) return false;
+  // Require a top-level ';' (statement boundary).
+  let depth = 0;
+  for (let i = 0; i < maskedLine.length; i++) {
+    const c = maskedLine[i];
+    if (c === '(' || c === '[' || c === '{') depth++;
+    else if (c === ')' || c === ']' || c === '}') depth--;
+    else if (c === ';' && depth === 0) return true;
+  }
+  return false;
+}
+
+// Kind of the block opened by a '{' at position i on this line: 'loop' if a
+// for/while header (or `do`) immediately precedes it, 'plain' otherwise.
+function __opt_cin_block_kind__(masked, i) {
+  const before = masked.substring(0, i);
+  if (/\b(for|while)\s*\([^()]*\)\s*$/.test(before) || /^\s*do\s*$/.test(before)) {
+    return 'loop';
+  }
+  return 'plain';
+}
+
+function postprocessCinReads(instrumentedCode) {
+  const lines = instrumentedCode.split('\n');
+  const out = [];
+  const blockKinds = []; // kind of each currently open block (innermost last)
+  for (const rawLine of lines) {
+    const noComment = rawLine.replace(/\/\/.*$/, '');
+    const masked = __opt_cin_mask__(noComment);
+    const isCin = __opt_is_cin_read_stmt__(masked.trim());
+    const inLoop = blockKinds.length > 0 && blockKinds[blockKinds.length - 1] === 'loop';
+    // Update the block-kind stack with this line's braces (char scan, so
+    // multiple blocks on one line like `} else if (...) {` are handled).
+    for (let i = 0; i < masked.length; i++) {
+      const c = masked[i];
+      if (c === '{') blockKinds.push(__opt_cin_block_kind__(masked, i));
+      else if (c === '}' && blockKinds.length > 0) blockKinds.pop();
+    }
+    out.push(rawLine);
+    if (isCin) out.push(inLoop ? __CIN_MARK_QUIET__ : __CIN_MARK__);
+  }
+  return out.join('\n');
+}
+
+self.postprocessCinReads = postprocessCinReads;
+
 // Export for use in worker
 self.instrumentCode = instrumentCode;
