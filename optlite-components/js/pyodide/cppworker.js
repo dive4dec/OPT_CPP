@@ -15,6 +15,14 @@
 
 // Load the code instrumenter (cache-busted to ensure latest version)
 importScripts('./instrument.js?v=' + Date.now());
+// v2 instrumenter support: tree-sitter (classic-worker build, 0.24.5) + the
+// CST line-reformatter. tree-sitter.js defines the global `TreeSitter`;
+// ts-reformat.js defines reformat/remapTraceLines/ensureTreeSitter.
+// No ?v= on these: they are version-locked to each other (grammar <-> runtime)
+// and both change only on a release, so nginx's "immutable, expires 1d" cache
+// is safe and avoids refetching the 4.6MB grammar from disk cache on every run.
+importScripts('./tree-sitter.js');
+importScripts('./ts-reformat.js?v=' + Date.now());
 
 // Capture stderr from iopub stream messages so we can include the real
 // compiler error in the error message when the WASM aborts.
@@ -175,29 +183,51 @@ self.onmessage = async (event) => {
       // xkernel here (Option 3 doesn't work — throws WebAssembly.Exception).
       // No main() renaming needed — fresh kernel has no previous declarations.
 
-      // ── Instrument the user code ──
-      // No main() renaming needed — fresh kernel has no previous declarations
       const header = optTraceHeader || '';
-      let instrumentedCode;
-      let globalVarNames = [];
-      let staticVarNames = [];
 
       // Strip #include <format> — std::format is available without it
       // in clang-repl's preamble, and compiling the full <format> header
       // exhausts WASM memory and causes an abort.
-      const cleanedCode = code.replace(/#include\s*[<"]format[>"]\s*\n?/gi, '');
+      const cleanedCode = code.replace(/#include\s*[<"]format[>\"]\s*\n?/gi, '');
 
+      // ── Instrument the user code (v2 with legacy fallback) ──
+      // v2 = CST (tree-sitter) line reformat -> the UNCHANGED legacy
+      //      instrumentCode() -> remap trace line numbers back to the original
+      //      source lines. This fixes compact/one-line code (for/if bodies,
+      //      one-line function bodies) that broke the legacy line-scanner.
+      // On ANY error (tree-sitter unavailable, parse error, crash) it falls
+      // back to the legacy instrumenter, so v2 can never make things worse.
+      let instrumentedCode;
+      let globalVarNames = [];
+      let staticVarNames = [];
+      let instrumenterUsed = 'legacy';
       try {
-        const result = self.instrumentCode(cleanedCode);
-        if (typeof result === 'string') {
-          instrumentedCode = result;
-        } else {
-          instrumentedCode = result.code;
-          globalVarNames = result.globalVars || [];
-          staticVarNames = result.staticVars || [];
+        let result;
+        try {
+          const tsParser = await ensureTreeSitter();
+          const r = reformat(cleanedCode, tsParser);
+          if (!r || r.error) throw new Error(r && r.error || 'reformat failed');
+          result = self.instrumentCode(r.reformatted);
+          instrumentedCode = remapTraceLines(
+            typeof result === 'string' ? result : result.code, r.reformToOrig);
+          if (typeof result !== 'string') {
+            globalVarNames = result.globalVars || [];
+            staticVarNames = result.staticVars || [];
+          }
+          instrumenterUsed = 'v2';
+        } catch (e2) {
+          // Legacy fallback (original behavior, byte-for-byte).
+          const result = self.instrumentCode(cleanedCode);
+          if (typeof result === 'string') {
+            instrumentedCode = result;
+          } else {
+            instrumentedCode = result.code;
+            globalVarNames = result.globalVars || [];
+            staticVarNames = result.staticVars || [];
+          }
         }
       } catch (e) {
-        // If instrumentation fails, use original code (no visualization)
+        // If instrumentation fails entirely, use original code (no visualization)
         instrumentedCode = cleanedCode;
       }
 
@@ -205,15 +235,42 @@ self.onmessage = async (event) => {
       // 1. Trace header (opt_trace.h) — defines singleton, tracer, etc.
       // 2. Reset trace state + start stdout redirect
       // 3. Instrumented user code (main() NOT renamed — fresh kernel)
-      // 4. Call main()
+      // 4. Call main() (with std::cin redirected to the pre-seeded input,
+      //    so `cin >>` works in the browser — see below)
       // 5. Finalize: write the trace JSON to temp file
       let execCode = header + '\n';
       execCode += '{ auto& __s__ = __opt_get_state__(); __s__.reset(); }\n';
       execCode += instrumentedCode;
 
-      // If the code defines main(), call it
+      // If the code defines main(), call it.
+      //
+      // ── std::cin support (Python Tutor-style pre-seeded input) ──
+      // In a browser worker, xeus-cpp's cin streambuf would route a read to
+      // the kernel's input_request path, which we run with allow_stdin: false
+      // → the kernel errors out ("Compilation error", no diagnostic). Instead
+      // we redirect std::cin onto an istringstream pre-filled with the user's
+      // input (rawInputLst, one element per line — the same values the
+      // frontend collects in its raw-input box / rawInputLstJSON URL param).
+      // With no input provided, the stream is empty: `cin >> x` sets failbit
+      // and x keeps its current value (no crash, no kernel round-trip).
+      // <sstream> is already included by opt_trace.h.
       if (/\bint\s+main\s*\(\s*\)/.test(code) || /\bvoid\s+main\s*\(\s*\)/.test(code)) {
-        execCode += '\nmain();';
+        const rawInputLst = Array.isArray(self.rawInputLst)
+          ? self.rawInputLst.map(String) : [];
+        const cinText = rawInputLst.join('\n');
+        // Raw string literal with a delimiter that cannot occur in the text
+        // (a raw string ends at )tag"; tag must not appear there).
+        let cinTag = 'optin';
+        while (cinText.includes(')' + cinTag + '"')) cinTag += 'x';
+        const cinRaw = 'R"' + cinTag + '(' + cinText + ')' + cinTag + '"';
+        execCode +=
+          '\n{\n' +
+          '  std::istringstream __opt_cin_ss__(' + cinRaw + ');\n' +
+          '  std::streambuf* __opt_old_cin__ = std::cin.rdbuf(__opt_cin_ss__.rdbuf());\n' +
+          '  main();\n' +
+          '  std::cin.clear(); // clear failbit if input ran out (keeps iostreams usable)\n' +
+          '  std::cin.rdbuf(__opt_old_cin__);\n' +
+          '}';
       }
 
       // Finalize: write the trace JSON to a temp file

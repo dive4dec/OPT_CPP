@@ -66,6 +66,11 @@ jobs:
         cd optlite-components
         cp js/pyodide/instrument.js build/
         cp js/pyodide/opt_trace.h build/
+        cp js/pyodide/ts-reformat.js build/
+        cp js/pyodide/tree-sitter.js build/
+        cp js/pyodide/tree-sitter.wasm build/
+        mkdir -p build/grammars
+        cp js/pyodide/grammars/tree-sitter-cpp.wasm build/grammars/
         cp sw.js build/
 
     - name: Verify build output

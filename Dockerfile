@@ -79,8 +79,13 @@ RUN npm run build:prod \
     && test -f build/live.html \
     && cp js/pyodide/instrument.js build/ \
     && cp js/pyodide/opt_trace.h build/ \
+    && cp js/pyodide/ts-reformat.js build/ \
+    && cp js/pyodide/tree-sitter.js build/ \
+    && cp js/pyodide/tree-sitter.wasm build/ \
+    && mkdir -p build/grammars \
+    && cp js/pyodide/grammars/tree-sitter-cpp.wasm build/grammars/ \
     && cp sw.js build/ \
-    && chmod 644 build/instrument.js build/opt_trace.h build/sw.js
+    && chmod 644 build/instrument.js build/opt_trace.h build/ts-reformat.js build/tree-sitter.js build/tree-sitter.wasm build/grammars/tree-sitter-cpp.wasm build/sw.js
 
 # ── Stage 4: nginx serving static files + xeus-cpp WASM ──
 FROM nginx:1.29-alpine3.23

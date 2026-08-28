@@ -7,6 +7,53 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.27] - 2026-08-28
+
+### Added
+- **`std::cin` support** — Python Tutor-style pre-seeded input for C++ code.
+  The worker wraps the `main()` call in a `std::cin.rdbuf()` redirect onto an
+  `istringstream` pre-filled from the frontend's raw-input list
+  (`rawInputLst` / `rawInputLstJSON` URL param), so `std::cin >> x` reads the
+  pre-seeded value instead of hitting the kernel's disabled
+  `input_request` path (which surfaced as an unexplained "Compilation
+  error"). No input provided → `cin >>` sets failbit and the variable keeps
+  its value (no crash, no hang). The input is embedded as a raw string
+  literal with a dynamically chosen delimiter, so arbitrary user text is
+  safe.
+- **v2 CST-based code instrumentation** (tree-sitter) — fixes visualization
+  of compact/one-line code that broke the legacy line-scanner, e.g.:
+  - one-line function bodies: `long f(long a) { return a; }`
+  - one-line loop bodies: `for (int i = 1; i <= 6; i++) { int t = 0; ... }`
+  - `return 0; }` where the statement and the closing brace share a line
+
+  Approach B (lowest-risk): tree-sitter is used ONLY to re-lay-out the source
+  so each statement / closing brace sits where the legacy scanner expects
+  (`ts-reformat.js`), then the **unchanged** legacy `instrumentCode()` runs,
+  then the emitted trace line numbers are remapped back to the user's
+  original lines. The legacy state machine (scopes, declarations, heap,
+  captures) is 100% reused — no reimplementation, no new trace protocol.
+  On any error (parse error, tree-sitter unavailable) the worker falls back
+  to the legacy instrumenter, so v2 can never make a working case worse.
+  Verified against a 21-case g++ golden-trace battery: **21/21
+  already-canonical cases are byte-identical to the legacy output** (zero
+  regression); the 6 compact cases go from "compile error / dropped
+  statements" to correct full traces.
+- Runtime assets added to the build: `ts-reformat.js`, `tree-sitter.js`
+  (web-tree-sitter 0.24.5 classic-worker build), `tree-sitter.wasm`,
+  `grammars/tree-sitter-cpp.wasm` (~5 MB total, HTTP-cached by nginx, fetched
+  lazily on first run — not on the worker init path, so the 60 s init budget
+  is untouched).
+
+### Notes
+- The cin redirect uses only standard C++ (`<sstream>`, already included by
+  `opt_trace.h`); the kernel still runs with `allow_stdin: false` and no
+  kernel `input_request` protocol is involved.
+- Interactive mid-run input prompts (the frontend's raw-input box pausing
+  execution at each `cin >>`) are a follow-up; this release supports the
+  pre-seeded-input flow (box submit / URL param), matching how Python Tutor
+  serves C++ stdin.
+
+
 ## [0.3.26] - 2026-08-26
 
 ### Added
