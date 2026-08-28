@@ -7,6 +7,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.28] - 2026-08-28
+
+### Changed — loading & init-timeout robustness (no behavior changes)
+- **Gzip-compressed delivery of the xeus-cpp kernel assets.** The kernel
+  payload is ~101 MB raw (71 MB `libclangCppInterOp.so` + 26 MB `xcpp.data`
+  + 2.2 MB `xcpp.wasm` + 2.2 MB `xcpp.js`) and is re-downloaded on the first
+  run after any cache expiry. It is now pre-gzipped in the image
+  (~101 MB → ~34 MB on the wire) and served by nginx `gzip_static` with
+  `Content-Encoding: gzip` — emscripten's loader decompresses it
+  transparently. This is the main fix for "WASM initialization timed out"
+  on slow (student) networks.
+- **Caching headers tuned per asset type.**
+  - `live.html` / `index.html` / `visualize.html`: `Cache-Control: no-store`
+    (they reference content-hashed bundles; a stale copy pins a client to a
+    deleted bundle after a deploy).
+  - Static assets (`.js/.wasm/.data/...`): `30d immutable` (all are
+    content-hashed or fetched with `?v=` version strings).
+  - `.so` WASM side modules: `1h max-age` (no `immutable`) — the 71 MB
+    libclangCppInterOp.so is the biggest staleness blast radius; a future
+    xeus-cpp bump revalidates within an hour instead of a month.
+- **Longer AI-proxy timeouts** (nginx `/ai-proxy/`: connect 10 s,
+  send/read 300 s) so long Ask-AI generations don't die mid-stream.
+- **Worker init budget 60 s → 120 s** (`runner.ts`) — covers a genuinely
+  cold cache on a slow connection; warm runs are unaffected (seconds).
+- **Warm-up preload at page load** (`runner.ts`): fetches `xcpp.wasm` and
+  `xcpp.data` in the background while the user reads/types, so the first
+  run's worker init hits a warm HTTP cache instead of downloading
+  ~30 MB mid-init. Fire-and-forget — any failure falls back to the normal
+  on-demand fetch.
+
+### Fixed
+- Reduced one class of spurious "Worker initialization timed out (WASM may
+  have crashed)" errors: the 60 s budget previously included a full
+  ~101 MB download on slow links; with 34 MB gzipped transfer, cache
+  headers, the warm-up preload, and a 120 s budget, a healthy cold start
+  fits comfortably.
+
 ## [0.3.27] - 2026-08-28
 
 ### Added

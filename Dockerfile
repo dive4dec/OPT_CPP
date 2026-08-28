@@ -40,6 +40,16 @@ RUN mkdir -p /xeus-cpp \
     && cp -L lib/libclangCppInterOp.so /xeus-cpp/libclangCppInterOp.so \
     && cp -L lib/libxeus.so /xeus-cpp/libxeus.so \
     && ls -la /xeus-cpp/
+# Pre-compress the large assets for nginx gzip_static (served as <file>.gz
+# with Content-Encoding: gzip). ~101 MB raw -> ~34 MB on the wire, which is
+# what keeps the kernel init inside the browser's init budget on slow
+# networks. gzip -1: already-compressed-ish binaries (wasm sections, ELF
+# text) gain little from higher levels, and build time matters.
+RUN cd /xeus-cpp \
+    && for f in xcpp.js xcpp.wasm xcpp.data libclangCppInterOp.so libxeus.so; do \
+         gzip -1 -k -f "$f"; \
+       done \
+    && ls -la /xeus-cpp/
 
 # ── Stage 3: Build optlite-components (webpack → build/) ──
 FROM node:22-slim AS optlite-builder

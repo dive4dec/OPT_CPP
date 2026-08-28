@@ -41,10 +41,13 @@ const initWorker = (() => {
     }
 
     return new Promise((resolve, reject) => {
-      // Timeout: if the worker doesn't init within 60s, reject (WASM may have crashed)
+      // Timeout: if the worker doesn't init within 120s, reject (WASM may
+      // have crashed). The budget covers the worst case of a cold cache on a
+      // student network: the kernel payload (~34 MB gzipped, ~101 MB raw)
+      // plus WASM instantiation. Warm runs finish in seconds.
       const timeout = setTimeout(() => {
         reject(new Error('Worker initialization timed out (WASM may have crashed)'));
-      }, 60000);
+      }, 120000);
 
       callbacks[id] = (data) => {
         clearTimeout(timeout);
@@ -68,6 +71,38 @@ function createWorker(): Worker {
 
 // Create the initial worker BEFORE calling initWorker
 cppWorker = createWorker();
+
+// ── Warm-up: preload the xeus-cpp kernel assets at page load ──
+// The first execution pays for the whole kernel download (xcpp.wasm,
+// xcpp.data, the .so side modules, xcpp.js). On a slow connection that
+// download is exactly what used to blow the init budget ("WASM
+// initialization timed out"). Fetching the two big non-JS assets here —
+// while the user is still reading / typing — warms the browser's HTTP
+// cache (same-origin, so the worker's later fetches hit the same cache).
+// Fire-and-forget: on any failure the normal worker path retries, and the
+// 30d immutable cache headers mean this is at most a one-time cost per
+// release.
+const XEUS_CPP_WARMUP_VERSION = '0.10.0';
+(async () => {
+  try {
+    const base = new URL('./xeus-cpp/', window.location.href).href;
+    const abortController = new AbortController();
+    const deadline = setTimeout(() => abortController.abort(), 300000);
+    const t0 = performance.now();
+    await Promise.all([
+      fetch(base + 'xcpp.wasm?v=' + XEUS_CPP_WARMUP_VERSION,
+            { cache: 'force-cache', signal: abortController.signal }),
+      fetch(base + 'xcpp.data?v=' + XEUS_CPP_WARMUP_VERSION,
+            { cache: 'force-cache', signal: abortController.signal }),
+    ]);
+    clearTimeout(deadline);
+    console.log(
+      '[optcpp] warmup: xcpp.wasm + xcpp.data ' +
+      (performance.now() - t0).toFixed(0) + 'ms');
+  } catch (e) {
+    console.warn('[optcpp] warmup preload skipped (worker init will fetch on demand):', e);
+  }
+})();
 
 let init = initWorker();
 
