@@ -250,7 +250,14 @@ export abstract class AbstractBaseFrontend {
   }
 
   executeCodeFromScratch() {
-    this.rawInputLst = []; // reset!
+    // NOTE: do NOT reset rawInputLst here. The URL param `rawInputLstJSON` is
+    // the ONLY input source in the live C++ mode (there is no interactive
+    // input box, so `executeCodeWithRawInput` — the only thing that accumulates
+    // input — never fires). `parseQueryString()` seeds `rawInputLst` from the
+    // URL; a blanket reset here would wipe that pre-seeded input before it
+    // reaches the worker, so `std::cin >>` would read from an empty stream
+    // (failbit) and leave the variable at its (uninitialized) value. Keeping
+    // `rawInputLst` as-is makes URL-seeded input survive the run.
     this.executeCode();
   }
 

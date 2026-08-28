@@ -11,15 +11,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 - **`std::cin` support** — Python Tutor-style pre-seeded input for C++ code.
-  The worker wraps the `main()` call in a `std::cin.rdbuf()` redirect onto an
-  `istringstream` pre-filled from the frontend's raw-input list
-  (`rawInputLst` / `rawInputLstJSON` URL param), so `std::cin >> x` reads the
-  pre-seeded value instead of hitting the kernel's disabled
-  `input_request` path (which surfaced as an unexplained "Compilation
-  error"). No input provided → `cin >>` sets failbit and the variable keeps
-  its value (no crash, no hang). The input is embedded as a raw string
-  literal with a dynamically chosen delimiter, so arbitrary user text is
-  safe.
+  - The worker wraps the `main()` call in a `std::cin.rdbuf()` redirect onto
+    an `istringstream` pre-filled from the frontend's raw-input list
+    (`rawInputLst` / `rawInputLstJSON` URL param), so `std::cin >> x` reads
+    the pre-seeded value instead of hitting the kernel's disabled
+    `input_request` path (which surfaced as an unexplained "Compilation
+    error"). No input provided → `cin >>` sets failbit and the variable keeps
+    its value (no crash, no hang). The input is embedded as a raw string
+    literal with a dynamically chosen delimiter, so arbitrary user text is
+    safe.
+  - Frontend wiring fix: `executeCodeFromScratch()` no longer blank-resets
+    `rawInputLst`. In the live C++ mode the URL param `rawInputLstJSON` is the
+    only input source (no interactive box; the C++ worker never emits a
+    `promptForUserInput`), so the blanket reset wiped the pre-seeded input
+    before it reached the worker and `cin >>` read from an empty stream.
+    Verified end-to-end: `rawInputLstJSON=["42"]` now yields `x == 42`.
 - **v2 CST-based code instrumentation** (tree-sitter) — fixes visualization
   of compact/one-line code that broke the legacy line-scanner, e.g.:
   - one-line function bodies: `long f(long a) { return a; }`
