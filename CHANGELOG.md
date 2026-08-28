@@ -7,6 +7,55 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.29] - 2026-08-29
+
+### Added — serverless (GitHub Pages) kernel compression via the service worker
+The xeus-cpp kernel payload is ~101 MB raw (71 MB `libclangCppInterOp.so` +
+26 MB `xcpp.data` + 2.2 MB `xcpp.wasm`). On K8s (socratic) nginx gzips it to
+~34 MB, but **GitHub Pages serves files as-is** — so the serverless deploy
+made every student download the full ~101 MB.
+
+This is now fixed **with zero server involvement**:
+- **`sw.js`** now serves the pre-compressed `.gz` sibling of each kernel binary
+  and decompresses it in the browser with `DecompressionStream('gzip')`,
+  dropping the GH Pages wire transfer to **~32 MB**. The emscripten loader
+  receives exactly the uncompressed bytes it always did (no worker change).
+- The build (`.github/workflows/deploy.yml`) now emits `.gz` siblings of the
+  four kernel binaries (`gzip -1 -k`); the raw files are kept as the fallback
+  when `DecompressionStream` is unavailable.
+
+**Probe-first detection** keeps the working host untouched and the SW's memory
+low: on the first kernel request the SW sends one tiny `HEAD` to the raw URL —
+if the server already gzips it (K8s), the SW uses the standard streamed
+pass-through path (exactly today's behaviour, no kernel bytes held in the SW);
+only a serverless host (no `Content-Encoding`) takes the in-browser decompress
+path. The `.gz` is fetched `force-cache`, so it's a one-time cost per release
+and later visits are served from cache. Warm-up + worker-init concurrency is
+deduped (one `.gz` download, not two).
+
+### Fixed — service-worker script cache invalidation
+`sw.js` was served with the 30-day `immutable` cache rule. Chrome uses the
+`sw.js` HTTP caching headers to decide when to fetch an *updated* service
+worker, so a SW change would have silently taken up to 30 days to reach
+returning students (e.g. this compression feature would never arrive). Added a
+`location = /sw.js` in the K8s nginx config served with `no-cache`
+(revalidate → cheap 304 when unchanged, immediate pickup when changed).
+GitHub Pages was unaffected (it caches `sw.js` at ~10 min natively).
+
+### Verified
+- Node harness driving the real `sw.js` against the live server: byte-identical
+  decompression of all four kernel files, correct magic/size/COOP/COEP headers,
+  GH-Pages decompress path, K8s server path, warm-up/worker dedup, and the
+  `.gz`-404→raw fallback.
+- Real headless-Chromium end-to-end on a local no-gzip (GH-Pages-faithful)
+  repro: SW takes control, serves the kernel via `.gz`, and a program renders
+  the correct result (`Done running (4 steps)`, `z=12`); a cached reload
+  initializes the kernel with **zero** network downloads.
+- K8s nginx: `nginx -t` clean; `/sw.js` now `no-cache`, hashed bundles still
+  `immutable`, binaries still `max-age=3600`, HTML still `no-store`.
+- The workflow's gzip step produces `.gz` files byte-identical to those the
+  decompression code was validated against.
+
 ## [0.3.28] - 2026-08-28
 
 ### Changed — loading & init-timeout robustness (no behavior changes)

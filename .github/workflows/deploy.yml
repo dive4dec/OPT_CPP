@@ -106,6 +106,21 @@ jobs:
         echo "xeus-cpp files:"
         ls -la
 
+    - name: Pre-gzip xeus-cpp kernel binaries (serverless compression)
+      run: |
+        cd optlite-components/build/xeus-cpp
+        # GitHub Pages can't compress responses. The service worker (sw.js)
+        # serves these .gz siblings and decompresses them in-browser via
+        # DecompressionStream('gzip'), dropping the ~101 MB raw kernel download
+        # to ~32 MB with no server involvement. The raw files are kept: they're
+        # the fallback if a browser lacks DecompressionStream, and xcpp.js is
+        # loaded via importScripts (not SW-interceptable) so it ships raw.
+        for f in xcpp.wasm xcpp.data libclangCppInterOp.so libxeus.so; do
+          gzip -1 -k -f "$f"
+        done
+        echo "kernel files + .gz siblings:"
+        ls -la
+
     - name: Upload build artifacts
       uses: actions/upload-artifact@v4
       with:
