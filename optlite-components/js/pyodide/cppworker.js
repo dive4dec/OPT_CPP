@@ -230,6 +230,7 @@ self.onmessage = async (event) => {
         // If instrumentation fails entirely, use original code (no visualization)
         instrumentedCode = cleanedCode;
       }
+      console.log('[cppworker] instrumenter=' + instrumenterUsed);
 
       // Build the full code to execute:
       // 1. Trace header (opt_trace.h) — defines singleton, tracer, etc.
