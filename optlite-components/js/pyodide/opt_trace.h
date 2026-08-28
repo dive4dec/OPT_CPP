@@ -15,6 +15,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <csetjmp>
 #include <string>
 #include <sstream>
 #include <typeinfo>
@@ -24,6 +25,24 @@
 #include <vector>
 #include <functional>
 
+// ── cin-prompt protocol (Python Tutor's raw_input, adapted for C++) ──
+// When the user's code does a plain `cin >>` read (a statement, NOT a loop
+// condition) and the pre-seeded input runs out, we stop the run at that
+// statement and ask the frontend for more input — like Python Tutor's
+// input(). The instrumenter emits __opt_cin_read_done__() right after each
+// plain cin-read statement; that call checks cin.fail() FOR THAT READ:
+//   * if the read succeeded  → do nothing, keep running
+//   * if it failed (input exhausted) and cin is active → set cin_prompt and
+//     longjmp out of user code (a plain return can't unwind nested calls, and
+//     an exception would be swallowed by a user's own `catch(...)`, which
+//     would then keep running on the dead stream with stale values).
+// Loop-condition reads (`while (cin >> x)`) are NOT marked by the
+// instrumenter, so they end naturally on EOF — matching real C++ — instead of
+// prompting. On finalize, a trailing {"event":"raw_input","prompt":...} entry
+// is appended; the generic frontend (ExecutionVisualizer) pops it, shows the
+// "Enter user input:" box, and re-executes the program with the typed value
+// appended to the input list (see executeCodeWithRawInput).
+
 // ── Persistent trace state ──
 // NOTE: Meyers singleton (static local) doesn't work in clang-repl —
 // each top-level statement may get a different static instance.
@@ -31,6 +50,12 @@
 struct __opt_state__ {
   std::string trace_output;
   int step = 0;
+  // cin-prompt protocol (see above)
+  bool cin_active = false;      // set by the worker's cin wrapper around main()
+  bool cin_prompt = false;      // set by __opt_cin_read_done__ when a cin read
+                                // exhausted the input (trace frozen; finalize
+                                // appends the raw_input marker)
+  jmp_buf cin_jmpbuf;           // longjmp target (the worker's cin wrapper)
   // Call stack: each entry is {func_name, frame_id, line, locals_json, varnames}
   struct frame_info {
     std::string func_name;
@@ -46,6 +71,8 @@ struct __opt_state__ {
     call_stack.clear();
     globals_json = "{}";
     globals_names.clear();
+    cin_active = false;
+    cin_prompt = false;
   }
   // Globals storage
   std::string globals_json = "{}";
@@ -59,6 +86,19 @@ __opt_state__& __opt_get_state__() {
   return __opt_global_state__;
 }
 
+// ── Single choke point for appending a trace entry ──
+// Every trace call funnels through here. It appends the entry, EXCEPT once
+// the cin-prompt has fired (cin_prompt set) — then the trace is frozen at the
+// cin statement and nothing more is recorded. (The decision to prompt lives in
+// __opt_cin_read_done__, emitted right after each plain cin-read statement by
+// the instrumenter; see the header comment for why it's per-read, not a global
+// cin.fail() check.)
+void __opt_trace_append__(const std::string& entry) {
+  auto& st = __opt_get_state__();
+  if (st.cin_prompt) return; // input exhausted — trace ends at the cin statement
+  st.trace_output += (st.step > 0 ? ",\n" : "") + entry;
+  st.step++;
+}
 // ── Address formatting ──
 std::string __opt_addr__(const void* p) {
   char buf[32]; snprintf(buf, sizeof(buf), "0x%lx", (unsigned long)p); return buf;
@@ -495,8 +535,7 @@ void __opt_trace_impl__(int line, const std::function<void(__opt_tracer__&)>& la
   std::cout.flush();
   std::string entry = __t__.finish();
   __opt_update_frame__(line, __t__.locals, __t__.names);
-  st.trace_output += (st.step>0 ? ",\n" : "") + entry;
-  st.step++;
+  __opt_trace_append__(entry);
 }
 
 // Overload with explicit function name for frame management
@@ -519,8 +558,7 @@ void __opt_trace_fn_impl__(const char* func_name, int line, const std::function<
   std::cout.flush();
   std::string entry = __t__.finish();
   __opt_update_frame__(line, __t__.locals, __t__.names);
-  st.trace_output += (st.step>0 ? ",\n" : "") + entry;
-  st.step++;
+  __opt_trace_append__(entry);
 }
 
 void __opt_trace_impl__(int line) {
@@ -543,10 +581,44 @@ void __opt_trace_end__() {
   std::cout.flush();
   std::string entry = __opt_current_tracer__->finish();
   __opt_update_frame__(__opt_current_tracer__->ln, __opt_current_tracer__->locals, __opt_current_tracer__->names);
-  st.trace_output += (st.step>0 ? ",\n" : "") + entry;
-  st.step++;
+  __opt_trace_append__(entry);
   delete __opt_current_tracer__;
   __opt_current_tracer__ = nullptr;
+}
+
+// ── cin-prompt protocol: post-read check (see header comment) ──
+// Emitted by the instrumenter as a standalone statement right after a plain
+// `cin >>` read (loop-condition reads are NOT marked, so they end naturally on
+// EOF like real C++). It runs immediately after the read, before the next
+// statement's pre-trace, with no active tracer (the statement's own
+// __opt_trace_end__() already finalized and freed it).
+//
+// It checks cin.fail() FOR THIS READ:
+//   * read succeeded → do nothing; the next statement's pre-trace will show
+//     the value the user fed (Python Tutor state-before-line convention).
+//   * read failed (pre-seeded input exhausted, cin redirection active) →
+//     set cin_prompt and longjmp back to the worker's cin wrapper. That
+//     wrapper then has __opt_finalize__ append the {"event":"raw_input"}
+//     marker; the frontend shows "Enter user input:" and, on submit,
+//     re-executes the whole program with the typed value appended to the
+//     input list, resuming display one step past the cin line (which then
+//     shows the fed value). longjmp is used (not an exception or return)
+//     because a user's own `catch(...)` would swallow an exception, and a
+//     return cannot unwind nested call frames.
+void __opt_cin_read_done__() {
+  auto& st = __opt_get_state__();
+  if (st.cin_active && !st.cin_prompt && std::cin.fail()) {
+    st.cin_prompt = true;
+    longjmp(st.cin_jmpbuf, 1);
+  }
+}
+
+// Quiet variant for cin reads inside for/while/do loop bodies: a failed read
+// there ends naturally (real C++ EOF semantics — the loop body has already
+// run once on the input), so we just return without prompting or stopping.
+void __opt_cin_read_done_quiet__() {
+  // No-op by design: the failed read is expected and ignored. (Kept as a
+  // separate symbol so the instrumenter's intent is explicit in the output.)
 }
 
 void __opt_trace_fn_impl__(const char* func_name, int line) {
@@ -791,7 +863,22 @@ void __opt_cap_struct__(const char* n, const char* typeName, const void* addr, c
 // ── Finalizer ──
 std::string __opt_finalize__() {
   auto& st = __opt_get_state__();
-  return "{\"code\":\"\",\"trace\":[" + st.trace_output + "]}";
+  std::string out = "{\"code\":\"\",\"trace\":[" + st.trace_output;
+  // cin-prompt protocol: if a `cin >>` exhausted the pre-seeded input, append
+  // the raw_input marker as the LAST entry. The frontend's ExecutionVisualizer
+  // pops it, sets promptForUserInput + userInputPromptStr, and shows the
+  // "Enter user input:" box when the trace plays to the end. It then re-executes
+  // the program with the user's typed value appended to the input list and
+  // resumes at the cin line (see executeCodeWithRawInput).
+  if (st.cin_prompt) {
+    if (st.step > 0) out += ",\n";
+    out += "{\"line\":1,\"event\":\"raw_input\",\"func_name\":\"main\","
+           "\"prompt\":\"Enter input for cin:\","
+           "\"globals\":{},\"ordered_globals\":[],"
+           "\"stack_to_render\":[],\"heap\":{},\"stdout\":\"\"}";
+  }
+  out += "]}";
+  return out;
 }
 
 #endif // OPT_TRACE_H

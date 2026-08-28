@@ -49,15 +49,49 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `grammars/tree-sitter-cpp.wasm` (~5 MB total, HTTP-cached by nginx, fetched
   lazily on first run — not on the worker init path, so the 60 s init budget
   is untouched).
+- **Interactive `cin` prompts** — when `cin >>` runs out of pre-seeded input
+  mid-run, the trace stops at that statement and the frontend shows its
+  existing "Enter user input:" box (Python Tutor's `raw_input` protocol,
+  already wired for C++ live mode). The user's typed value is appended to the
+  input list and the program is re-executed from a fresh kernel, resuming
+  display one step past the cin line — which then shows the fed value,
+  matching how Python Tutor renders an `input()` line.
+  - `instrument.js` → new `postprocessCinReads()` pass appends a
+    `__opt_cin_read_done__()` marker after each *statement-level* `cin >>`
+    read. A quiet no-op variant (`__opt_cin_read_done_quiet__()`) is used
+    inside `for`/`while`/`do` loop bodies, and loop-*condition* reads
+    (`while (cin >> x)`) are never marked, so they keep natural C++ EOF
+    semantics — a "sum all inputs" idiom terminates instead of looping on a
+    prompt. Detection is block-kind aware (tracks open brace depth + the
+    keyword that opened each block), so `if`/`else`/function bodies still
+    prompt while loops end naturally.
+  - `opt_trace.h` → `__opt_cin_read_done__()` checks `cin.fail()` for *that*
+    read only. On failure (input exhausted while the cin redirect is active)
+    it sets `cin_prompt` and `longjmp`s back to the worker's wrapper — not an
+    exception (a user's `catch(...)` would swallow it) and not a `return`
+    (can't unwind nested frames). `__opt_finalize__` then appends the
+    trailing `{"event":"raw_input",...}` marker the frontend pops.
+  - `cppworker.js` → the cin wrapper sets `cin_active`, does `setjmp` around
+    `main()`, and restores the original `cin` rdbuf before/after the call so
+    the prompt machinery only arms when redirection is live.
+
+  Verified: g++ battery of 8 cases (prompt on exhausted input, natural EOF
+  for `while(cin>>x)`, silent for-loop-body cin, chained `cin>>a>>b`, cin in
+  if/function bodies) plus the resume-index determinism check (line-sequence
+  prefix identical across the prompt run and the re-run; the fed value is
+  visible on the cin line). End-to-end in a headless browser: prompt fires →
+  type 42 → resume shows `x=42`; pre-seeded `["42"]` runs with no prompt and
+  prints 42; `while(cin>>x) sum+=x` over `1 2 3` ends naturally, prints 6,
+  no prompt.
 
 ### Notes
 - The cin redirect uses only standard C++ (`<sstream>`, already included by
   `opt_trace.h`); the kernel still runs with `allow_stdin: false` and no
   kernel `input_request` protocol is involved.
-- Interactive mid-run input prompts (the frontend's raw-input box pausing
-  execution at each `cin >>`) are a follow-up; this release supports the
-  pre-seeded-input flow (box submit / URL param), matching how Python Tutor
-  serves C++ stdin.
+- The pre-seeded-input flow (URL param `rawInputLstJSON`) and the interactive
+  prompt both feed the same `rawInputLst` list: pre-seeded entries are
+  consumed first, and anything the user types at a prompt is appended, so a
+  URL-shared link keeps working while still allowing extra reads.
 
 
 ## [0.3.26] - 2026-08-26

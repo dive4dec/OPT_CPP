@@ -230,6 +230,19 @@ self.onmessage = async (event) => {
         // If instrumentation fails entirely, use original code (no visualization)
         instrumentedCode = cleanedCode;
       }
+
+      // ── cin-prompt protocol: inject the post-read check markers ──
+      // postprocessCinReads appends a __opt_cin_read_done__()/…_quiet__() call
+      // right after each plain `cin >>` read statement (the runtime uses it to
+      // detect when the pre-seeded input runs out and prompt the user). It runs
+      // on the final instrumented lines (after v2 line remapping), so the
+      // injected lines carry no trace line numbers and are safe for both the
+      // v2 and legacy instrumenter outputs. Safe no-op when the code has no
+      // cin reads.
+      if (typeof self.postprocessCinReads === 'function') {
+        instrumentedCode = self.postprocessCinReads(instrumentedCode);
+      }
+
       console.log('[cppworker] instrumenter=' + instrumenterUsed);
 
       // Build the full code to execute:
@@ -264,12 +277,29 @@ self.onmessage = async (event) => {
         let cinTag = 'optin';
         while (cinText.includes(')' + cinTag + '"')) cinTag += 'x';
         const cinRaw = 'R"' + cinTag + '(' + cinText + ')' + cinTag + '"';
+        // ── cin-prompt protocol wrapper ──
+        // setjmp/longjmp: when a plain `cin >>` statement exhausts the
+        // pre-seeded input, the injected __opt_cin_read_done__() (see
+        // postprocessCinReads) longjmps back here. We then flag the prompt so
+        // __opt_finalize__ appends the {"event":"raw_input"} marker; the
+        // frontend pops it, shows "Enter user input:", and on submit
+        // re-executes the whole program with the typed value appended to the
+        // input list (fresh kernel → deterministic resume).
+        // NB: longjmp bypasses destructors for any static objects in the user
+        // code — a controlled, known trade-off of this protocol (the next
+        // execution terminates and recreates this whole worker, so nothing
+        // carries over).
         execCode +=
           '\n{\n' +
+          '  auto& __opt_s__ = __opt_get_state__();\n' +
+          '  __opt_s__.cin_active = true;\n' +
           '  std::istringstream __opt_cin_ss__(' + cinRaw + ');\n' +
           '  std::streambuf* __opt_old_cin__ = std::cin.rdbuf(__opt_cin_ss__.rdbuf());\n' +
-          '  main();\n' +
-          '  std::cin.clear(); // clear failbit if input ran out (keeps iostreams usable)\n' +
+          '  if (setjmp(__opt_s__.cin_jmpbuf) == 0) {\n' +
+          '    main();\n' +
+          '  } else {\n' +
+          '    __opt_s__.cin_prompt = true;\n' +
+          '  }\n' +
           '  std::cin.rdbuf(__opt_old_cin__);\n' +
           '}';
       }
