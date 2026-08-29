@@ -717,6 +717,17 @@ void __opt_cap__(const char* n, const char*& v) {
   std::string ptr = v ? __opt_addr__((void*)v) : "0x0";
   __opt_current_tracer__->add(n, "[\"C_DATA\",\""+__opt_addr__(&v)+"\",\"pointer\",\""+ptr+"\",{\"bytes\":8}]");
 }
+// Generic pointer catch-all — binds ANY object pointer type that has no
+// more specific overload above (int* / char* / const char* still win via
+// their exact matches, since an identity conversion outranks
+// pointer -> const void*). Without this, e.g. Shape* has no exact
+// overload and silently converts to the bool overload (pointer -> bool is
+// a standard conversion), displaying "true"/"false" instead of the address.
+void __opt_cap__(const char* n, const void* v) {
+  if(!__opt_current_tracer__) return;
+  std::string ptr = v ? __opt_addr__((void*)v) : "0x0";
+  __opt_current_tracer__->add(n, "[\"C_DATA\",\""+__opt_addr__((void*)&v)+"\",\"pointer\",\""+ptr+"\",{\"bytes\":8}]");
+}
 // Fixed-size int arrays — show as C_ARRAY with element count
 void __opt_cap_array__(const char* n, int* v, int sz) {
   if(!__opt_current_tracer__) return;

@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.33] - 2026-08-29
+
+### Fixed
+- **Class / struct pointers no longer display as `true`/`false`.**
+  A pointer whose pointee is not `int`/`char`/`const char` — e.g. `Shape* shape1 = &circle;`
+  with `Circle : public Shape` — was captured by the instrumenter's generic
+  `__opt_cap__("shape1", shape1)` call, but the header only had pointer overloads for
+  `int*`, `char*`, and `const char*`. With no exact match, C++ overload resolution
+  fell through to the `bool` overload (a pointer implicitly converts to `bool`), so the
+  visualization showed the value as `true` (non-null) or `false` (null) instead of the
+  address. Added a `const void*` catch-all `__opt_cap__` overload: any object pointer
+  without a more specific overload now binds to it (exact-rank) and renders as a
+  pointer with its real address; a null pointer of any such type now correctly shows
+  `0x0`. The `int*` / `char*` / `const char*` overloads are untouched — an identity
+  conversion still outranks the pointer→`const void*` conversion, so previously-working
+  pointers are byte-identical. Verified against the real header: the reported
+  `Shape*`/`Circle` program now emits `["C_DATA",addr,"pointer","0x…",{bytes:8}]` for
+  `shape1` (was `["C_DATA",addr,"bool","true",{bytes:1}]`), a null `Shape*` shows `0x0`
+  (was `false`), and `int*`/`char*`/`const char*` are unchanged. The reported program
+  compiles clean on both the v2 (tree-sitter) and legacy instrumenter paths, and the
+  36-case regression battery produces a byte-identical pass/fail set before vs after
+  the change (no regressions).
+
 ## [0.3.32] - 2026-08-29
 
 ### Fixed
