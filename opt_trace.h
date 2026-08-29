@@ -717,6 +717,37 @@ void __opt_cap__(const char* n, const char*& v) {
   std::string ptr = v ? __opt_addr__((void*)v) : "0x0";
   __opt_current_tracer__->add(n, "[\"C_DATA\",\""+__opt_addr__(&v)+"\",\"pointer\",\""+ptr+"\",{\"bytes\":8}]");
 }
+// By-reference pointer capture — PREFERRED for any lvalue pointer variable
+// (class pointers like `Shape* shape1 = &circle;`, `int*`, `void*`, ...).
+// Capturing BY REFERENCE makes obj[1] = &v = the CALLER's real (unique)
+// variable address. That uniqueness matters: the frontend builds each
+// pointer's DOM id and arrow-source id from obj[1] (cdata_<obj[1]> /
+// ptrSrc_<obj[1]>). If two pointers shared the same obj[1], their ids would
+// collide and the arrows could not draw. The by-value const void* overload
+// below uses the function's parameter slot (one shared stack location), so
+// every pointer routed through it got the SAME obj[1] — which is why
+// shape1 and shape2 collapsed onto one id. T*& binds by exact match for an
+// lvalue pointer, which outranks the pointer->const void* conversion, so it
+// wins here. The non-template int*/char*/const char* overloads above still
+// win over this template on an exact-match tie (non-template preferred), so
+// heap/pointer behavior is unchanged.
+template<typename T>
+void __opt_cap__(const char* n, T*& v) {
+  if(!__opt_current_tracer__) return;
+  std::string ptr = v ? __opt_addr__((void*)v) : "0x0";
+  __opt_current_tracer__->add(n, "[\"C_DATA\",\""+__opt_addr__(&v)+"\",\"pointer\",\""+ptr+"\",{\"bytes\":8}]");
+}
+// Generic pointer catch-all (BY VALUE) — rvalue fallback for pointer
+// EXPRESSIONS that can't bind to T*& (e.g. the auto-deduced `static_cast<...>`
+// emission, a temporary, or a const pointer object). Still displays the
+// address correctly; its obj[1] is the parameter slot, so it's not unique —
+// acceptable for the rare non-lvalue case, since the common declared-pointer
+// (lvalue) path uses T*& above.
+void __opt_cap__(const char* n, const void* v) {
+  if(!__opt_current_tracer__) return;
+  std::string ptr = v ? __opt_addr__((void*)v) : "0x0";
+  __opt_current_tracer__->add(n, "[\"C_DATA\",\""+__opt_addr__((void*)&v)+"\",\"pointer\",\""+ptr+"\",{\"bytes\":8}]");
+}
 // Fixed-size int arrays — show as C_ARRAY with element count
 void __opt_cap_array__(const char* n, int* v, int sz) {
   if(!__opt_current_tracer__) return;
