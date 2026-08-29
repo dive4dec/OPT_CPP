@@ -185,10 +185,19 @@ self.onmessage = async (event) => {
 
       const header = optTraceHeader || '';
 
-      // Strip #include <format> — std::format is available without it
-      // in clang-repl's preamble, and compiling the full <format> header
-      // exhausts WASM memory and causes an abort.
-      const cleanedCode = code.replace(/#include\s*[<"]format[>\"]\s*\n?/gi, '');
+      // Replace #include <format> with a comment on the SAME line. std::format
+      // is already in clang-repl's preamble, and compiling the real <format>
+      // header exhausts WASM memory and aborts — so the directive must not reach
+      // the kernel. Crucially we KEEP the line (as a comment) rather than delete
+      // it: removing the line shifts every later line up by one, and the trace
+      // line numbers are computed on this cleaned code, so they would then point
+      // one line too high in the editor — the arrows land on the wrong lines. A
+      // comment is inert for the instrumenter and the kernel alike, and other
+      // headers (string, iostream, ...) are left untouched.
+      const cleanedCode = code.replace(
+        /^([ \t]*)#[ \t]*include[ \t]*[<"][ \t]*format[ \t]*[>"].*$/gim,
+        '$1// (format is provided by the kernel preamble)',
+      );
 
       // ── Instrument the user code (v2 with legacy fallback) ──
       // v2 = CST (tree-sitter) line reformat -> the UNCHANGED legacy

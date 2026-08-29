@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.31] - 2026-08-29
+
+### Fixed
+- **Step arrows point at the correct lines when the code has `#include <format>`.**
+  The worker had to neutralize `#include <format>` (the real header is absent from
+  the WASM kernel and compiling it exhausts WASM memory), but it did so by *deleting*
+  the line. Every later line then shifted up by one while the trace line numbers were
+  computed on the shortened code, so the visualization arrows landed one line too
+  high. The directive is now replaced **in place with a comment on the same line**,
+  preserving the 1:1 line mapping with the editor for both the v2 (tree-sitter) and
+  legacy instrumenter paths. Other headers (`<string>`, `<iostream>`, …) are untouched
+  (they were never shifted), and substring matches (`<formato>`, `<xformat>`,
+  `<in_format>`, …) are not affected.
+
 ## [0.3.30] - 2026-08-29
 
 ### Added
