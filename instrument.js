@@ -236,6 +236,121 @@ function parseDeclaration(line) {
 
 // ── Main instrumentation function ──
 
+// Parse a lambda capture list into a Set of captured names. Returns null when the
+// capture is a default ([&], [=], [&x], [=x]) meaning "all outer vars accessible".
+function lambdaCaptureSet(captureStr) {
+  const s = (captureStr || '').trim();
+  if (s === '') return new Set();            // []  nothing captured
+  if (/^[\[&=]/.test(s) && (s === '&' || s === '=')) return null; // [&] / [=] all
+  if (/^[\[&=][&=]/.test(s) || /&\s*=|\=\s*&/.test(s)) return null; // [&x]/[=x] all
+  if (/^[\[&=]/.test(s)) {
+    // explicit list: "[a, &b, c = 1]"
+    const inner = s.replace(/^\[/, '').replace(/\]$/, '');
+    const set = new Set();
+    for (let part of inner.split(',')) {
+      part = part.trim();
+      if (!part) continue;
+      const m = part.match(/^&?\s*(\w+)/);
+      if (m) set.add(m[1]);
+    }
+    return set;
+  }
+  return new Set();
+}
+
+// If the current top scope is a LAMBDA body, return the set of names legal to
+// reference inside it (its captures + its parameters + variables declared in the
+// current scope). Returns null when not inside a lambda (no restriction). A
+// default-capture lambda ([&]/[=]) returns null → everything accessible.
+// Outer-scope locals that the lambda does NOT capture are correctly EXCLUDED
+// (they are not in the current scope's vars, nor in the capture list), so a trace
+// injected inside the lambda body will not reference them → no "is not captured".
+function lambdaAllowedNames(scopeStack, lambdaStack) {
+  if (!lambdaStack || lambdaStack.length === 0) return null;
+  const top = lambdaStack[lambdaStack.length - 1];
+  const curScope = scopeStack[scopeStack.length - 1];
+  if (top.captures === null) return null; // default capture → everything accessible
+  const allowed = new Set();
+  for (let n of top.captures) allowed.add(n);
+  if (top.params) for (let n of top.params) allowed.add(n);
+  if (curScope && curScope.vars) for (let n of curScope.vars) allowed.add(n);
+  return allowed;
+}
+
+// The knownVars map to feed genCaptures at this point: restricted to the
+// lambda-capturable names when inside a lambda body, else the full map.
+function varsForCaps(scopeStack, lambdaStack, knownVars) {
+  const allowed = lambdaAllowedNames(scopeStack, lambdaStack);
+  if (!allowed) return knownVars;
+  const m = new Map();
+  for (let [n, info] of knownVars) if (allowed.has(n)) m.set(n, info);
+  return m;
+}
+
+// Detect a lambda definition whose body block opens on this line, e.g.
+//   `auto l = [](int v) {`        (no capture, params)
+//   `auto l = [x, &y](int v) {`   (explicit capture, params)
+//   `auto l = [&]() {`            (default capture, no params)
+// Returns { captures: <Set|null>, params: <array of names> } or null.
+// `captures === null` means a default capture ([&]/[=]) → everything accessible.
+function detectLambdaBody(stripped) {
+  if (!stripped || stripped.indexOf('[') === -1) return null;
+  // The capture list is a [ ... ] region. The last ']' in the line that is
+  // followed (ignoring whitespace) by '(' and is followed on this line by '{'
+  // is the lambda's capture list. (Lambdas have a parenthesized parameter
+  // list, which distinguishes them from array-init / control flow.)
+  let i = stripped.length - 1;
+  let captureStr = null, cpOpen = -1;
+  while (i >= 0) {
+    if (stripped[i] === ']') {
+      const rest = stripped.slice(i + 1);
+      if (/^\s*\(/.test(rest) && rest.indexOf('{') !== -1) {
+        // find matching '[' for this ']'
+        let d = 0, k = i;
+        for (; k >= 0; k--) {
+          if (stripped[k] === ']') d++;
+          else if (stripped[k] === '[') { d--; if (d === 0) break; }
+        }
+        if (k >= 0) { captureStr = stripped.slice(k + 1, i); cpOpen = k; break; }
+      }
+    }
+    i--;
+  }
+  if (captureStr === null) return null;
+  // Sanity: the capture list is either empty, a default ([&]/[=]...), or an
+  // identifier-ish list. Anything containing ';' / '=' (except init-capture) or
+  // control keywords is not a lambda capture.
+  const cap = captureStr.trim();
+  if (/;/.test(cap) || /\b(if|for|while|switch|return)\b/.test(cap)) return null;
+  const captures = lambdaCaptureSet(cap);
+  // Parameters: text between the first '(' after cpOpen and its matching ')'.
+  let paramNames = [];
+  const parenOpen = stripped.indexOf('(', cpOpen + 1);
+  if (parenOpen !== -1) {
+    let d = 0; let end = -1;
+    for (let p = parenOpen; p < stripped.length; p++) {
+      if (stripped[p] === '(') d++;
+      else if (stripped[p] === ')') { d--; if (d === 0) { end = p; break; } }
+    }
+    if (end !== -1) {
+      const paramsText = stripped.slice(parenOpen + 1, end);
+      let dd = 0; const parts = []; let cur = '';
+      for (const ch of paramsText) {
+        if (ch === '<' || ch === '(' || ch === '[') dd++;
+        else if (ch === '>' || ch === ')' || ch === ']') dd--;
+        if (ch === ',' && dd === 0) { parts.push(cur); cur = ''; }
+        else cur += ch;
+      }
+      if (cur.trim()) parts.push(cur);
+      for (let part of parts) {
+        let decls = parseDeclaration(part.trim());
+        for (let d of decls) paramNames.push(d.name);
+      }
+    }
+  }
+  return { captures, params: paramNames };
+}
+
 // Generate capture calls for all known variables
 function genCaptures(knownVars, heapPointers, deletedPointers, structDefs, excludeVars) {
   let captures = [];
@@ -497,6 +612,18 @@ function instrumentCode(sourceCode) {
   // Track multi-line statement continuation (expression spanning multiple lines
   // without a top-level semicolon, e.g. `std::cout << 1 \n << 2;`)
   let inMultiLineStmt = false;
+  // Defer block-opening declarations (e.g. `auto lambda = [...] { ... }`): a
+  // variable whose initializer opens a multi-line block must NOT be added to
+  // knownVars until that block closes. Adding it immediately would (a) make the
+  // next in-block trace emit `(void*)&name` INSIDE name's own `auto` initializer
+  // — illegal C++ ("use of 'x' before deduction of 'auto'") — and (b) scope it to
+  // the inner block so it vanishes from the outer scope after the `};`. A stack
+  // of {depth, decls} so nested lambdas each flush at their own closing brace.
+  let pendingBlocks = [];   // entries: { depth: scopeStack.length when opened, decls: [{name,...}] }
+  // Stack of lambda bodies currently open: { captures: Set|null, params: [names], scopeDepth }
+  // Used to restrict which variables a trace inside a lambda body may capture
+  // (only the lambda's captures + params + its own locals; null captures = [&]/[=] → all).
+  let lambdaStack = [];
   let currentStructName = '';
   let currentStructFields = [];
   let currentAccessLevel = 'public'; // default for struct
@@ -517,6 +644,27 @@ function instrumentCode(sourceCode) {
 
     // Strip comments for analysis but keep original for output
     let stripped = stripCommentsAndStrings(line).trim();
+
+    // Flush deferred block-opening declarations whose initializer block has now
+    // closed. After a `};` popped its block scope, the owning scope is the
+    // current top; any pending decl owned by that scope is now fully initialized
+    // (its `auto` type deduced), so register it in knownVars + the owner scope.
+    // This makes it visible in the next statement's trace — at a point where
+    // `(void*)&name` is legal (we're past the initializer, back in the owner scope).
+    if (pendingBlocks.length > 0) {
+      const top = scopeStack[scopeStack.length - 1];
+      pendingBlocks = pendingBlocks.filter((pb) => {
+        if (pb.ownerScope === top) {
+          for (let d of pb.decls) {
+            knownVars.set(d.name, d);
+            top.vars.add(d.name);
+            if (d.isStatic) staticVars.add(d.name);
+          }
+          return false; // consumed
+        }
+        return true;
+      });
+    }
 
     // Skip empty lines and preprocessor directives
     if (stripped === '' || stripped.startsWith('#')) {
@@ -919,6 +1067,23 @@ function instrumentCode(sourceCode) {
       // Push new scope (but not for struct/class bodies — they're handled separately)
       if (!stripped.match(/^(struct|class)\s+\w+\s*(?:final\s*)?(?::\s*[^{]*)?\{/)) {
         scopeStack.push({ depth: scopeStack[scopeStack.length-1].depth + 1, vars: new Set() });
+        // If this block is a LAMBDA body, remember its capture list + parameters
+        // so traces inside the body only capture variables the lambda can access.
+        // (A trace injected inside `l = [](int v) {` must NOT reference outer
+        //  vars that `l` doesn't capture — that is illegal C++.)
+        const lambdaInfo = inFunctionBody ? detectLambdaBody(stripped) : null;
+        if (lambdaInfo) {
+          lambdaStack.push({
+            captures: lambdaInfo.captures, // null = default capture ([&]/[=])
+            params: lambdaInfo.params,
+            scopeDepth: scopeStack.length - 1,
+          });
+          // Note: lambda parameters are NOT added to knownVars (matches baseline
+          // behavior and avoids shadowing bugs where a param shadows an outer var
+          // — deleting it on scope-pop would lose the outer variable). They are
+          // only kept in the `allowed` set below so they could be captured if
+          // present; outer locals the lambda does NOT capture are excluded.
+        }
       }
     }
 
@@ -957,6 +1122,11 @@ function instrumentCode(sourceCode) {
           knownVars.delete(v);
           heapPointers.delete(v);
           deletedPointers.delete(v);
+        }
+        // If the scope just popped was a lambda body, pop the matching lambda
+        // context so subsequent traces are no longer lambda-restricted.
+        if (lambdaStack.length > 0 && lambdaStack[lambdaStack.length-1].scopeDepth === scopeStack.length) {
+          lambdaStack.pop();
         }
       }
       // Check if we're leaving a member function — return to struct/local-class body mode
@@ -1079,7 +1249,7 @@ function instrumentCode(sourceCode) {
 
         // Pre-loop trace (exclude loop vars — not initialized yet)
         let fnArg = `"${currentFunc}", `;
-        let captures = genCaptures(knownVars, heapPointers, deletedPointers, structDefs, initVars);
+        let captures = genCaptures(varsForCaps(scopeStack, lambdaStack, knownVars), heapPointers, deletedPointers, structDefs, initVars);
         if (captures.length > 0) {
           output.push(`__opt_trace_fn__(${fnArg}${lineNum});`);
           if (captures.length > 0) { output.push(captures.join(' ')); }
@@ -1102,7 +1272,7 @@ function instrumentCode(sourceCode) {
         let forHeader = `for (${initPart}; ${condPart}; ${incrPart})`;
         output.push(`${forHeader} {`);
         // Per-iteration trace inside loop body
-        let captures2 = genCaptures(knownVars, heapPointers, deletedPointers, structDefs);
+        let captures2 = genCaptures(varsForCaps(scopeStack, lambdaStack, knownVars), heapPointers, deletedPointers, structDefs);
         if (captures2.length > 0) {
           output.push(`__opt_trace_fn__(${fnArg}${lineNum});`);
           if (captures2.length > 0) { output.push(captures2.join(' ')); }
@@ -1140,7 +1310,7 @@ function instrumentCode(sourceCode) {
       // Inject a trace call BEFORE the for header (captures pre-loop state)
       // Exclude loop variables (they're not initialized yet)
       let fnArg = `"${currentFunc}", `;
-      let captures = genCaptures(knownVars, heapPointers, deletedPointers, structDefs, initVars);
+      let captures = genCaptures(varsForCaps(scopeStack, lambdaStack, knownVars), heapPointers, deletedPointers, structDefs, initVars);
       if (captures.length > 0) {
         output.push(`__opt_trace_fn__(${fnArg}${lineNum});`);
           if (captures.length > 0) { output.push(captures.join(' ')); }
@@ -1164,7 +1334,7 @@ function instrumentCode(sourceCode) {
       // ONLY if the for-loop has an opening brace — otherwise the trace
       // would become the loop body, breaking single-statement for-loops.
       if (stripped.includes('{')) {
-        let captures2 = genCaptures(knownVars, heapPointers, deletedPointers, structDefs);
+        let captures2 = genCaptures(varsForCaps(scopeStack, lambdaStack, knownVars), heapPointers, deletedPointers, structDefs);
         if (captures2.length > 0) {
           output.push(`__opt_trace_fn__(${fnArg}${lineNum});`);
           if (captures2.length > 0) { output.push(captures2.join(' ')); }
@@ -1202,6 +1372,9 @@ function instrumentCode(sourceCode) {
         stmtComplete = true;
       }
     }
+    // Net opening braces left after this line. == 1 (with a pending decl) means
+    // the line opens a multi-line initializer block (lambda body / brace-init).
+    const netBraceOpen = braceDepth;
 
     // If the previous line started a multi-line statement (no top-level ';' was
     // found), this line is a continuation. We must NOT inject a trace call
@@ -1227,7 +1400,7 @@ function instrumentCode(sourceCode) {
         // (different from the normal pre-statement convention), but it's the
         // only way to avoid breaking the expression.
         let fnArg = `"${currentFunc}", `;
-        let captures = genCaptures(knownVars, heapPointers, deletedPointers, structDefs);
+        let captures = genCaptures(varsForCaps(scopeStack, lambdaStack, knownVars), heapPointers, deletedPointers, structDefs);
         output.push(`__opt_trace_fn__(${fnArg}${lineNum});`);
         if (captures.length > 0) { output.push(captures.join(' ')); }
         output.push(`__opt_trace_end__();`);
@@ -1275,7 +1448,7 @@ function instrumentCode(sourceCode) {
         // Non-static member function: capture 'this' explicitly, plus all
         // known variables via lambda. The lambda captures 'this' so we can
         // access member variables through the this pointer.
-        let captures = genCaptures(knownVars, heapPointers, deletedPointers, structDefs);
+        let captures = genCaptures(varsForCaps(scopeStack, lambdaStack, knownVars), heapPointers, deletedPointers, structDefs);
         if (captures.length > 0) {
           output.push(`__opt_trace_fn__(${fnArg}${lineNum});`);
           if (captures.length > 0) { output.push(captures.join(' ')); }
@@ -1285,7 +1458,7 @@ function instrumentCode(sourceCode) {
           output.push(`__opt_trace_end__();`);
         }
       } else {
-        let captures = genCaptures(knownVars, heapPointers, deletedPointers, structDefs);
+        let captures = genCaptures(varsForCaps(scopeStack, lambdaStack, knownVars), heapPointers, deletedPointers, structDefs);
         if (captures.length > 0) {
           output.push(`__opt_trace_fn__(${fnArg}${lineNum});`);
           if (captures.length > 0) { output.push(captures.join(' ')); }
@@ -1297,8 +1470,27 @@ function instrumentCode(sourceCode) {
       }
     }
 
-    // Now add declared variables to knownVars
+    // Now add declared variables to knownVars.
+    // EXCEPTION — block-opening initializers: a declaration whose initializer
+    // opens a multi-line block (e.g. a lambda `auto f = [...] { ... }` or a
+    // multi-line brace-init `auto x = { ... }`) must be DEFERRED until that
+    // block closes. While the initializer is still open the variable's `auto`
+    // type is not yet deduced, so capturing `(void*)&f` inside its own
+    // initializer is illegal C++ ("use of 'f' before deduction of 'auto'").
+    // We record the decl on pendingBlocks (keyed by the scope depth it opened)
+    // and add it to knownVars when the block's closing brace pops (see below).
     for (let d of declared) {
+      if (d.init && netBraceOpen === 1) {
+        // Initializer opens a multi-line block — defer until it closes.
+        // ownerScope is the scope that OWNS this variable (one up from the
+        // block the initializer just opened). We flush it there once that
+        // block's closing brace pops.
+        pendingBlocks.push({
+          ownerScope: scopeStack[scopeStack.length - 2],
+          decls: [d],
+        });
+        continue;
+      }
       knownVars.set(d.name, d);
       scopeStack[scopeStack.length-1].vars.add(d.name);
       // Static local variables: track for globals section, but don't add to
