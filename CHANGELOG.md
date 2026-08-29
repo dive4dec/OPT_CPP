@@ -37,12 +37,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   unrestricted). Parameters are matched by name, so a lambda parameter that shadows
   an outer local is not mistaken for the outer variable.
 
-- Both fixes add/remove no trace lines, so **visualization line numbers (arrows)
-  are unchanged** — the trace-line sequence for the previously-failing example is
-  byte-identical before and after. Verified on both the v2 (tree-sitter) and legacy
-  instrumenter paths: the previously-failing example now compiles clean under
-  g++ 13.3 / C++23 (the deployed baseline produced 2 self-deduction errors on the
-  legacy path and 6 errors on the v2 path), and a 26-case battery (13 cases × both
+- Both fixes change **only which variables a trace captures, never the trace
+  calls themselves** — the emitted `__opt_trace_fn__(fn, N)` line numbers for the
+  previously-failing example are byte-identical before and after, so
+  **visualization arrows are unchanged**. (The instrument.js source grew ~200
+  lines of implementation, but the per-program emitted output structure is
+  unchanged.) Verified on both the v2 (tree-sitter) and legacy instrumenter
+  paths using the exact reported program (comments included): it now compiles
+  clean under g++ 13.3 / C++23 (the deployed baseline produced 3 errors on the
+  legacy path and 7 on the v2 path), it executes correctly (prints
+  `Offset after lambda call: 11`), and its step arrows land on lines
+  4/5/6/12/13/17/20/23/25 as expected. A 26-case battery (13 cases × both
   paths: nested lambdas, no/ref/value/mixed-capture lambdas, `std::function`,
   multi-line brace-init, lambdas in loops, `for`/`if`/`else`, arrays, `auto`)
   compiles clean.
