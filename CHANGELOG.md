@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.30] - 2026-08-29
+
+### Added
+- **Site favicon** — `optlite.ico` is now bundled and served; `index.html`,
+  `live.html` and `visualize.html` emit `<link rel="shortcut icon">` pointing at
+  it (absolute `/OPT_CPP/optlite.ico` under socratic, relative `optlite.ico`
+  under GitHub Pages). Previously all three pages fell back to `<link
+  rel="icon" href="data:,">` (no favicon).
+
 ## [0.3.29] - 2026-08-29
 
 ### Added — serverless (GitHub Pages) kernel compression via the service worker
