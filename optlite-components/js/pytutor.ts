@@ -2805,8 +2805,20 @@ class DataVisualizer {
         if (myViz.domRoot.find('#' + valueID).length) {
           myViz.jsPlumbInstance.connect({source: varID, target: valueID, scope: 'varValuePointer'});
         } else {
-          // pointer isn't pointing to anything valid; put a poo emoji here
-          myViz.domRoot.find('#' + varID).html('\uD83D\uDCA9' /* pile of poo emoji */);
+          // pointer isn't pointing to anything renderable (no heap/stack
+          // box at that address). Instead of the old "poo emoji" placeholder,
+          // show the ACTUAL address the pointer holds — the information is
+          // still there, just no box to draw an arrow to. NULL (0x0) is
+          // labeled explicitly.
+          var srcEl = myViz.domRoot.find('#' + varID);
+          var target = srcEl.attr('data-ptr-target');
+          if (target === '0x0') {
+            srcEl.html('<span class="cdataUninit" title="NULL pointer">NULL (0x0)</span>');
+          } else if (target && target !== '<UNINITIALIZED>' && target !== '<UNALLOCATED>') {
+            srcEl.html('<span class="cdataElt" style="width:auto;padding-left:4px" title="points to a non-rendered address">' + target + '</span>');
+          } else {
+            srcEl.html('\\uD83D\\uDCA9' /* pile of poo emoji — unresolvable pointer */);
+          }
         }
       } else {
         myViz.jsPlumbInstance.connect({source: varID, target: valueID, scope: 'varValuePointer'});
@@ -3106,7 +3118,7 @@ class DataVisualizer {
           var debugInfo = '';
 
           // make it really narrow so that the div doesn't STRETCH too wide
-          d3DomElement.append('<div style="width: 10px;" id="' + ptrSrcId + '" class="cdataElt">&nbsp;' + debugInfo + '</div>');
+          d3DomElement.append('<div style="width: 10px;" id="' + ptrSrcId + '" class="cdataElt" data-ptr-target="' + ptrVal + '">&nbsp;' + debugInfo + '</div>');
 
           // special case: display 0x0 address as a NULL pointer value,
           // to distinguish it from all other pointers, since sometimes

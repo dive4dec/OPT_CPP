@@ -7,6 +7,50 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.34] - 2026-08-30
+
+### Fixed
+- **Pointer arrows from base-class pointers to stack-allocated objects now draw
+  (e.g. `Shape* shape2 = &rect;` now visibly points at the `rect` box).**
+  The root cause was a **duplicate DOM-id / arrow-source-id collision**, not a
+  missing heap target. The header's generic pointer capture
+  (`__opt_cap__(const char* n, const void* v)`, added in 0.3.33) was **by value**,
+  so a pointer's stored self-address (`obj[1]` = `__opt_addr__(&v)`) was the
+  address of the *function's parameter* — a single shared stack slot. Every class
+  pointer routed through it therefore got the **same** `obj[1]` (in the reported
+  program, both `shape1` and `shape2` reported `obj[1]=0x…768`). The frontend keys
+  each pointer's arrow-source element on that address
+  (`cdata_<obj[1]>` / `ptrSrc_<obj[1]>`), so `shape1` and `shape2` rendered with
+  **identical element ids** and `shape2`'s `connectionEndpointIDs.set(...)`
+  **overwrote** `shape1`'s — the result was **zero** connectors drawn (verified in
+  the live DOM: both rows carried `id="…ptrSrc_0x…768"`, `jsPlumb_connector`
+  count = 0). Fix: added a **by-reference** template overload
+  `template<typename T> __opt_cap__(const char* n, T*& v)` that records
+  `obj[1] = &v` = the **caller's real (unique)** variable address. An lvalue
+  pointer binds to `T*&` by exact match (outranking the pointer→`const void*`
+  conversion), so each pointer now gets a distinct self-address and a distinct
+  arrow-source id; the non-template `int*`/`char*`/`const char*` overloads still
+  win on their exact types (non-template preferred over template on a tie), and
+  `const void*` remains as the rvalue/expression fallback. Verified against the
+  real header: `shape1.obj[1]=0x…530`, `shape2.obj[1]=0x…538` (now distinct),
+  with arrow-source ids `ptrSrc_0x…530`/`ptrSrc_0x…538` and targets
+  `cdata_0x…540` (= the `circle` box) / `cdata_0x…560` (= the `rect` box), i.e. the
+  arrow endpoints now match the struct boxes exactly.
+
+- **A pointer whose target box is not rendered now shows its actual address
+  instead of a placeholder.** Previously a C/C++ pointer with no renderable
+  target (freed/dangling pointer, a `int*` to a stack `int`, an address with no
+  heap/stack box) was replaced by a "pile of poo" emoji. `renderPrimitiveObject`
+  now tags each pointer stub with `data-ptr-target="<address>"`, and
+  `renderVarValueConnector` falls back to displaying that address
+  (`NULL (0x0)` for null) rather than the emoji, so the value is always visible
+  even when there is no box to point at.
+
+  The reported `Shape*`/`Circle`/`Rectangle` program compiles clean on both the
+  v2 (tree-sitter) and legacy instrumenter paths, and the 36-case regression
+  battery produces a byte-identical pass/fail set before vs after the change
+  (no regressions).
+
 ## [0.3.33] - 2026-08-29
 
 ### Fixed
