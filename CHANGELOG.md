@@ -7,6 +7,46 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.32] - 2026-08-29
+
+### Fixed
+- **Lambdas (and other multi-line initializer blocks) no longer crash compilation
+  with `use of 'X' before deduction of 'auto'`.**
+  A declaration whose initializer opens a multi-line block — most commonly a
+  lambda, e.g. `auto f = [x, &y](int v) -> int { ... };` — was being added to the
+  instrumenter's "known variables" the instant its opening line was seen. That made
+  the next trace call, injected *inside the lambda body*, emit a self-reference
+  `(void*)&f` **within `f`'s own `auto` initializer**. That is illegal C++, so the
+  kernel aborted with a bare "Compilation error (WASM aborted)" even though the
+  student's code was valid. The instrumenter now defers registering such a variable
+  until the initializer block closes (the `};` that completes the `auto`
+  deduction); the variable is then captured on the next statement's trace, where the
+  reference is legal. Nested lambdas each flush at their own closing brace.
+
+- **Trace calls inside a lambda body no longer reference variables the lambda does
+  not capture.**
+  When the tree-sitter formatter reflowed a one-line lambda
+  (`auto f = [](int a, int b) { return a + b; };`) into a multi-line body, the
+  instrumenter injected a trace call *inside the body* that captured every known
+  variable in scope — including outer-scope locals the lambda's capture list does
+  not contain. For a `[]` / `[a]` lambda that is illegal C++
+  (`error: 'b' is not captured`), so the same valid program still failed to build.
+  The instrumenter now tracks each lambda's capture list and parameters, and
+  restricts the variables a trace inside that body may capture to the lambda's
+  captures + parameters + its own locals (a default-capture `[&]`/`[=]` lambda is
+  unrestricted). Parameters are matched by name, so a lambda parameter that shadows
+  an outer local is not mistaken for the outer variable.
+
+- Both fixes add/remove no trace lines, so **visualization line numbers (arrows)
+  are unchanged** — the trace-line sequence for the previously-failing example is
+  byte-identical before and after. Verified on both the v2 (tree-sitter) and legacy
+  instrumenter paths: the previously-failing example now compiles clean under
+  g++ 13.3 / C++23 (the deployed baseline produced 2 self-deduction errors on the
+  legacy path and 6 errors on the v2 path), and a 26-case battery (13 cases × both
+  paths: nested lambdas, no/ref/value/mixed-capture lambdas, `std::function`,
+  multi-line brace-init, lambdas in loops, `for`/`if`/`else`, arrays, `auto`)
+  compiles clean.
+
 ## [0.3.31] - 2026-08-29
 
 ### Fixed
