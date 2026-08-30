@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.39] - 2026-08-30
+
+### Fixed
+- **Ask AI button never appears when execution fails in non-live (visualize) mode** — when code has a compile/runtime error, the page stayed in edit mode (the error text was rendered into the editor's `#frontendErrorOutput`), but the Ask AI button is gated on `appMode === 'ai_display'`. The error is now rendered into the output pane (`#errorOutput` in `#pyOutputPane`) and the page enters `ai_display` mode, so the error message stays visible AND the "Ask AI" button appears. An "Edit code" button lets the user return to the editor. Scoped to the visualize page (`OptFrontend.handleUncaughtException`); live mode is unaffected.
+
 ## [0.3.38] - 2026-08-30
 
 ### Fixed
