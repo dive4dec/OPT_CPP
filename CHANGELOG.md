@@ -15,45 +15,57 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   misleading "Compilation error (WASM aborted). Check your code for syntax
   errors."** This was the most-reported failure mode: a program that compiles
   fine but faults on a bad pointer (e.g. `int *p = new int(10); delete p; *p = 4;`)
-  produced a WASM trap that emscripten routed to the worker's `onAbort`, and the
-  runner's `handleWorkerError` blanket-reported it as a *compile* error —
-  pointing students at "syntax errors" when their code was valid.
+  produced a WASM trap during execution, and the runner — which had no way to
+  tell a runtime fault from a compile failure — blanket-reported it as a
+  *compile* error, pointing students at "syntax errors" when their code was
+  valid.
 
-  Root cause: the only crash signal reaching the main thread before the worker
-  died was the `onAbort` reason (a bare emscripten string with no line number),
-  and the trace file (the authoritative line source) is written only by
-  `__opt_finalize__()` at the very end of a run — which never happens on a hard
-  fault.
+  Root cause (confirmed live): the program **compiles and starts executing**,
+  then faults on a bad pointer — a WASM trap. xeus-cpp's own abort handler
+  catches the trap and reports it back to the worker, which surfaces it as a
+  generic kernel error with no line number. The only crash-line source, the
+  trace file, is written by `__opt_finalize__()` at the very end of a run —
+  which never happens on a fault. So the runner fell through to its generic
+  "Compilation error (WASM aborted)" text.
+  A second, subtler root cause was found while verifying live: in xeus-cpp,
+  user `std::cout` is captured by the **iopub `stream:stdout` channel, which
+  bypasses emscripten's `Module.print`** — so any hook placed on `Module.print`
+  (in the worker) never sees the output at all. The per-step stdout (and thus
+  any crash-line markers emitted to stdout) reaches the **main thread** only.
 
-  Fix (three coordinated pieces):
+  Fix (two pieces, where the data actually flows):
   1. **`opt_trace.h`** — the instrumenter's per-line trace hook now calls
-     `__opt_step_mark__(line)` *before* each user statement runs, which writes a
-     plain-text `__OPT_STEP_LINE__:N` token to `std::cout` (and flushes). Plain
-     text to stdout is chosen deliberately: it is delivered to the main thread
-     as stdout streams in — *before* the statement that follows it can fault —
-     and it can never leak into clang compiler diagnostics (the marker only runs
-     at execution time, never during compilation).
-  2. **`cppworker.js`** — the `print()` stdout hook parses + strips those markers
-     (a global regex, taking the HIGHEST line in a batched chunk, so none leak
-     into the output pane) and posts `{crash_line: N}` to the main thread the
-     moment line N starts. On abort (`execAborted`) and in `onAbort`, the
-     recovered line is used: if there is a real clang `error:` diagnostic it's a
-     compile error; else if a crash-line marker was seen it's a **runtime crash**
-     named on the exact line; else (aborted before any code ran) it's a
-     pre-execution abort.
-  3. **`runner.ts`** — `handleWorkerMessage` tracks the highest `crash_line`
-     seen (`lastCrashLine`, reset per run). `handleWorkerError` (the worker-death
-     path a hard fault takes) now reports the runtime crash + line first — a
-     non-zero `lastCrashLine` means execution began, which is a reliable
-     "not-a-syntax-error" signal that takes precedence over any stderr content.
+     `__opt_step_mark__(line)` *before* each user statement runs, writing a
+     plain-text `__OPT_STEP_LINE__:N` token to `std::cout` (flushed). This is
+     done at **all five** per-line trace entry points (the legacy 2-arg form,
+     the member-function form, and the v2/tree-sitter lambda + split forms),
+     so the marker is emitted regardless of which instrumenter runs. Plain
+     text to stdout is deliberate: it is delivered to the main thread *before*
+     the statement that follows it can fault, and it can never leak into clang
+     compiler diagnostics (the marker runs only at execution time).
+  2. **`runner.ts`** — where the iopub stdout actually arrives. The
+     `stream:stdout` handler parses + **strips** every `__OPT_STEP_LINE__:N`
+     token (so none leak into the output pane), keeping the highest line seen
+     as `lastCrashLine` (the line about to run when the fault fires). On a
+     kernel error, if `lastCrashLine > 0` the program demonstrably *started
+     executing* — a reliable "not a syntax error" signal — so it reports
+     "Runtime error: your program crashed at line N (memory/undefined
+     behaviour)…" and points at that pointer. With `lastCrashLine === 0`
+     (execution never began) it falls through to the existing compile-error
+     path, which still reports real syntax errors with their line.
 
-  Verified with the g++ A/B harness (C++23, same semantics as the kernel's
-  clang-repl): the instrumented UAF program emits `__OPT_STEP_LINE__:4` *before*
-  `*p = 4` executes, so the recovered line is exactly line 4 (the
-  dereference); the finalized trace JSON is **byte-identical** to the pre-change
-  header (the marker goes to stdout, never the trace file) → no arrow/step
-  regression; and the 13-case instrumenter battery compiles clean under the new
-  header.
+  Verified end-to-end on the live deployment:
+  - `int *p = new int(10); delete p; *p = 4;` → **"Runtime error: your program
+    crashed at line 5"** (the exact `*p = 4` line), not a compile error.
+  - A normal program still visualizes: correct step count, variable values, and
+    per-step stdout (`std::cout << "sum = " << sum` → `sum = 12`) with **no**
+    `__OPT_STEP_LINE__:` tokens leaking into the output pane.
+  - `int a = 5` (missing `;`) → still a **compile** error
+    (`error: expected ';' at end of declaration`), *not* mislabeled as a
+    runtime crash.
+  - The g++ A/B harness (C++23) confirmed the marker is emitted before the
+    faulting statement and that all five entry points emit it, with no trace
+    regression (the marker goes to stdout, never the trace file).
 
 ## [0.3.34] - 2026-08-30
 
