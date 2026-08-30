@@ -451,6 +451,11 @@ static const char* __OPT_SENTINEL__ = "\x01\x02__OPT_STEP__\x02\x01";
 // so the last marker seen == the line currently running when a fault occurs.
 static const char* __OPT_STEP_LINE_MARK__ = "__OPT_STEP_LINE__:";
 
+// Forward declaration: emitted by every per-line trace entry point (see
+// __opt_step_mark__ definition below) before the user statement runs, so a
+// runtime fault can be attributed to the exact source line.
+void __opt_step_mark__(int line);
+
 // ── Frame management ──
 // Push a new frame onto the call stack
 void __opt_push_frame__(const char* func_name, int line) {
@@ -527,6 +532,8 @@ void __opt_trace_impl__(int line, const std::function<void(__opt_tracer__&)>& la
   if(st.call_stack.empty()) {
     __opt_push_frame__("main", line);
   }
+  __opt_step_mark__(line);   // crash-line marker (see __opt_step_mark__)
+
 
   __opt_tracer__ __t__(line, st.call_stack.back().func_name.c_str(),
                         st.call_stack.back().frame_id.c_str());
@@ -551,6 +558,7 @@ void __opt_trace_impl__(int line, const std::function<void(__opt_tracer__&)>& la
 void __opt_trace_fn_impl__(const char* func_name, int line, const std::function<void(__opt_tracer__&)>& lambda) {
   __opt_ensure_frame__(func_name, line);
   auto& st = __opt_get_state__();
+  __opt_step_mark__(line);   // crash-line marker (see __opt_step_mark__)
 
   __opt_tracer__ __t__(line, st.call_stack.back().func_name.c_str(),
                         st.call_stack.back().frame_id.c_str());
@@ -573,6 +581,8 @@ void __opt_trace_impl__(int line) {
   if(st.call_stack.empty()) {
     __opt_push_frame__("main", line);
   }
+  __opt_step_mark__(line);   // crash-line marker (see __opt_step_mark__)
+
   // Create tracer on heap so it persists for cap() calls
   // (freed by __opt_trace_end__)
   if(__opt_current_tracer__) delete __opt_current_tracer__;
