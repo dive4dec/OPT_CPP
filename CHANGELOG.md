@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.40] - 2026-08-30
+
+### Fixed
+- **Ask AI still missing for runtime crashes** (e.g. use-after-free) in non-live mode — these failures take a different path than compile errors: the WASM worker aborts, `asyncRun` rejects, and the base-class `catch` only wrote the error into the editor's `#frontendErrorOutput`, leaving the page in edit mode. The `catch` now calls a new `executionFailed()` hook (no-op in the base class, overridden on the visualize page) which reuses the 0.3.39 `showErrorInDisplayMode()` to render the error in the output pane and enter `ai_display` mode. Live mode has its own separate asyncRun/catch and is unaffected.
+
 ## [0.3.39] - 2026-08-30
 
 ### Fixed
