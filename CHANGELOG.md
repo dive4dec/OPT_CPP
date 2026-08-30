@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.36] - 2026-08-30
+
+### Changed
+- **Ask AI now sends the code with line numbers** (1-based, matching the
+  editor gutter) inside a properly-formed markdown fence, with an explicit
+  instruction that the numbers match the editor. Previously the prompt sent
+  unnumbered code with a malformed inline fence, so the model had to count
+  lines itself and frequently cited the wrong line number.
+- **Phone-friendly layout**: emitted `<meta name="viewport">` in all three
+  HTML templates (the `mobile` build flag was never being passed, so phones
+  rendered at 980px desktop width with broken text selection). The code
+  editor is now `width:100%; max-width:700px` instead of a hardcoded 700px
+  (visualize) / 550px (live), so it fits phone screens.
+
+### Added
+- **"Copy code" button** (visualize + live pages): one-tap copy of the whole
+  editor via the async Clipboard API with an `execCommand('copy')` fallback —
+  previously the only way to copy multi-line code on a phone was manual
+  touch-selection inside the ACE editor, which is very hard to do.
+
 ## [0.3.35] - 2026-08-30
 
 ### Fixed

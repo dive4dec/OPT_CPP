@@ -127,6 +127,43 @@ export class OptFrontend extends AbstractBaseFrontend {
       $('#urlOutput').val(urlStr);
     });
 
+    // "Copy code" — one-tap copy of the whole editor, essential on phones
+    // where multi-line touch-selection in ACE is painful. Async Clipboard API
+    // first (works on https + user gesture); falls back to execCommand for
+    // older/quirky browsers.
+    $('#copyCodeBtn').bind('click', async () => {
+      var code = '';
+      try {
+        code = (this.pyInputAceEditor && this.pyInputAceEditor.getValue()) || '';
+      } catch (e) {
+        code = '';
+      }
+      var btn = $('#copyCodeBtn');
+      var done = (ok: boolean) => {
+        btn.text(ok ? 'Copied!' : 'Copy failed');
+        setTimeout(() => btn.text('Copy code'), 1500);
+      };
+      try {
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+          await navigator.clipboard.writeText(code);
+          done(true);
+          return;
+        }
+      } catch (e) {
+        // fall through to execCommand fallback
+      }
+      try {
+        // Select-all + copy inside the editor (works even when clipboard
+        // API is unavailable, e.g. non-secure contexts).
+        this.pyInputAceEditor.selectAll();
+        var ok = (document as any).execCommand ? (document as any).execCommand('copy') : false;
+        this.pyInputAceEditor.navigateLineStart(false);
+        done(!!ok);
+      } catch (e) {
+        done(false);
+      }
+    });
+
     /* 2019-04-09 took this down since google's URL shortener service shut down :/
     $('#genUrlShortenedBtn').bind('click', () => {
       var myArgs = this.getAppState();
@@ -276,7 +313,11 @@ export class OptFrontend extends AbstractBaseFrontend {
     // auto-grow height as fit
     this.pyInputAceEditor.setOptions({ minLines: 18, maxLines: 1000 });
 
-    $('#codeInputPane').css('width', '700px');
+    // Responsive width: fill the pane on small screens (phones), cap at 700px
+    // on desktop. Previously hardcoded to 700px, which overflowed phones and
+    // made touch selection/copy painful.
+    $('#codeInputPane').css({ 'width': '100%', 'max-width': '700px' });
+    $('#pyInputPane').css({ 'width': '100%', 'max-width': '700px' });
     $('#codeInputPane').css('height', height + 'px'); // VERY IMPORTANT so that it works on I.E., ugh!
 
     this.initDeltaObj();

@@ -497,10 +497,11 @@ export class OptLiveFrontend extends OptFrontend {
     this.pyInputAceEditor.$blockScrolling = Infinity; // kludgy to shut up weird warnings
     this.pyInputAceEditor.setOptions({minLines: 10, maxLines: 1000});
 
+    // Responsive width on phones (was fixed 550px, which overflowed small screens)
     $("#pyInputPane,#codeInputPane")
-      .css('width', '550px')
+      .css('width', '100%')
+      .css('max-width', '700px')
       .css('min-width', '250px');
-      // .css('max-width', '700px'); // don't let it get too ridiculously wide
     $('#codeInputPane').css('height', height + 'px'); // VERY IMPORTANT so that it works on I.E., ugh!
 
     // make it resizable!

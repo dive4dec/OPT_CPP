@@ -56,6 +56,7 @@ module.exports = {
         chunks: ['visualize'],
         template: './js/template/visualize.html',
         window: windowVars,
+        mobile: true, // emit <meta name="viewport"> so phones render at device width (not 980px desktop)
       }),
       // Same app as index.html; keeps permalinks and openLiveModeUrl() working as live.html#...
       new HtmlWebpackPlugin({
@@ -65,6 +66,7 @@ module.exports = {
         chunks: ['opt-live'],
         template: './js/template/live.html',
         window: windowVars,
+        mobile: true,
       }),
       new HtmlWebpackPlugin({
         filename: "visualize.html",
@@ -73,6 +75,7 @@ module.exports = {
         chunks: ['visualize'],
         template: './js/template/visualize.html',
         window: windowVars,
+        mobile: true,
       }),
       ...(injectTarget === 'define' ? [new webpack.DefinePlugin(defineReplacements)] : [])
     ],
