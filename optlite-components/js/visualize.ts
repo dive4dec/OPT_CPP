@@ -29,7 +29,6 @@ $(document).ready(function () {
         ? vizCode
         : optFrontend.pyInputGetValue();
     },
-    getMode: () => optFrontend.appMode,
   });
 
   (window as any).optFrontend = optFrontend; // purposely leak to globals to ease debugging!!!

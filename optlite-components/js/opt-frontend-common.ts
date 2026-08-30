@@ -278,13 +278,6 @@ export abstract class AbstractBaseFrontend {
     this.isExecutingCode = false;
   }
 
-  // Called on the non-live execution path when the WASM worker rejects
-  // (e.g. a runtime crash / use-after-free aborts the worker). Default is a
-  // no-op; OptFrontend (visualize page) overrides it to show the error in
-  // display mode so the "Ask AI" button appears. Live mode has its own
-  // separate asyncRun+catch and is unaffected.
-  executionFailed(_msg: string) { }
-
   // execute codeToExec and create a new ExecutionVisualizer
   // object with outputDiv as its DOM parent
   executeCodeAndCreateViz(codeToExec,
@@ -411,7 +404,6 @@ export abstract class AbstractBaseFrontend {
           callbackWrapper(JSON.parse(result.results));
         } catch (err) {
           this.setFronendError(["Error: " + (err as Error).message]);
-          this.executionFailed((err as Error).message);
           this.doneExecutingCode();
         }
       }

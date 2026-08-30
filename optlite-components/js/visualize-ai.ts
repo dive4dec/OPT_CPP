@@ -10,7 +10,6 @@ import { getAiSystemPrompt, buildAiQuestion } from './ai-prompt';
 
 type VisualizeAIInitParams = {
   getCode: () => string;
-  getMode: () => string;
 };
 
 /*************** Mode Lock Helper ***************/
@@ -99,33 +98,50 @@ function hasFrontendError(): boolean {
   return getCurrentErrorText() !== "";
 }
 
-function shouldShowAskButton(getMode: () => string): boolean {
+function shouldShowAskButton(): boolean {
+  // Show Ask AI whenever a frontend error is present and the engine is ready,
+  // regardless of mode. This covers both cases:
+  //   - a compile/runtime error shown in the editor (edit mode), where the
+  //     user keeps their code visible while getting help; and
+  //   - a visualizer runtime error shown in display mode (#errorOutput).
+  // (Previously required appMode==='ai_display', which forced the editor
+  // hidden and cleared the AI answer on every mode change.)
   const ready = API_CONFIG.enabled || isEngineReady;
-  return getMode() === "ai_display" && ready && hasFrontendError();
+  return ready && hasFrontendError();
 }
 
-function setPanelVisibility(getMode: () => string) {
+function setPanelVisibility() {
   const panel = getEl<HTMLElement>("visualize-ai-panel");
   const askButton = getEl<HTMLButtonElement>("viz-ask-ai");
   if (!panel || !askButton) {
     return;
   }
 
-  const inAiDisplay = getMode() === "ai_display";
-  panel.style.display = inAiDisplay && hasFrontendError() ? "block" : "none";
-  askButton.style.display = shouldShowAskButton(getMode) ? "inline-block" : "none";
+  // The panel is driven purely by whether a frontend error is currently
+  // shown, NOT by appMode — so the user can see their code AND the error AND
+  // the AI conversation at once (the error text lives in #frontendErrorOutput,
+  // inside the editor pane, visible in edit mode; the AI panel sits below).
+  // The AI response is preserved across edits; clearAiConversation() (fired
+  // on a fresh execution) is the only thing that resets it.
+  panel.style.display = hasFrontendError() ? "block" : "none";
+  askButton.style.display = shouldShowAskButton() ? "inline-block" : "none";
+}
 
-  if (!inAiDisplay) {
-    const msg = getEl<HTMLElement>("viz-message-out");
-    const stats = getEl<HTMLElement>("viz-chat-stats");
-    if (msg) {
-      msg.classList.add("hidden");
-      msg.textContent = "";
-    }
-    if (stats) {
-      stats.classList.add("hidden");
-      stats.textContent = "";
-    }
+// Reset the AI chat so a new execution starts clean. Invoked from the
+// "opt-cpp:new-execution" window event that OptFrontend.executeCode() fires
+// (see the listener in initVisualizeAI). Does NOT clear the error
+// (clearFrontendError() does that separately) — it only wipes the assistant's
+// reply + streaming stats. Exported so tests/other entry points can call it.
+export function clearAiConversation(): void {
+  const output = getEl<HTMLElement>("viz-message-out");
+  const stats = getEl<HTMLElement>("viz-chat-stats");
+  if (output) {
+    output.classList.add("hidden");
+    output.textContent = "";
+  }
+  if (stats) {
+    stats.classList.add("hidden");
+    stats.textContent = "";
   }
 }
 
@@ -361,20 +377,46 @@ export function initVisualizeAI(params: VisualizeAIInitParams) {
     sendAskAI(question);
   });
 
-  const observer = new MutationObserver(() => {
-    setPanelVisibility(params.getMode);
-  });
-  observer.observe(document.body, { childList: true, characterData: true, subtree: true });
+  // Re-evaluate panel visibility exactly when a frontend error appears or
+  // disappears. Watch two containers (both exist at init):
+  //   - #frontendErrorOutput (leaf, inside the editor pane) — set by
+  //     setFronendError() on compile/runtime errors. A leaf, so this does NOT
+  //     fire on editor keystrokes.
+  //   - #pyOutputPane — the visualizer's root. The visualizer creates a
+  //     #errorOutput element here (lazily, on a mid-execution exception), so
+  //     we watch the container rather than the leaf (which won't exist at
+  //     init). We deliberately do NOT watch the whole body (old behavior),
+  //     which misfired on every keystroke and every AI stream token now that
+  //     the editor stays visible.
+  const errorTargets: Element[] = [];
+  const fe = getEl<HTMLElement>("frontendErrorOutput");
+  const out = getEl<HTMLElement>("pyOutputPane");
+  if (fe) errorTargets.push(fe);
+  if (out) errorTargets.push(out);
+  if (errorTargets.length > 0) {
+    const observer = new MutationObserver(() => {
+      setPanelVisibility();
+    });
+    errorTargets.forEach((el) =>
+      observer.observe(el, { childList: true, characterData: true, subtree: true }));
+  }
 
   window.addEventListener("hashchange", () => {
-    setPanelVisibility(params.getMode);
+    setPanelVisibility();
+  });
+
+  // A new execution (fired from OptFrontend.executeCode) invalidates any prior
+  // AI answer, so clear the conversation. The answer is preserved across
+  // editing (setPanelVisibility no longer wipes it) but reset on a fresh run.
+  window.addEventListener("opt-cpp:new-execution", () => {
+    clearAiConversation();
   });
 
   // In API mode, no model download needed — enable Ask AI immediately
   if (API_CONFIG.enabled) {
     setStatusText("Using server AI (API mode).", false);
     askAIButton.disabled = false;
-    setPanelVisibility(params.getMode);
+    setPanelVisibility();
     return;
   }
 
@@ -383,14 +425,14 @@ export function initVisualizeAI(params: VisualizeAIInitParams) {
     setStatusText("Initializing local model ...");
     initializeWebLLMEngine().then(() => {
       askAIButton.disabled = false;
-      setPanelVisibility(params.getMode);
+      setPanelVisibility();
     }).catch(() => {
       askAIButton.disabled = true;
-      setPanelVisibility(params.getMode);
+      setPanelVisibility();
     });
   } else {
     setStatusText("WebGPU not available — local model disabled.");
   }
 
-  setPanelVisibility(params.getMode);
+  setPanelVisibility();
 }

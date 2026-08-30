@@ -441,6 +441,14 @@ export class OptFrontend extends AbstractBaseFrontend {
   }
 
   executeCode(forceStartingInstr = 0, forceRawInputLst = undefined) {
+    // A brand-new execution invalidates any prior AI answer (it was computed
+    // for the previous code/error). Fire a decoupled event so the visualize
+    // page's AI panel clears its conversation. Decoupled (not a direct
+    // import) because this file is shared with the live-page webpack chunk,
+    // and visualize-ai.ts pulls in the webllm engine — a direct import would
+    // bloat the live bundle. (The listener is registered in visualize-ai.ts.)
+    window.dispatchEvent(new CustomEvent("opt-cpp:new-execution"));
+
     // if you're in display mode, kick back into edit mode before executing
     // or else the display might not refresh properly ... ugh krufty
     if (this.appMode != 'edit') {
@@ -562,60 +570,14 @@ export class OptFrontend extends AbstractBaseFrontend {
       }
     }
 
-    // Show the execution error in display mode instead of leaving the
-    // user stranded in the editor. The "Ask AI" button (visualize-ai.ts)
-    // is gated on appMode === 'ai_display' AND a visible error message,
-    // so entering ai_display with the error rendered in #pyOutputPane
-    // (where getCurrentErrorText() looks first) makes it appear.
-    if (trace && trace.length > 0) {
-      var errMsg = '';
-      for (var i = trace.length - 1; i >= 0 && !errMsg; i--) {
-        if (trace[i].exception_msg) {
-          errMsg = trace[i].exception_msg;
-        }
-      }
-      if (!errMsg) {
-        errMsg = 'Compilation or runtime error';
-      }
-      this.showErrorInDisplayMode(errMsg);
-    }
-  }
-
-  // Runtime crash / WASM-worker-rejection path (e.g. use-after-free).
-  // Mirrors the compile-error handling above so Ask AI appears here too.
-  executionFailed(msg: string) {
-    this.showErrorInDisplayMode(msg || 'Runtime error');
-  }
-
-  // Render the error into the output pane and switch to ai_display mode.
-  // Shared by both failure paths (compile error + runtime crash).
-  //
-  // NOTE: we set appMode directly instead of using updateAppDisplay()
-  // because its !this.myVisualizer guard would canonicalize us back
-  // to 'edit' (no visualizer is created when execution fails). We
-  // also must NOT pushState here: the hashchange handler would call
-  // updateAppDisplay() and flip us back to edit mode as well.
-  showErrorInDisplayMode(errMsg: string) {
-    $('#pyOutputPane').html(
-      '<div id="errorOutput" style="color: #c0392b; font-family: monospace; ' +
-      'white-space: pre-wrap; padding: 12px; border: 1px solid #e74c3c; ' +
-      'border-radius: 4px; margin: 8px 0;">' + htmlspecialchars(errMsg) + '</div>' +
-      '<p><button id="vizErrorEditBtn" class="smallBtn" type="button">Edit code</button></p>'
-    );
-
-    // let the user return to the editor (updateAppDisplay('edit')
-    // destroys this pane contents, as it normally would)
-    $('#vizErrorEditBtn').off().click(() => {
-      this.enterEditMode();
-    });
-
-    this.appMode = 'ai_display';
-    this.preferredDisplayMode = 'ai_display';
-
-    $('#pyInputPane').hide();
-    $('#pyOutputPane,#embedLinkDiv').show();
-
-    $(document).scrollTop(0);
+    // NOTE: we intentionally do NOT switch to a display mode here. The error
+    // text is shown by setFronendError() in #frontendErrorOutput, which lives
+    // inside the editor pane and is visible in edit mode — so the user keeps
+    // their code on screen. The Ask AI button + panel (visualize-ai.ts) are
+    // driven by hasFrontendError(), not by appMode, so they appear right below
+    // the error while the code stays visible, and the AI answer survives
+    // editing. (0.3.39/0.3.40 briefly forced a display mode which hid the
+    // editor and cleared the answer on edit — reverted.)
   }
 
   ignoreAjaxError(settings) {

@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.41] - 2026-08-31
+
+### Changed
+- **Ask AI UX rework (fixes 0.3.39/0.3.40 regression)** — the AI panel and "Ask AI" button are now driven by *whether a frontend error is shown*, not by `appMode`. On a compile/runtime error the user stays in the editor with their code fully visible (the error text already renders in `#frontendErrorOutput` inside the editor pane, with the faulting line highlighted), and the AI panel appears right below it.
+- **AI answer now persists while editing** — `setPanelVisibility` no longer wipes `viz-message-out`/`viz-chat-stats` on mode changes, so the user can follow the AI's suggestions while fixing their code. The conversation is reset only on a fresh "Visualize Execution" run (via a decoupled `opt-cpp:new-execution` window event, avoiding a webllm import into the shared frontend file).
+- **Removed dead code** — dropped the `executionFailed` hook and `showErrorInDisplayMode`/`getMode` plumbing added in 0.3.39/0.3.40 (the display-mode detour, the "Edit code" button, and the duplicate `#errorOutput` id are gone).
+- MutationObserver for panel visibility is scoped to `#frontendErrorOutput` + `#pyOutputPane` (was: all of `document.body`), so it no longer fires on every keystroke/stream token; it still catches the visualizer's lazily-created `#errorOutput` (mid-execution exceptions).
+
 ## [0.3.40] - 2026-08-30
 
 ### Fixed
