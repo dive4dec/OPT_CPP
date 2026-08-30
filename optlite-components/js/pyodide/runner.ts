@@ -143,7 +143,23 @@ async function handleWorkerMessage(event: MessageEvent) {
         }
         kernelErrorText += streamText;
       } else {
-        kernelOutput.push(streamText);
+        // Crash-line markers (__OPT_STEP_LINE__:N) arrive here: in xeus-cpp,
+        // std::cout is captured by the iopub stream channel, which BYPASSES
+        // Module.print — so the worker's print wrapper never sees them. Track
+        // the highest line seen (the one about to run / that crashed) and
+        // strip the markers so they don't leak into the output pane.
+        let text = streamText;
+        const marks = text.match(/__OPT_STEP_LINE__:\d+/g);
+        if (marks) {
+          let max = 0;
+          for (const mk of marks) {
+            const n = parseInt(mk.slice('__OPT_STEP_LINE__:'.length), 10);
+            if (n > max) max = n;
+          }
+          if (max > lastCrashLine) lastCrashLine = max;
+          text = text.replace(/__OPT_STEP_LINE__:\d+/g, '');
+        }
+        if (text.length > 0) kernelOutput.push(text);
       }
     } else if (msg.header.msg_type === 'error') {
       kernelHasError = true;
@@ -599,7 +615,16 @@ const asyncRun = (() => {
               // The WASM abort may have sent compiler errors via iopub stderr
               // messages that haven't been processed yet. Wait briefly for them.
               setTimeout(() => {
-                if (kernelHasError && kernelErrorText) {
+                if (lastCrashLine > 0) {
+                  // Execution STARTED (we saw crash-line markers in the
+                  // per-step stdout) — this is a RUNTIME crash (use-after-free,
+                  // NULL/invalid-pointer deref, out-of-bounds), NOT a syntax
+                  // error. A non-zero lastCrashLine is proof the program ran.
+                  reject(new Error('Runtime error: your program crashed at line ' +
+                    lastCrashLine + ' (memory/undefined behaviour). Check that ' +
+                    'pointer at that line is valid (not null, not deleted, and ' +
+                    'in range).'));
+                } else if (kernelHasError && kernelErrorText) {
                   let errorMsg = kernelErrorText.split('\n')
                     .find(l => l.includes('error:')) || 'Compilation error';
                   errorMsg = errorMsg.replace(/^input_line_\d+:\d+:\d+:\s*/, '').trim();
