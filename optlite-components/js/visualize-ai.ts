@@ -6,7 +6,7 @@ declare const __API_DEFAULT_MODE__: string | undefined;
 declare const __SINGLE_MODE__: string | undefined;
 
 import * as webllm from "../../webllm-components";
-import { getAiSystemPrompt, getAiCodeLang } from './ai-prompt';
+import { getAiSystemPrompt, buildAiQuestion } from './ai-prompt';
 
 type VisualizeAIInitParams = {
   getCode: () => string;
@@ -150,37 +150,10 @@ async function initializeWebLLMEngine() {
   }
 }
 
+// Delegates to the shared builder in ai-prompt.ts so the visualize page and
+// the live page (webllm.ts) always produce the same, line-numbered prompt.
 function buildQuestion(code: string, frontendError: string): string {
-  const cleanedError = (frontendError || "").replace("(UNSUPPORTED FEATURES)", "").trim();
-
-  // Number every line (1-based, matching the line numbers shown in the editor
-  // gutter) so the model never has to count lines itself — that counting is
-  // where "wrong line number" answers came from. Format: right-aligned width,
-  // ": " separator (e.g. " 12: int x = 3;").
-  const lines = code.split("\n");
-  const width = Math.min(Math.max(String(lines.length).length, 2), 4);
-  const numbered = lines
-    .map((l, i) => String(i + 1).padStart(width) + ": " + l)
-    .join("\n");
-
-  // Use a 4-backtick fence so a stray ``` in the code can't close it early.
-  const fence = "````";
-  const parts: string[] = [];
-  parts.push("The code below is shown with line numbers; the numbers are 1-based and EXACTLY match the line numbers in the user's editor.");
-  parts.push("## Code");
-  parts.push(fence + getAiCodeLang());
-  parts.push(numbered);
-  parts.push(fence);
-  if (cleanedError) {
-    parts.push("## Error");
-    parts.push(fence + "text");
-    parts.push(cleanedError);
-    parts.push(fence);
-    parts.push("If the error message references a line number, interpret it using the numbers above. Never re-derive line numbers by counting unnumbered source.");
-  }
-  parts.push("## Task");
-  parts.push("Ask guiding questions that help me discover the mistake myself. When you refer to a specific line, always cite its line number from the numbering above, and quote that line's code.");
-  return parts.join("\n");
+  return buildAiQuestion(code, frontendError);
 }
 
 /*************** API Calling Function ***************/

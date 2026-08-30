@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.37] - 2026-08-30
+
+### Fixed
+- **Live-page Ask AI now uses the line-numbered prompt too.** The 0.3.36 fix
+  only covered the visualize page (`visualize-ai.ts`). The Live page
+  (`webllm.ts`) — the primary student workflow, and the only mode where a
+  crashed program keeps a visualizer so the Ask AI button is reachable — was
+  still building its question inline with the old unnumbered, malformed-fence
+  format and reading the code via a fragile DOM scrape of ACE's rendered text
+  layer. The prompt builder is now centralized in `ai-prompt.ts`
+  (`buildAiQuestion`) and both pages delegate to it; the live page reads code
+  from the ACE editor (`getValue()`, line-accurate) with the DOM scrape as a
+  fallback. Both modes now send the same line-numbered, properly-fenced
+  prompt, so line-number citations are consistent and correct.
+
 ## [0.3.36] - 2026-08-30
 
 ### Changed

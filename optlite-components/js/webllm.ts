@@ -9,7 +9,7 @@ declare const __SINGLE_MODE__: string | undefined;
 
 import * as webllm from "../../webllm-components";
 import { OptFrontend } from './opt-frontend';
-import { getAiSystemPrompt, getAiCodeLang } from './ai-prompt';
+import { getAiSystemPrompt, buildAiQuestion } from './ai-prompt';
 
 /*************** Mode Lock Helper ***************/
 function getSingleModelSetting(): 'local' | 'api' | '' {
@@ -430,11 +430,26 @@ function onMessageSend(input) {
 
 
 
-document.getElementById("askAI").addEventListener("click", function () {
-    //const frontend = new OptFrontend();
+// Read the current code straight from the ACE editor (authoritative,
+// line-accurate). Falls back to the old DOM scrape of the text layer only if
+// the editor handle isn't available for some reason.
+function getEditorCode(): string {
+    try {
+        const pane = document.getElementById("codeInputPane");
+        if (pane && (pane as any).env && (pane as any).env.editor) {
+            const v = (pane as any).env.editor.getValue();
+            if (typeof v === "string") {
+                return v;
+            }
+        }
+    } catch (e) { /* fall through to DOM scrape */ }
+    return extractText();
+}
 
-    var question = "## Code ```" + getAiCodeLang() + "  "+extractText()+"  ```  ## Error  ```text  " + document.getElementById("frontendErrorOutput").textContent?.replace("(UNSUPPORTED FEATURES)", "") +
-    "  ```  ## Task  Ask guiding questions that help me discover the mistake.";
+document.getElementById("askAI").addEventListener("click", function () {
+    const code = getEditorCode();
+    const errorText = document.getElementById("frontendErrorOutput").textContent || "";
+    var question = buildAiQuestion(code, errorText);
 
     document.getElementById("chat-stats").classList.add("hidden");
     onMessageSend(question);
