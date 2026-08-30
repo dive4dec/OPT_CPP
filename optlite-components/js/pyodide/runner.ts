@@ -82,29 +82,43 @@ cppWorker = createWorker();
 // ── Warm-up: preload the xeus-cpp kernel assets at page load ──
 // The first execution pays for the whole kernel download (xcpp.wasm,
 // xcpp.data, the .so side modules, xcpp.js). On a slow connection that
-// download is exactly what used to blow the init budget ("WASM
-// initialization timed out"). Fetching the two big non-JS assets here —
-// while the user is still reading / typing — warms the browser's HTTP
-// cache (same-origin, so the worker's later fetches hit the same cache).
-// Fire-and-forget: on any failure the normal worker path retries, and the
-// 30d immutable cache headers mean this is at most a one-time cost per
-// release.
+// download is exactly what blows the init budget ("WASM initialization
+// timed out"). Fetching the big assets here — while the user is still
+// reading / typing — warms the browser's HTTP cache (same-origin, so the
+// worker's later fetches hit the same cache). Fire-and-forget: on any
+// failure the normal worker path retries, and the 30d-immutable cache
+// headers mean this is at most a one-time cost per release.
+//
+// The two WASM side modules (.so) are the critical ones: libclangCppInterOp.so
+// is ~26.5 MB gzipped — the single largest asset and ~83% of the kernel
+// payload. Pre-v0.3.38 it was fetched COLD inside the 120 s init budget, which
+// is why first runs on slow student networks timed out. Its URLs MUST byte-match
+// what the worker's emscripten locateFile requests (base + file + '?v=' +
+// version), so the warm cache entry is the exact one the worker will reuse.
 const XEUS_CPP_WARMUP_VERSION = '0.10.0';
+// Binary assets the worker downloads during init (xcpp.js is imported via
+// importScripts and is only ~0.4 MB, so it is left to the on-demand path).
+const WARMUP_ASSETS = [
+  'libclangCppInterOp.so', // ~26.5 MB gz — the big one
+  'xcpp.data',             // ~4 MB gz
+  'xcpp.wasm',             // ~0.85 MB gz
+  'libxeus.so',            // ~0.1 MB gz
+];
 (async () => {
   try {
     const base = new URL('./xeus-cpp/', window.location.href).href;
     const abortController = new AbortController();
     const deadline = setTimeout(() => abortController.abort(), 300000);
     const t0 = performance.now();
-    await Promise.all([
-      fetch(base + 'xcpp.wasm?v=' + XEUS_CPP_WARMUP_VERSION,
-            { cache: 'force-cache', signal: abortController.signal }),
-      fetch(base + 'xcpp.data?v=' + XEUS_CPP_WARMUP_VERSION,
-            { cache: 'force-cache', signal: abortController.signal }),
-    ]);
+    await Promise.all(
+      WARMUP_ASSETS.map((f) =>
+        fetch(base + f + '?v=' + XEUS_CPP_WARMUP_VERSION,
+              { cache: 'force-cache', signal: abortController.signal })
+      )
+    );
     clearTimeout(deadline);
     console.log(
-      '[optcpp] warmup: xcpp.wasm + xcpp.data ' +
+      '[optcpp] warmup: ' + WARMUP_ASSETS.join(' + ') + ' ' +
       (performance.now() - t0).toFixed(0) + 'ms');
   } catch (e) {
     console.warn('[optcpp] warmup preload skipped (worker init will fetch on demand):', e);

@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.38] - 2026-08-30
+
+### Fixed
+- **First-run "Worker initialization timed out (WASM may have crashed)"** on
+  slow networks. The worker downloads the whole xeus-cpp kernel *inside* the
+  120 s init budget, and the largest asset — `libclangCppInterOp.so`
+  (~26.5 MB gzipped, ~83% of the kernel payload) — was the one the page-load
+  warm-up did **not** preload. On a slow student link that 26.5 MB download
+  alone (plus WASM compilation) could exceed the budget, so first runs
+  timed out. The warm-up now preloads **all** binary kernel assets
+  (`libclangCppInterOp.so`, `xcpp.data`, `xcpp.wasm`, `libxeus.so`) in the
+  background at page load, so the heavy download completes while the student
+  is reading/typing and the init-time fetch hits the warm HTTP cache. The
+  preload URLs byte-match the worker's emscripten `locateFile`
+  (`base + file + '?v=' + version`), so the same cache entry is reused.
+  `xcpp.js` (~0.4 MB, imported via `importScripts`) is left to the on-demand
+  path. Fire-and-forget: any failure falls back to the normal worker fetch.
+
 ## [0.3.37] - 2026-08-30
 
 ### Fixed
