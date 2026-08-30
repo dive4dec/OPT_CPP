@@ -443,6 +443,13 @@ struct __opt_tracer__ {
 
 // ── Sentinel for per-step stdout capture ──
 static const char* __OPT_SENTINEL__ = "\x01\x02__OPT_STEP__\x02\x01";
+// ── Crash-line marker ── Emitted to stdout (a plain text token, so it survives
+// worker death — unlike the trace file which is only written at the very end).
+// The runner counts these to recover the last line actually executed, and shows
+// a "program crashed at runtime on line N" error instead of a misleading
+// "compilation error". __opt_trace_impl__ runs right before a user statement,
+// so the last marker seen == the line currently running when a fault occurs.
+static const char* __OPT_STEP_LINE_MARK__ = "__OPT_STEP_LINE__:";
 
 // ── Frame management ──
 // Push a new frame onto the call stack
@@ -621,9 +628,23 @@ void __opt_cin_read_done_quiet__() {
   // separate symbol so the instrumenter's intent is explicit in the output.)
 }
 
+// Record the source line that is about to execute and emit a plain-text crash
+// marker to stdout. Called by the per-line trace functions the instrumenter
+// inserts, so it runs ONLY at execution time (never during clang compilation),
+// meaning it can never leak into compiler diagnostics. The worker's print()
+// parses + strips it (see cppworker.js) and posts the line number to the main
+// thread immediately — BEFORE that line can fault — so the last marker seen ==
+// the line that crashed, letting us report "crashed at runtime on line N"
+// instead of the misleading "compilation error (WASM aborted)".
+void __opt_step_mark__(int line) {
+  std::cout << __OPT_STEP_LINE_MARK__ << line;
+  std::cout.flush();
+}
+
 void __opt_trace_fn_impl__(const char* func_name, int line) {
   __opt_ensure_frame__(func_name, line);
   auto& st = __opt_get_state__();
+  __opt_step_mark__(line);
   if(__opt_current_tracer__) delete __opt_current_tracer__;
   __opt_current_tracer__ = new __opt_tracer__(line, st.call_stack.back().func_name.c_str(),
                         st.call_stack.back().frame_id.c_str());
@@ -633,6 +654,7 @@ void __opt_trace_fn_impl__(const char* func_name, int line) {
 void __opt_trace_fn_this__(const char* func_name, int line, const char* typeName, void* thisPtr) {
   __opt_ensure_frame__(func_name, line);
   auto& st = __opt_get_state__();
+  __opt_step_mark__(line);
   if(__opt_current_tracer__) delete __opt_current_tracer__;
   __opt_current_tracer__ = new __opt_tracer__(line, st.call_stack.back().func_name.c_str(),
                         st.call_stack.back().frame_id.c_str());

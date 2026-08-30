@@ -9,6 +9,13 @@ const callbacks: Record<number, (data: any) => void> = {};
 // Kernel output collector — iopub messages from the C++ runtime arrive here
 // via self.postMessage() inside the worker (which posts to the main thread)
 let kernelOutput: string[] = [];
+// The highest source line actually reached before a runtime crash, recovered
+// from the per-line stdout marker (__OPT_STEP_LINE_MARK__) emitted by opt_trace.h.
+// It survives worker death (the marker is postMessage'd to the main thread as
+// stdout streams in, before a hard fault kills the worker), so a use-after-free /
+// NULL-deref can be reported on the exact line instead of "compilation error".
+// 0 == execution never started (compile error or no code ran).
+let lastCrashLine = 0;
 
 // Track whether the kernel reported an error
 let kernelHasError = false;
@@ -110,6 +117,17 @@ let init = initWorker();
 async function handleWorkerMessage(event: MessageEvent) {
   const msg = event.data;
   const { id, ...data } = msg;
+
+  // ── Crash-line marker (from cppworker.js print()) ──
+  // The worker posts {crash_line: N} the moment source line N starts executing,
+  // BEFORE that line can crash. Message ordering guarantees these are delivered
+  // before the worker-death (onerror) event, so `lastCrashLine` always holds the
+  // highest line actually reached. A compile error never emits these, so a
+  // non-zero lastCrashLine is a reliable signal the failure is a runtime crash.
+  if (msg && typeof msg.crash_line === 'number') {
+    if (msg.crash_line > lastCrashLine) lastCrashLine = msg.crash_line;
+    return;
+  }
 
   // ── Kernel iopub messages (from xserver_emscripten's self.postMessage) ──
   // These have header.msg_type but no numeric id
@@ -351,18 +369,32 @@ async function handleWorkerMessage(event: MessageEvent) {
 
 // Handle worker errors (e.g., uncaught WASM abort that kills the worker)
 function handleWorkerError(event: ErrorEvent) {
-  // If we have pending callbacks, reject them with the kernel error if available
+  // If we have pending callbacks, reject them with the best error we can.
   for (const id of Object.keys(callbacks)) {
     const cb = callbacks[id];
     delete callbacks[id];
-    if (kernelHasError && kernelErrorText) {
+    if (lastCrashLine > 0) {
+      // We saw crash-line markers → execution STARTED. This is unambiguously a
+      // RUNTIME crash (use-after-free, NULL/invalid-pointer deref, out-of-bounds),
+      // not a syntax error — take precedence over any stderr content. Name the
+      // exact line so the user can act on it.
+      cb({
+        error: 'Runtime error: your program crashed at line ' + lastCrashLine +
+          ' (memory/undefined behaviour). Check that pointer at that line is ' +
+          'valid (not null, not deleted, and in range).',
+        crashed: true,
+        crash_line: lastCrashLine
+      });
+    } else if (kernelHasError && kernelErrorText) {
+      // A real compiler diagnostic is present → genuine compile-time error.
       let errorMsg = kernelErrorText.split('\n')
         .find(l => l.includes('error:')) || 'Compilation error';
       errorMsg = errorMsg.replace(/^input_line_\d+:\d+:\d+:\s*/, '').trim();
       errorMsg = errorMsg.replace(/^.*?error:\s*/, 'error: ');
       cb({ error: errorMsg });
     } else {
-      cb({ error: 'Compilation error (WASM aborted). Check your code for syntax errors.' });
+      // Aborted before any code executed → most likely a compile/link problem.
+      cb({ error: 'Compilation error (WASM aborted). Check your code.' });
     }
   }
 };
@@ -531,6 +563,8 @@ const asyncRun = (() => {
         kernelOutput = [];
         kernelHasError = false;
         kernelErrorText = '';
+        lastCrashLine = 0;   // reset per-run so a stale crash line can't leak
+                             // into this run's (possibly unrelated) error
 
         // ── Option 1: Fresh worker per execution ──
         // Terminate the current worker and create a fresh one to get a clean

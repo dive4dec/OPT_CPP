@@ -118,7 +118,17 @@ self.onmessage = async (event) => {
       // Before that, stdout is clang compiler diagnostics which we suppress.
       // Reset for each execution.
       self._userExecutionStarted = false;
+      self._lastCrashLine = 0;   // highest source line reached this run (0 = none yet)
       const SENTINEL = '\x01\x02__OPT_STEP__\x02\x01';
+      // Crash-line recovery token (emitted by __opt_step_mark__ in opt_trace.h):
+      // a plain "__OPT_STEP_LINE__:N" to stdout right before each source line
+      // executes. Parsed in print() below (before the stdout forwarding gate) so
+      // the crash line reaches the main thread before a hard fault kills the
+      // worker. A compiler error never emits these, so seeing one == execution
+      // began == the failure is a runtime crash, not a syntax error.
+      // `g` because a single stdout chunk can batch several markers + sentinels
+      // together (we must capture the HIGHEST line, not just the first).
+      const CRASH_MARK_RE = /__OPT_STEP_LINE__:(\d+)/g;
 
       const Module = {
         locateFile: (file) => XEUS_CPP_BASE + file + '?v=0.10.0',
@@ -127,13 +137,34 @@ self.onmessage = async (event) => {
 
         // Route stdout through iopub stream so runner.ts can capture it.
         // Suppress clang compiler diagnostics (emitted before user code runs)
-        // by only forwarding after the first sentinel marker is seen.
+        // by only forwarding after the first sentinel marker is seen. Also parse
+        // + strip the crash-line marker and report it to the main thread
+        // immediately (see CRASH_MARK_RE above).
         print: (text) => {
-          const str = text !== undefined ? String(text) : '';
+          let str = text !== undefined ? String(text) : '';
+          // A single chunk can batch several "__OPT_STEP_LINE__:N" markers.
+          // Collect ALL of them, report the highest, and strip them all so none
+          // leak into the user-facing output pane.
+          let chunkMax = 0;
+          for (const mm of str.matchAll(CRASH_MARK_RE)) {
+            const ln = parseInt(mm[1], 10);
+            if (ln > chunkMax) chunkMax = ln;
+          }
+          if (chunkMax > 0) {
+            // Only post when the line actually advances (lines mostly increase),
+            // to keep per-step message overhead minimal.
+            if (chunkMax > self._lastCrashLine) {
+              self._lastCrashLine = chunkMax;
+              // Report to main thread immediately (before any possible crash).
+              _origPostMessage({ crash_line: chunkMax });
+            }
+            // Strip every marker token from user-facing output.
+            str = str.replace(CRASH_MARK_RE, '');
+          }
           if (str.includes(SENTINEL)) {
             self._userExecutionStarted = true;
           }
-          if (self._userExecutionStarted) {
+          if (self._userExecutionStarted && str.length > 0) {
             _origPostMessage({
               header: { msg_type: 'stream' },
               content: { name: 'stdout', text: str + '\n' }
@@ -144,12 +175,19 @@ self.onmessage = async (event) => {
           workerStderr += (text !== undefined ? text : '') + '\n';
         },
         onAbort: (reason) => {
-          // Try to send the abort reason + any captured stderr back to main thread
-          // before the worker dies. Use _origPostMessage to bypass our interceptor.
+          // Fire synchronously during the WASM trap, before the worker dies.
+          // Report the crash line we recovered from stdout markers so the main
+          // thread can name the line even if the per-marker posts raced the
+          // death. Belt-and-suspenders on top of the per-marker crash_line posts.
+          if (self._lastCrashLine > 0) {
+            _origPostMessage({ crash_line: self._lastCrashLine });
+          }
+          // Send the abort reason + any captured stderr back to main thread.
+          // Use _origPostMessage to bypass our interceptor.
           const abortMsg = typeof reason === 'string' ? reason : 'WASM aborted';
           _origPostMessage({
             header: { msg_type: 'stream' },
-            content: { name: 'stderr', text: workerStderr + '\nerror: ' + abortMsg }
+            content: { name: 'stderr', text: workerStderr + '\n' + abortMsg }
           });
         },
       };
@@ -352,18 +390,28 @@ self.onmessage = async (event) => {
       // Wait for execution to complete
       await new Promise(r => setTimeout(r, execAborted ? 0 : 300));
 
-      // If the WASM aborted, extract the real compiler error from stderr
+      // If the WASM aborted, extract the real error from stderr.
       if (execAborted) {
         let errorMsg = '';
         const allStderr = workerStderr;
         if (allStderr && allStderr.includes('error:')) {
+          // A genuine compiler diagnostic → this is a compile-time error.
           const errorLine = allStderr.split('\n')
             .find(l => l.includes('error:')) || '';
           errorMsg = errorLine.replace(/^input_line_\d+:\d+:\d+:\s*/, '').trim()
             .replace(/^.*?error:\s*/, 'error: ');
-        }
-        if (!errorMsg) {
-          errorMsg = 'Compilation error (WASM aborted). Check your code for syntax errors.';
+        } else if (self._lastCrashLine) {
+          // No compiler diagnostic, but execution STARTED (we saw crash-line
+          // markers). This is a RUNTIME crash (e.g. use-after-free, NULL
+          // deref), not a syntax error. Name the line so the user can act.
+          errorMsg = 'Runtime error: your program crashed at line ' +
+            self._lastCrashLine + ' (memory/undefined behaviour). ' +
+            'Check that pointer at that line is valid (not null, not deleted, ' +
+            'and in range).';
+        } else {
+          // Aborted before any code executed (or before markers) — most likely
+          // a compile/link problem, but not one clang reported.
+          errorMsg = 'Compilation error (WASM aborted). Check your code.';
         }
         throw new Error(errorMsg);
       }

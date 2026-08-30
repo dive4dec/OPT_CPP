@@ -7,6 +7,54 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.35] - 2026-08-30
+
+### Fixed
+- **A program that crashes at runtime (e.g. use-after-free, NULL/invalid-pointer
+  deref, out-of-bounds access) now reports the exact source line instead of a
+  misleading "Compilation error (WASM aborted). Check your code for syntax
+  errors."** This was the most-reported failure mode: a program that compiles
+  fine but faults on a bad pointer (e.g. `int *p = new int(10); delete p; *p = 4;`)
+  produced a WASM trap that emscripten routed to the worker's `onAbort`, and the
+  runner's `handleWorkerError` blanket-reported it as a *compile* error —
+  pointing students at "syntax errors" when their code was valid.
+
+  Root cause: the only crash signal reaching the main thread before the worker
+  died was the `onAbort` reason (a bare emscripten string with no line number),
+  and the trace file (the authoritative line source) is written only by
+  `__opt_finalize__()` at the very end of a run — which never happens on a hard
+  fault.
+
+  Fix (three coordinated pieces):
+  1. **`opt_trace.h`** — the instrumenter's per-line trace hook now calls
+     `__opt_step_mark__(line)` *before* each user statement runs, which writes a
+     plain-text `__OPT_STEP_LINE__:N` token to `std::cout` (and flushes). Plain
+     text to stdout is chosen deliberately: it is delivered to the main thread
+     as stdout streams in — *before* the statement that follows it can fault —
+     and it can never leak into clang compiler diagnostics (the marker only runs
+     at execution time, never during compilation).
+  2. **`cppworker.js`** — the `print()` stdout hook parses + strips those markers
+     (a global regex, taking the HIGHEST line in a batched chunk, so none leak
+     into the output pane) and posts `{crash_line: N}` to the main thread the
+     moment line N starts. On abort (`execAborted`) and in `onAbort`, the
+     recovered line is used: if there is a real clang `error:` diagnostic it's a
+     compile error; else if a crash-line marker was seen it's a **runtime crash**
+     named on the exact line; else (aborted before any code ran) it's a
+     pre-execution abort.
+  3. **`runner.ts`** — `handleWorkerMessage` tracks the highest `crash_line`
+     seen (`lastCrashLine`, reset per run). `handleWorkerError` (the worker-death
+     path a hard fault takes) now reports the runtime crash + line first — a
+     non-zero `lastCrashLine` means execution began, which is a reliable
+     "not-a-syntax-error" signal that takes precedence over any stderr content.
+
+  Verified with the g++ A/B harness (C++23, same semantics as the kernel's
+  clang-repl): the instrumented UAF program emits `__OPT_STEP_LINE__:4` *before*
+  `*p = 4` executes, so the recovered line is exactly line 4 (the
+  dereference); the finalized trace JSON is **byte-identical** to the pre-change
+  header (the marker goes to stdout, never the trace file) → no arrow/step
+  regression; and the 13-case instrumenter battery compiles clean under the new
+  header.
+
 ## [0.3.34] - 2026-08-30
 
 ### Fixed
