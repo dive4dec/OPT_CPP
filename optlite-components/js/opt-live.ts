@@ -53,7 +53,7 @@ import { OptFrontend } from './opt-frontend';
 import { ExecutionVisualizer, assert, brightRed, darkArrowColor, lightArrowColor, SVG_ARROW_POLYGON, htmlspecialchars } from './pytutor';
 import { allTabsRE } from './opt-frontend';
 import { asyncRun } from './pyodide/runner';
-import { nullTraceErrorLst, unsupportedFeaturesStr } from './footer-html';
+import { nullTraceErrorLst } from './footer-html';
 import * as d3 from 'd3';
 // just punt and use global script dependencies
 require("script-loader!./lib/ace/src-min-noconflict/ace.js");
@@ -361,9 +361,9 @@ export class OptLiveFrontend extends OptFrontend {
         // not compiler/runtime failures: no UNSUPPORTED FEATURES tag, no link.
         errHtml = htmlspecialchars(curEntry.exception_msg);
       } else if (curEntry.exception_msg == "Unknown error") {
-        errHtml = 'Unknown error: ' + unsupportedFeaturesStr;
+        errHtml = 'Unknown error';
       } else {
-        errHtml = buildErrorHtml(curEntry.exception_msg, errLine, false) + '(' + unsupportedFeaturesStr + ')';
+        errHtml = buildErrorHtml(curEntry.exception_msg, errLine, false);
       }
       $("#frontendErrorOutput").html(errHtml);
       // Remember this run's error so that non-exception steps keep it anchored
@@ -379,7 +379,7 @@ export class OptLiveFrontend extends OptFrontend {
         this.allMarkerIds.push(markerId);
       }
     } else if (myVisualizer.instrLimitReached) {
-      $("#frontendErrorOutput").html(htmlspecialchars(myVisualizer.instrLimitReachedWarningMsg) + '(' + unsupportedFeaturesStr + ')');
+      $("#frontendErrorOutput").html(htmlspecialchars(myVisualizer.instrLimitReachedWarningMsg));
     } else if (this.persistErrorState) {
       // Non-exception step: keep the run's error anchored on screen (with its
       // clickable line link) so scrubbing through the execution doesn't make it

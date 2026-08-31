@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Removed
+- **The "(UNSUPPORTED FEATURES)" tag no longer appears after C++ error
+  messages.** It was a leftover from the original server-based
+  OnlinePythonTutor, whose remote C compiler had a documented
+  known-limitations list. This build runs in-browser WASM (xeus-cpp) —
+  there is no server and no such list — so the tag was pure noise. Removed
+  from the live and display/visualize error paths.
+
 ## [0.3.44] - 2026-08-31
 
 ### Added
