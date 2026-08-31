@@ -73,19 +73,6 @@ button.surveyBtnBig {
   overflow-wrap: break-word;
 }
 
-/* the clickable "line N" link inside the error message (jumps to that step /
-   highlights the line in the editor) */
-#frontendErrorOutput a.err-line-link {
-  color: #1a5fb4; /* matches the AI-prompt link blue */
-  font-weight: bold;
-  text-decoration: underline;
-  cursor: pointer;
-  margin: 0 1px;
-}
-#frontendErrorOutput a.err-line-link:hover {
-  color: #0d3c78;
-}
-
 #liveModeHeader {
   margin-left: 3px;
   margin-bottom: 12px;

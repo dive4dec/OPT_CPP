@@ -127,43 +127,6 @@ export class OptFrontend extends AbstractBaseFrontend {
       $('#urlOutput').val(urlStr);
     });
 
-    // "Copy code" — one-tap copy of the whole editor, essential on phones
-    // where multi-line touch-selection in ACE is painful. Async Clipboard API
-    // first (works on https + user gesture); falls back to execCommand for
-    // older/quirky browsers.
-    $('#copyCodeBtn').bind('click', async () => {
-      var code = '';
-      try {
-        code = (this.pyInputAceEditor && this.pyInputAceEditor.getValue()) || '';
-      } catch (e) {
-        code = '';
-      }
-      var btn = $('#copyCodeBtn');
-      var done = (ok: boolean) => {
-        btn.text(ok ? 'Copied!' : 'Copy failed');
-        setTimeout(() => btn.text('Copy code'), 1500);
-      };
-      try {
-        if (navigator.clipboard && navigator.clipboard.writeText) {
-          await navigator.clipboard.writeText(code);
-          done(true);
-          return;
-        }
-      } catch (e) {
-        // fall through to execCommand fallback
-      }
-      try {
-        // Select-all + copy inside the editor (works even when clipboard
-        // API is unavailable, e.g. non-secure contexts).
-        this.pyInputAceEditor.selectAll();
-        var ok = (document as any).execCommand ? (document as any).execCommand('copy') : false;
-        this.pyInputAceEditor.navigateLineStart(false);
-        done(!!ok);
-      } catch (e) {
-        done(false);
-      }
-    });
-
     /* 2019-04-09 took this down since google's URL shortener service shut down :/
     $('#genUrlShortenedBtn').bind('click', () => {
       var myArgs = this.getAppState();

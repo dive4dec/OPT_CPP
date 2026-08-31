@@ -5,24 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
-
-### Removed
-- **The "(UNSUPPORTED FEATURES)" tag no longer appears after C++ error
-  messages.** It was a leftover from the original server-based
-  OnlinePythonTutor, whose remote C compiler had a documented
-  known-limitations list. This build runs in-browser WASM (xeus-cpp) —
-  there is no server and no such list — so the tag was pure noise. Removed
-  from the live and display/visualize error paths.
-
 ## [0.3.44] - 2026-08-31
-
-### Added
-- **Live mode: the line number in a runtime/compile error is now clickable.**
-  Clicking "line N" in the error jumps the execution to the step that runs
-  that line (so you see the state right at the failing line), and highlights
-  it in the editor. For compile errors (nothing that ran to step through), it
-  scrolls to and highlights the offending line in the editor instead.
 
 ### Changed
 - **Live mode: the error stays on screen while scrubbing** through the
@@ -36,6 +19,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   below it — previously it was centered while the two were left-aligned. The
   override is scoped to the visualize template only, so the live page keeps
   its centered code pane.
+
+### Removed
+- **The "(UNSUPPORTED FEATURES)" tag no longer appears after C++ error
+  messages.** It was a leftover from the original server-based
+  OnlinePythonTutor, whose remote C compiler had a documented
+  known-limitations list. This build runs in-browser WASM (xeus-cpp) —
+  there is no server and no such list — so the tag was pure noise. Removed
+  from the live and display/visualize error paths.
+- **The "Copy code" button** was removed from both the live and visualize
+  pages (the editor supports copy directly).
 
 ## [0.3.43] - 2026-08-31
 
