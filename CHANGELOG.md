@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.44] - 2026-08-31
+
+### Added
+- **Live mode: the line number in a runtime/compile error is now clickable.**
+  Clicking "line N" in the error jumps the execution to the step that runs
+  that line (so you see the state right at the failing line), and highlights
+  it in the editor. For compile errors (nothing that ran to step through), it
+  scrolls to and highlights the offending line in the editor instead.
+
+### Changed
+- **Live mode: the error stays on screen while scrubbing** through the
+  execution steps (it no longer vanishes on a non-error step), matching the
+  display/visualize reference mode. It is cleared as soon as you edit the
+  code again (the instant the editor changes, not only when the debounced
+  re-run fires), so a scrub in the edit-debounce window can't flash a stale
+  error back on screen.
+- **Visualize mode: the code pane (`#pyInputPane`) is now left-aligned**, so
+  it lines up with the step/execution pane (`#pyOutputPane`) and the AI panel
+  below it — previously it was centered while the two were left-aligned. The
+  override is scoped to the visualize template only, so the live page keeps
+  its centered code pane.
+
 ## [0.3.43] - 2026-08-31
 
 ### Fixed

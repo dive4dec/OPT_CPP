@@ -71,6 +71,52 @@ require('script-loader!./lib/ace/src-min-noconflict/mode-c_cpp.js');
 
 var optLiveFrontend: OptLiveFrontend;
 
+// ── Clickable-error helpers ────────────────────────────────────────────────
+// Parse a source line number out of an error message. Catches the worker's
+// "crashed at line N", a compile diagnostic "...line N...", "line=N", and a
+// bare trailing "line N". Returns -1 when no line is detectable.
+function extractErrorLine(text: string): number {
+  if (!text) return -1;
+  var m;
+  // "Runtime error: your program crashed at line 4 ..."
+  m = text.match(/crashed at line\s+(\d+)/i);
+  if (m) return parseInt(m[1], 10);
+  // "line=35" / "line: 35" / "line 35"
+  m = text.match(/line\s*[=:]\s*(\d+)/i);
+  if (m) return parseInt(m[1], 10);
+  m = text.match(/line\s+(\d+)\b/i);
+  if (m) return parseInt(m[1], 10);
+  return -1;
+}
+
+// Build the HTML shown in #frontendErrorOutput. If `line` is known, the "line N"
+// (or a "line N" fragment appended to the message) becomes a clickable link
+// (class `err-line-link`, data-line=N) that the live page wires up to jump to
+// that step / highlight the line. `advisory` messages (guidance, e.g. "no
+// main()") are shown as-is, not styled as an error.
+function buildErrorHtml(msg: string, line: number, advisory: boolean): string {
+  var safe = htmlspecialchars(msg);
+  if (!advisory && line > 0) {
+    // Turn the "line N" occurrence (case-insensitive) into a link. If the
+    // message doesn't already name a line, append a " (line N)" link.
+    var linked = safe.replace(/line\s*[=:]\s*(\d+)\b/i, function (mm, digits) {
+      if (parseInt(digits, 10) === line) {
+        return 'line <a class="err-line-link" data-line="' + line + '" href="#">' +
+          digits + '</a>';
+      }
+      return mm;
+    });
+    if (linked === safe) {
+      // no "line N" token in the message itself → append one
+      linked = safe + ' <a class="err-line-link" data-line="' + line +
+        '" href="#">(line ' + line + ')</a>';
+    }
+    return linked;
+  }
+  return safe;
+}
+
+
 
 export class OptLiveFrontend extends OptFrontend {
   originFrontendJsFile: string = 'opt-live.js';
@@ -80,6 +126,17 @@ export class OptLiveFrontend extends OptFrontend {
   hasSyntaxError = false;
 
   allMarkerIds: number[] = [];
+
+  // The source line of the most recent exception shown (from the trace entry's
+  // `line`, or parsed from the error text, e.g. "crashed at line 4" / "line=35").
+  // -1 = none. Used to make that "line N" clickable.
+  lastErrorLine: number = -1;
+
+  // The rendered error HTML (with its clickable line link) from the most recent
+  // error in THIS run. While set, non-exception steps keep it on screen instead
+  // of clearing — so the error stays anchored while the student scrubs, matching
+  // the display/visualize reference mode. Cleared on a new run (clearFrontendError).
+  persistErrorState: { html: string, line: number } | null = null;
 
   // override
   // langSettingToBackendScript = {
@@ -142,6 +199,14 @@ export class OptLiveFrontend extends OptFrontend {
 
     // Bind reverse navigation to visualize (index) page with current state
     $("#visualizeBtn").click(this.openVisualizeUrl.bind(this));
+
+    // The line-number link inside #frontendErrorOutput is re-created on every
+    // step render, so bind once via delegation to the (static) container.
+    $("#frontendErrorOutput").on('click', 'a.err-line-link', (e) => {
+      e.preventDefault();
+      var line = parseInt($(e.target).closest('a.err-line-link').attr('data-line'), 10);
+      this.jumpToErrorLine(line);
+    });
   }
 
   demoModeChanged() {
@@ -182,6 +247,46 @@ export class OptLiveFrontend extends OptFrontend {
       s.removeGutterDecoration(i, 'curLineStepGutter');
       s.removeGutterDecoration(i, 'prevLineStepGutter');
       s.removeGutterDecoration(i, 'curPrevOverlapLineStepGutter');
+    }
+  }
+
+  // Clicking the "line N" link inside the error message: jump the execution to
+  // the step that runs that source line, so the student sees the state right at
+  // the failing line (mirrors the display/visualize reference mode). If there's
+  // no scrubbable execution for it — a compile error with nothing that ran —
+  // fall back to scrolling + highlighting the offending line in the editor so
+  // the click is still actionable.
+  jumpToErrorLine(line: number) {
+    if (!line || line < 1) { return; }
+
+    var viz = this.myVisualizer;
+    // A real, multi-step execution: jump to the step on that line. We require
+    // > 1 step because a single-entry trace is just the compile/exception
+    // placeholder (nothing to scrub through).
+    if (viz && viz.curTrace && viz.curTrace.length > 1) {
+      var target = -1;
+      for (var i = 0; i < viz.curTrace.length; i++) {
+        if (viz.curTrace[i].line === line) { target = i; } // last step on that line
+      }
+      if (target >= 0) {
+        viz.renderStep(target);
+        return;
+      }
+      // Trace exists but doesn't step on that exact line → still try to move the
+      // highlight by falling through to the editor below.
+    }
+
+    // No scrubbable step for that line (compile error, or line not in the trace):
+    // scroll to and highlight the line in the Ace editor.
+    var editor = this.pyInputAceEditor;
+    if (!editor) { return; }
+    var row = line - 1; // Ace rows are zero-indexed
+    var docLen = editor.getSession().getDocument().getLength();
+    if (row < docLen) {
+      editor.getSession().setSelectionAnchor(row, 0);
+      editor.getSession().setSelectionLead(row, 0);
+      editor.renderer.scrollToLine(row, true, false);
+      editor.focus();
     }
   }
 
@@ -247,17 +352,25 @@ export class OptLiveFrontend extends OptFrontend {
     if (curEntry.event === 'exception' ||
       curEntry.event === 'uncaught_exception') {
       assert(curEntry.exception_msg);
+      var errLine = (typeof curEntry.line === 'number' && curEntry.line > 0)
+        ? curEntry.line
+        : extractErrorLine(curEntry.exception_msg);
+      var errHtml;
       if (curEntry.advisory) {
         // Advisory (explanatory) messages — e.g. "no main()" — are guidance,
-        // not compiler/runtime failures: no UNSUPPORTED FEATURES tag.
-        $("#frontendErrorOutput").html(htmlspecialchars(curEntry.exception_msg));
+        // not compiler/runtime failures: no UNSUPPORTED FEATURES tag, no link.
+        errHtml = htmlspecialchars(curEntry.exception_msg);
       } else if (curEntry.exception_msg == "Unknown error") {
-        $("#frontendErrorOutput").html('Unknown error: ' + unsupportedFeaturesStr);
-
+        errHtml = 'Unknown error: ' + unsupportedFeaturesStr;
       } else {
-        $("#frontendErrorOutput").html(htmlspecialchars(curEntry.exception_msg) + '(' + unsupportedFeaturesStr + ')');
-        
+        errHtml = buildErrorHtml(curEntry.exception_msg, errLine, false) + '(' + unsupportedFeaturesStr + ')';
       }
+      $("#frontendErrorOutput").html(errHtml);
+      // Remember this run's error so that non-exception steps keep it anchored
+      // on screen while the student scrubs (matches display/visualize mode).
+      // Reset at the start of the next run (executeCodeAndCreateViz).
+      this.persistErrorState = { html: errHtml, line: errLine };
+      this.lastErrorLine = errLine;
 
       if (myVisualizer.curLineNumber && !curEntry.advisory) {
         var Range = ace.require('ace/range').Range;
@@ -267,6 +380,11 @@ export class OptLiveFrontend extends OptFrontend {
       }
     } else if (myVisualizer.instrLimitReached) {
       $("#frontendErrorOutput").html(htmlspecialchars(myVisualizer.instrLimitReachedWarningMsg) + '(' + unsupportedFeaturesStr + ')');
+    } else if (this.persistErrorState) {
+      // Non-exception step: keep the run's error anchored on screen (with its
+      // clickable line link) so scrubbing through the execution doesn't make it
+      // vanish — matching the display/visualize reference mode.
+      $("#frontendErrorOutput").html(this.persistErrorState.html);
     } else {
       $("#frontendErrorOutput").html(''); // clear it
     }
@@ -527,6 +645,13 @@ export class OptLiveFrontend extends OptFrontend {
         console.log("Converted all tabs to spaces");
       }
 
+      // Editing the code invalidates the previous run's error: drop the
+      // persisted error NOW (not just on the debounced re-run) so that a
+      // scrub during the 500ms debounce can't flash the stale error back
+      // on screen. #frontendErrorOutput itself is emptied below.
+      this.persistErrorState = null;
+      this.lastErrorLine = -1;
+
       $.doTimeout('pyInputAceEditorChange',
         500, /* go a bit faster than CODE_SNAPSHOT_DEBOUNCE_MS to feel more snappy */
         () => {
@@ -567,6 +692,10 @@ export class OptLiveFrontend extends OptFrontend {
   }
 
   executeCodeFromScratch() {
+    // New run: drop the previous run's error so it doesn't linger. The error
+    // re-appears (with a clickable line link) only if THIS run errors.
+    this.persistErrorState = null;
+    this.lastErrorLine = -1;
     this.disableRowScrolling = true;
     super.executeCodeFromScratch();
   }
