@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.43] - 2026-08-31
+
+### Fixed
+- **Live mode: AI answer no longer disappears when scrubbing the execution
+  slider** — `#frontendErrorOutput` is rewritten on every step (opt-live.ts
+  clears it on non-exception steps), and the AI-box observer used to treat
+  that momentary empty state as "clear the answer", wiping `#message-out` and
+  `#chat-stats` on every scrub. The answer now resets only on a genuine new
+  execution (the transient "Running your code ..." signal), so it survives
+  slider scrubbing and is still there when you step back — matching the
+  display/visualize page. The Ask AI button stays visible for the whole AI box
+  whenever an answer is on screen.
+
 ## [0.3.42] - 2026-08-31
 
 ### Changed
