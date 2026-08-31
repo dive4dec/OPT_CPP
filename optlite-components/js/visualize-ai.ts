@@ -45,7 +45,10 @@ const messages: any[] = [
 ];
 
 const availableModels = webllm.prebuiltAppConfig.model_list.map((m) => m.model_id);
-const CHAT_MAX_OUTPUT_TOKENS = 512;
+// Raised from 512: the ai-test backend is a reasoning model — it spends
+// output tokens thinking (reasoning_content) before emitting the final
+// content, so small caps starve the actual answer.
+const CHAT_MAX_OUTPUT_TOKENS = 2048;
 const CHAT_STOP_SEQUENCES = ["</s>", "<|im_end|>"];
 
 const engine = new webllm.MLCEngine();
@@ -412,9 +415,22 @@ export function initVisualizeAI(params: VisualizeAIInitParams) {
     clearAiConversation();
   });
 
+  // In API mode the model is fixed server-side (the server returns it in the
+  // response), so the client never picks one. Hide the model <select> + its
+  // "Confirm" button and the local-status line — the live page (webllm.ts)
+  // hides its local-mode controls the same way. (Previously the model list
+  // stayed visible, which implied the user was choosing a model they don't.)
+  const localModelRow = modelSelection.parentElement;
+  if (localModelRow) {
+    localModelRow.style.display = "none";
+  }
+  const localStatus = getEl<HTMLElement>("download-status");
+  if (localStatus) {
+    localStatus.classList.add("hidden");
+  }
+
   // In API mode, no model download needed — enable Ask AI immediately
   if (API_CONFIG.enabled) {
-    setStatusText("Using server AI (API mode).", false);
     askAIButton.disabled = false;
     setPanelVisibility();
     return;

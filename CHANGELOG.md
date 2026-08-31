@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.42] - 2026-08-31
+
+### Changed
+- **Ask AI no longer shows the model list in API mode** — with a fixed
+  server-side model there is nothing for the user to pick, so the model
+  `<select>` (and its Confirm button) and the local-status line are hidden
+  when the bundle is built in API mode (matches the live page, which hides
+  its local-only controls the same way).
+- `CHAT_MAX_OUTPUT_TOKENS` raised 512 → 2048 for the API path: the ai-test
+  backend is a reasoning model that spends output tokens on
+  `reasoning_content` before emitting the final answer, so the old cap
+  starved real answers.
+
 ## [0.3.41] - 2026-08-31
 
 ### Changed
