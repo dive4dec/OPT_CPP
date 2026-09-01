@@ -512,6 +512,13 @@ export class OptLiveFrontend extends OptFrontend {
       },
     });
 
+    // Expose the CM6 editor on the container's `env.editor` hook so the
+    // live-page Ask AI (webllm.ts getEditorCode()) can read code via
+    // `env.editor.getValue()` — authoritative, immune to CM6's virtualized
+    // DOM. Previously this pointed at the (now-removed) ACE editor; the ACE
+    // DOM-scrape fallback in webllm.ts is also CM6-aware + null-safe.
+    (containerEl as any).env = { editor: this.pyInputAceEditor };
+
     // make it resizable!
     $("#codeInputPane").resizable({
       resize: (evt, ui) => {

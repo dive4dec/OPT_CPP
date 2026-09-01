@@ -5,6 +5,28 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.46] - 2026-09-01
+
+### Fixed
+- **Live-mode Ask AI was silently broken** (regression from the 0.3.45 ACE →
+  CodeMirror 6 migration). The live page's Ask AI button (`#askAI`, wired in
+  `js/webllm.ts`) read the current code from the old ACE editor: the primary
+  path `#codeInputPane.env.editor.getValue()` pointed at the removed ACE
+  handle, and the fallback `extractText()` scraped ACE DOM
+  (`.ace_layer.ace_text-layer` / `.ace_line`) that no longer exists. With ACE
+  gone, the click threw `Cannot read properties of null (reading
+  'querySelectorAll')` **before the AI request could fire**, so clicking Ask
+  AI produced no response and no network call.
+  - `opt-live.ts` now exposes the CodeMirror 6 editor on the
+    `#codeInputPane.env.editor` hook (authoritative `getValue()`, immune to
+    CM6's virtualized DOM), which `webllm.ts getEditorCode()` already checks
+    first.
+  - `webllm.ts extractText()` is now CM6-aware (reads `.cm-content .cm-line`)
+    and null-safe, so the fallback can never throw again.
+  - Verified live on socratic: clicking Ask AI on a runtime-error program now
+    fires `POST /OPT_CPP/ai-proxy/chat/completions` (HTTP 200) and renders the
+    AI response; the null crash is gone.
+
 ## [0.3.45] - 2026-09-01
 
 ### Changed
