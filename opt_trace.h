@@ -845,6 +845,43 @@ void __opt_cap_heap_obj__(const char* n, const char* typeName, const void* ptr, 
     __opt_current_tracer__->addHeapEntry("\"" + p + "\":" + s);
   }
 }
+// ── std::vector<T> capture ──
+// Render a vector's elements inline as a C_ARRAY (the frontend draws it in the
+// stack frame; pointer elements draw arrows to their targets via the existing
+// C_DATA-pointer rendering — no frontend change needed).
+// We pass the RAW element pointer (v.data()) + size, NOT the vector by
+// reference: a std::vector<T> parameter would require template instantiation in
+// the tracer, which traps in the WASM clang-repl build (the same reason
+// __opt_cap__ avoids templates). v.data()/v.size() are called in USER code
+// (always safe) and arrive here as a plain pointer + int.
+//
+// vector of pointers (vector<int*>, vector<Person*>, ...): data is the array of
+// pointers; each element renders as a pointer C_DATA whose obj[3] is the
+// pointed-to address, so the frontend draws an arrow to cdata_<pointed addr>.
+void __opt_cap_vector_ptr__(const char* n, const void** data, int sz) {
+  if(!__opt_current_tracer__) return;
+  std::string base = data ? __opt_addr__(data) : "0x0";
+  std::string s = "[\"C_ARRAY\",\"" + base + "\"";
+  for(int i = 0; i < sz; i++) {
+    const void* elemAddr = (const void*)((const char*)data + (size_t)i * sizeof(void*));
+    const void* pointed  = data[i];
+    std::string pv = pointed ? __opt_addr__(pointed) : "0x0";
+    s += ",[\"C_DATA\",\"" + __opt_addr__(elemAddr) + "\",\"pointer\",\"" + pv + "\",{\"bytes\":8}]";
+  }
+  s += "]";
+  __opt_current_tracer__->add(n, s);
+}
+// vector of int: each element renders as an int C_DATA.
+void __opt_cap_vector_int__(const char* n, const int* data, int sz) {
+  if(!__opt_current_tracer__) return;
+  std::string base = data ? __opt_addr__(data) : "0x0";
+  std::string s = "[\"C_ARRAY\",\"" + base + "\"";
+  for(int i = 0; i < sz; i++) {
+    s += ",[\"C_DATA\",\"" + __opt_addr__((const void*)(data + i)) + "\",\"int\"," + std::to_string(data[i]) + ",{\"bytes\":4}]";
+  }
+  s += "]";
+  __opt_current_tracer__->add(n, s);
+}
 // Deleted pointer — show as NULL pointer, no heap entry
 void __opt_cap_deleted__(const char* n) {
   if(!__opt_current_tracer__) return;

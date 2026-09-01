@@ -390,6 +390,24 @@ function buildFieldEncoders(baseExpr, fields) {
   return encoders;
 }
 
+// Classify a container type (from parseDeclaration, which strips the
+// `vector<...>` wrapper) so genCaptures can emit a safe capture. Returns
+// 'vector_ptr' | 'vector_int' | 'vector_other' | 'opaque' | null (not a container).
+// isPointer reflects whether the element type ended in `*` (parseDeclaration
+// absorbs a pointer-element's `*` into isPointer).
+function containerKind(type, isPointer) {
+  if (!type) return null;
+  const vm = type.match(/^(std::)?(vector|list|deque|array)\s*<(.+)>$/);
+  if (vm) {
+    const el = vm[3].trim();
+    if (isPointer) return 'vector_ptr';
+    if (/^(unsigned\s+)?(int|short|size_t|long|long\s+long|unsigned\s+long|unsigned\s+short)$/.test(el)) return 'vector_int';
+    return 'vector_other';
+  }
+  if (/^(std::)?(map|set|multimap|multiset|unordered_map|unordered_set|queue|stack|priority_queue)\s*</.test(type)) return 'opaque';
+  return null;
+}
+
 // Generate capture calls for all known variables
 function genCaptures(knownVars, heapPointers, deletedPointers, structDefs, excludeVars) {
   let captures = [];
@@ -450,6 +468,25 @@ function genCaptures(knownVars, heapPointers, deletedPointers, structDefs, exclu
         captures.push(`__opt_cap_struct__("${name}", "${info.type}", (void*)&${name}, (${fieldStr}).c_str());`);
       } else {
         captures.push(`__opt_cap_struct__("${name}", "${info.type}", (void*)&${name}, "");`);
+      }
+    } else if (info && info.type && containerKind(info.type, !!info.isPointer)) {
+      // std::vector<T> / other containers. parseDeclaration strips the
+      // `vector<...>` wrapper (type becomes `vector<int>`), and for pointer
+      // elements the trailing `*` is absorbed into isPointer. Previously
+      // pointer-element containers fell through to `__opt_cap__(name, name)`
+      // which no overload accepts → "no matching function" (the WHOLE program
+      // failed to compile). We emit a plain .data()/.size() call (NOT the
+      // vector by reference, which would need a WASM-fragile template) so the
+      // elements render as a C_ARRAY; pointer elements draw arrows via the
+      // existing C_DATA-pointer rendering (no frontend change).
+      const ck = containerKind(info.type, !!info.isPointer);
+      if (ck === 'vector_ptr') {
+        captures.push(`__opt_cap_vector_ptr__("${name}", (const void**)${name}.data(), (int)${name}.size());`);
+      } else if (ck === 'vector_int') {
+        captures.push(`__opt_cap_vector_int__("${name}", (const int*)${name}.data(), (int)${name}.size());`);
+      } else {
+        const tname = info.type.replace(/^std::/, '');
+        captures.push(`__opt_cap_unknown__("${name}", "${tname}", (void*)&${name});`);
       }
     } else if (name === 'this') {
       // 'this' pointer — handled by __opt_trace_fn_this__, skip here
@@ -1562,15 +1599,37 @@ function instrumentCode(sourceCode) {
         heapPointers.set(newSingleMatch[1], 0);
       }
     }
+    // Detect heap allocations via malloc/calloc (mirror `new`). The heap
+    // capture overloads (__opt_cap_heap__ / __opt_cap_heap_arr__) only support
+    // int, so gate to an `(int*)` cast; a `(T*)malloc` of another type stays a
+    // plain pointer (no crash, no heap block) — extend the overloads to widen.
+    if (stmtComplete) {
+      let mallocMatch = stripped.match(/(\w+)\s*=\s*\(\s*(unsigned\s+)?(int|long|short|char)\s*\*\s*\)\s*(?:malloc|calloc)\s*\(/);
+      if (mallocMatch) {
+        const allocVar = mallocMatch[1];
+        const allocType = ((mallocMatch[2] || '') + ' ' + mallocMatch[3]).trim();
+        if (allocType === 'int') {
+          // array? calloc(N, sizeof) or malloc(sizeof(int) * N)
+          const callocN = stripped.match(/\bcalloc\s*\(\s*(\d+)\s*,/);
+          const szMul = stripped.match(/sizeof\s*\(\s*(?:unsigned\s+)?int\s*\)\s*\*\s*(\d+)/);
+          if (callocN) heapPointers.set(allocVar, parseInt(callocN[1]));
+          else if (szMul) heapPointers.set(allocVar, parseInt(szMul[1]));
+          else heapPointers.set(allocVar, 0);
+        }
+      }
+    }
 
     // Detect heap deallocations: delete ptr; or delete[] ptr;
     if (stmtComplete) {
       let delMatch = stripped.match(/delete\s*\[\s*\]\s*(\w+)/);
       let delSingleMatch = stripped.match(/delete\s+(\w+)/);
+      let freeMatch = stripped.match(/\bfree\s*\(\s*(\w+)\s*\)/);
       if (delMatch) {
         deletedPointers.add(delMatch[1]);
       } else if (delSingleMatch) {
         deletedPointers.add(delSingleMatch[1]);
+      } else if (freeMatch) {
+        deletedPointers.add(freeMatch[1]);
       }
     }
 
