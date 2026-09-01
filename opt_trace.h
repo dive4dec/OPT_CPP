@@ -822,6 +822,29 @@ void __opt_cap_heap_arr__(const char* n, int*& v, int sz) {
     __opt_current_tracer__->addHeapEntry(heapEntry);
   }
 }
+// For new ClassName(): capture the pointer on the stack + create a heap object
+// rendered as a C_STRUCT (with its fields when the class is known, empty otherwise).
+// Works for ANY pointer type — unlike __opt_cap_heap__, which only has int*
+// overloads and made `Person* x = new Person();` fail with "no matching function".
+//   ptr     = the address the pointer points to (the allocated object)
+//   ptrAddr = the address of the pointer VARIABLE itself, so the stack frame shows
+//             the pointer stored at its declared location (matches __opt_cap_heap__)
+// Passing both by value (const void*) avoids a template — the codebase avoids
+// templates here to prevent WASM traps from typeid/__cxa_demangle (see __opt_cap_struct__).
+void __opt_cap_heap_obj__(const char* n, const char* typeName, const void* ptr, const void* ptrAddr, const char* fieldStr) {
+  if(!__opt_current_tracer__) return;
+  std::string p = ptr ? __opt_addr__(ptr) : "0x0";
+  // Stack: pointer variable (value = p), stored at ptrAddr
+  __opt_current_tracer__->add(n, "[\"C_DATA\",\"" + __opt_addr__(ptrAddr) + "\",\"pointer\",\"" + p + "\",{\"bytes\":8}]");
+  if(ptr) {
+    // Heap: the allocated object as a C_STRUCT (fields when available)
+    std::string s = "[\"C_STRUCT\",\"" + p + "\",\"" + __opt_esc__(typeName) + "\"";
+    std::string fs(fieldStr);
+    if(!fs.empty()) s += "," + fs;
+    s += "]";
+    __opt_current_tracer__->addHeapEntry("\"" + p + "\":" + s);
+  }
+}
 // Deleted pointer — show as NULL pointer, no heap entry
 void __opt_cap_deleted__(const char* n) {
   if(!__opt_current_tracer__) return;
