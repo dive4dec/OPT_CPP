@@ -351,6 +351,45 @@ function detectLambdaBody(stripped) {
   return { captures, params: paramNames };
 }
 
+// Build the __opt_field_*__ encoder call list for a struct's fields.
+// baseExpr is the expression used to reach each field: `name` for stack
+// objects (e.g. `p.a`) or `(*name)` for heap objects behind a pointer
+// (e.g. `(*p).a`). Returns [] when no field has a supported encoder.
+function buildFieldEncoders(baseExpr, fields) {
+  const encoders = [];
+  for (const f of fields) {
+    if (f.isArray) continue;
+    let fieldFn = null;
+    const ft = f.type;
+    if (f.isPointer) {
+      // Pointer fields — const char* overload for char pointers, generic for others
+      fieldFn = (ft === 'char' || ft === 'const char') ? '__opt_field_const_char_ptr__' : '__opt_field_ptr__';
+    } else if (ft === 'int' || ft === 'short' || ft === 'size_t') {
+      fieldFn = '__opt_field_int__';
+    } else if (ft === 'unsigned' || ft === 'unsigned int' || ft === 'unsigned short') {
+      fieldFn = '__opt_field_unsigned__';
+    } else if (ft === 'long' || ft === 'long long') {
+      fieldFn = '__opt_field_long__';
+    } else if (ft === 'unsigned long' || ft === 'unsigned long long') {
+      fieldFn = '__opt_field_ulong__';
+    } else if (ft === 'double') {
+      fieldFn = '__opt_field_double__';
+    } else if (ft === 'float') {
+      fieldFn = '__opt_field_float__';
+    } else if (ft === 'bool') {
+      fieldFn = '__opt_field_bool__';
+    } else if (ft === 'char' || ft === 'unsigned char') {
+      fieldFn = '__opt_field_char__';
+    } else if (ft === 'std::string' || ft === 'string') {
+      fieldFn = '__opt_field_string__';
+    }
+    if (fieldFn) {
+      encoders.push(`${fieldFn}("${f.name}", ${baseExpr}.${f.name})`);
+    }
+  }
+  return encoders;
+}
+
 // Generate capture calls for all known variables
 function genCaptures(knownVars, heapPointers, deletedPointers, structDefs, excludeVars) {
   let captures = [];
@@ -364,7 +403,20 @@ function genCaptures(knownVars, heapPointers, deletedPointers, structDefs, exclu
     } else if (heapPointers.has(name)) {
       // Heap pointer — use heap capture that creates both stack pointer and heap entry
       let sz = heapPointers.get(name);
-      if (sz > 0) {
+      if (info && info.type && info.isPointer && structDefs.has(info.type)) {
+        // Heap object of a known class/struct (new Person()):
+        // __opt_cap_heap__ only has int* overloads, so a class pointer would
+        // fail with "no matching function". Render the allocated object as a
+        // C_STRUCT (with its fields when available) via __opt_cap_heap_obj__,
+        // which takes const void* by value and therefore works for any type.
+        const encoders = buildFieldEncoders(`(*${name})`, structDefs.get(info.type));
+        const fieldStr = encoders.join(' + "," + ');
+        // Mirror __opt_cap_struct__: the __opt_field_*__ calls return std::string,
+        // concatenated then converted with .c_str() — do NOT embed the C++ field
+        // expressions inside a string literal (that leaves nested unescaped quotes).
+        const fieldArg = fieldStr ? `(${fieldStr}).c_str()` : '""';
+        captures.push(`__opt_cap_heap_obj__("${name}", "${info.type}", (const void*)${name}, (const void*)&${name}, ${fieldArg});`);
+      } else if (sz > 0) {
         // Heap array: new int[size]
         captures.push(`__opt_cap_heap_arr__("${name}", ${name}, ${sz});`);
       } else {
@@ -391,44 +443,7 @@ function genCaptures(knownVars, heapPointers, deletedPointers, structDefs, exclu
       // Struct/class variable: capture as C_STRUCT object with fields
       // Uses non-template __opt_cap_struct__ + __opt_field_*__ overloads
       // to avoid WASM traps from templates/typeid/__cxa_demangle.
-      const fields = structDefs.get(info.type);
-      const fieldEncoders = [];
-      for (const f of fields) {
-        if (f.isArray) continue;
-        // Map field type to the appropriate __opt_field_*__ function
-        let fieldFn = null;
-        const ft = f.type;
-        if (f.isPointer) {
-          // Pointer fields — use const char* overload for char pointers,
-          // generic pointer overload for others
-          if (ft === 'char' || ft === 'const char') {
-            fieldFn = '__opt_field_const_char_ptr__';
-          } else {
-            fieldFn = '__opt_field_ptr__';
-          }
-        } else if (ft === 'int' || ft === 'short' || ft === 'size_t') {
-          fieldFn = '__opt_field_int__';
-        } else if (ft === 'unsigned' || ft === 'unsigned int' || ft === 'unsigned short') {
-          fieldFn = '__opt_field_unsigned__';
-        } else if (ft === 'long' || ft === 'long long') {
-          fieldFn = '__opt_field_long__';
-        } else if (ft === 'unsigned long' || ft === 'unsigned long long') {
-          fieldFn = '__opt_field_ulong__';
-        } else if (ft === 'double') {
-          fieldFn = '__opt_field_double__';
-        } else if (ft === 'float') {
-          fieldFn = '__opt_field_float__';
-        } else if (ft === 'bool') {
-          fieldFn = '__opt_field_bool__';
-        } else if (ft === 'char' || ft === 'unsigned char') {
-          fieldFn = '__opt_field_char__';
-        } else if (ft === 'std::string' || ft === 'string') {
-          fieldFn = '__opt_field_string__';
-        }
-        if (fieldFn) {
-          fieldEncoders.push(`${fieldFn}("${f.name}", ${name}.${f.name})`);
-        }
-      }
+      const fieldEncoders = buildFieldEncoders(name, structDefs.get(info.type));
       if (fieldEncoders.length > 0) {
         // Build field JSON by concatenating encoded fields with commas
         const fieldStr = fieldEncoders.join(' + "," + ');
@@ -1090,13 +1105,47 @@ function instrumentCode(sourceCode) {
     // At file scope (not in function body), track struct/class bodies and global variable declarations
     if (!inFunctionBody) {
       // Detect struct/class body entry: "struct Name {" or "class Name {"
-      let structMatch = stripped.match(/^(struct|class)\s+(\w+)\s*(?:final\s*)?(?::\s*[^{]*)?\{/);
+      let structMatch = stripped.match(/^(struct|class)\s+(\w+)\s*(?:final\s*)?(?::\s*[^{}]*)?\{/);
       if (structMatch) {
-        inStructBody = true;
-        structBraceDepth = 1;
         currentStructName = structMatch[2];
         currentStructFields = [];
         currentAccessLevel = (structMatch[1] === 'class') ? 'private' : 'public';
+        // Count net braces on THIS line instead of hard-coding depth 1. This
+        // handles same-line bodies (`class Person {}` empty, or `class A { int
+        // a; }` non-empty) which previously never closed: the `continue` below
+        // skipped the rest of the line, so structBraceDepth stayed 1 forever and
+        // every later line (including `int main`) was misparsed as being inside
+        // the class — turning `main` into `Person::main` with a bogus `this`.
+        let opens = 0, closes = 0;
+        for (const c of stripped) { if (c === '{') opens++; else if (c === '}') closes++; }
+        const netDepth = opens - closes;
+        if (netDepth > 0) {
+          // Body continues on following lines — normal multi-line tracking.
+          inStructBody = true;
+          structBraceDepth = netDepth;
+          output.push(line);
+          continue;
+        }
+        // Body closes on this line. Parse any fields between the class braces,
+        // register the class, and stay at file scope.
+        const bodyOpen = stripped.indexOf('{');
+        if (bodyOpen >= 0) {
+          let d = 0, bodyClose = -1;
+          for (let k = bodyOpen; k < stripped.length; k++) {
+            if (stripped[k] === '{') d++;
+            else if (stripped[k] === '}') { d--; if (d === 0) { bodyClose = k; break; } }
+          }
+          const interior = (bodyClose > bodyOpen) ? stripped.slice(bodyOpen + 1, bodyClose) : '';
+          // Split on ';' so a multi-field one-liner is parsed field-by-field.
+          // parseDeclaration skips function defs / operators / access specs.
+          for (const chunk of interior.split(';')) {
+            for (const f of parseDeclaration(chunk)) {
+              f.access = currentAccessLevel;
+              if (currentAccessLevel === 'public') currentStructFields.push(f);
+            }
+          }
+        }
+        structDefs.set(currentStructName, currentStructFields);
         output.push(line);
         continue;
       }
