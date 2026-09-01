@@ -50,19 +50,13 @@ require('./webllm');
 //import {OptFrontendSharedSessions,TogetherJS} from './opt-shared-sessions';
 
 import { OptFrontend } from './opt-frontend';
+import { OptCmEditor } from './cm-editor';
 import { ExecutionVisualizer, assert, brightRed, darkArrowColor, lightArrowColor, SVG_ARROW_POLYGON, htmlspecialchars } from './pytutor';
 import { allTabsRE } from './opt-frontend';
 import { asyncRun } from './pyodide/runner';
 import { nullTraceErrorLst } from './footer-html';
 import * as d3 from 'd3';
-// just punt and use global script dependencies
-require("script-loader!./lib/ace/src-min-noconflict/ace.js");
-require('script-loader!./lib/ace/src-min-noconflict/mode-c_cpp.js');
-// require('script-loader!./lib/ace/src-min-noconflict/mode-javascript.js');
-// require('script-loader!./lib/ace/src-min-noconflict/mode-typescript.js');
-// require('script-loader!./lib/ace/src-min-noconflict/mode-c_cpp.js');
-// require('script-loader!./lib/ace/src-min-noconflict/mode-java.js');
-// require('script-loader!./lib/ace/src-min-noconflict/mode-ruby.js');
+// (ACE removed; CodeMirror 6 provides the editor via cm-editor.ts)
 
 // const {
 //   PYODIDE_VERSION,
@@ -78,8 +72,6 @@ export class OptLiveFrontend extends OptFrontend {
   prevVisualizer = null; // the visualizer object from the previous execution
   disableRowScrolling = false;
   hasSyntaxError = false;
-
-  allMarkerIds: number[] = [];
 
   // The rendered error HTML from the most recent error in THIS run. While set,
   // non-exception steps keep it on screen instead of clearing — so the error
@@ -176,20 +168,14 @@ export class OptLiveFrontend extends OptFrontend {
     } else {
       this.hasSyntaxError = false;
       $("#dataViz,#curInstr_live").removeClass('dimmed'); // un-dim the visualization
-      var s = this.pyInputAceEditor.getSession();
-      s.clearAnnotations(); // remove any lingering syntax error labels in gutter
+      this.pyInputAceEditor.setErrorLine(null); // remove any lingering syntax error highlight
     }
   }
 
   removeAllGutterDecorations() {
-    var s = this.pyInputAceEditor.getSession();
-    var d = s.getDocument();
-
-    for (var i = 0; i < d.getLength(); i++) {
-      s.removeGutterDecoration(i, 'curLineStepGutter');
-      s.removeGutterDecoration(i, 'prevLineStepGutter');
-      s.removeGutterDecoration(i, 'curPrevOverlapLineStepGutter');
-    }
+    // In CM6 the step arrows are driven by setStepMarkers(); clearing both
+    // removes every gutter decoration.
+    this.pyInputAceEditor.setStepMarkers(null, null);
   }
 
   updateStepLabels() {
@@ -199,11 +185,9 @@ export class OptLiveFrontend extends OptFrontend {
 
     $('#urlOutput,#urlOutputShortened').val(''); // prevent stale URLs
 
-    var s = this.pyInputAceEditor.getSession();
-    this.allMarkerIds.forEach((e) => {
-      s.removeMarker(e);
-    });
-    this.allMarkerIds = [];
+    // In CM6 the per-line error highlight and step arrows are stateful (set
+    // via setErrorLine / setStepMarkers), so there is nothing to "remove" up
+    // front — we simply re-set them for the current step below.
 
     // TODO: prevent copy and paste with pytutor.ts
     var totalInstrs = myVisualizer.curTrace.length;
@@ -272,10 +256,8 @@ export class OptLiveFrontend extends OptFrontend {
       this.persistErrorState = { html: errHtml };
 
       if (myVisualizer.curLineNumber && !curEntry.advisory) {
-        var Range = ace.require('ace/range').Range;
-        var markerId = s.addMarker(new Range(myVisualizer.curLineNumber - 1, 0,
-          myVisualizer.curLineNumber - 1, 1), "errorLine", "fullLine");
-        this.allMarkerIds.push(markerId);
+        // red full-line highlight on the faulting line (0-based for CM6)
+        this.pyInputAceEditor.setErrorLine(myVisualizer.curLineNumber - 1);
       }
     } else if (myVisualizer.instrLimitReached) {
       $("#frontendErrorOutput").html(htmlspecialchars(myVisualizer.instrLimitReachedWarningMsg));
@@ -288,22 +270,13 @@ export class OptLiveFrontend extends OptFrontend {
       $("#frontendErrorOutput").html(''); // clear it
     }
 
-    this.removeAllGutterDecorations();
-
-    // special case if both arrows overlap
-    if (myVisualizer.curLineNumber &&
-      (myVisualizer.curLineNumber === myVisualizer.prevLineNumber)) {
-      s.addGutterDecoration(myVisualizer.curLineNumber - 1,
-        'curPrevOverlapLineStepGutter');
-    } else {
-      // render separately
-      if (myVisualizer.curLineNumber) {
-        s.addGutterDecoration(myVisualizer.curLineNumber - 1, 'curLineStepGutter');
-      }
-      if (myVisualizer.prevLineNumber) {
-        s.addGutterDecoration(myVisualizer.prevLineNumber - 1, 'prevLineStepGutter');
-      }
-    }
+    // Set the per-step gutter arrows (cur = red, prev = green). CM6's
+    // setStepMarkers handles the "both arrows on the same line" overlap case
+    // automatically, so no special-case logic needed here. Line numbers from
+    // the visualizer are 1-based; the wrapper takes 0-based.
+    const cur0 = myVisualizer.curLineNumber ? myVisualizer.curLineNumber - 1 : null;
+    const prev0 = myVisualizer.prevLineNumber ? myVisualizer.prevLineNumber - 1 : null;
+    this.pyInputAceEditor.setStepMarkers(cur0, prev0);
 
     var lineToScrollTo = null;
     if (myVisualizer.curLineNumber) {
@@ -459,7 +432,7 @@ export class OptLiveFrontend extends OptFrontend {
   // a syntax-/compile-time error, rather than a runtime error
   handleUncaughtException(trace) {
     if (trace.length == 1 && trace[0].line && !trace[0].advisory) {
-      var errorLineNo = trace[0].line - 1; /* Ace lines are zero-indexed */
+      var errorLineNo = trace[0].line - 1; /* lines are zero-indexed */
       if (errorLineNo !== undefined 
         // && errorLineNo != NaN
         ) {
@@ -470,12 +443,8 @@ export class OptLiveFrontend extends OptFrontend {
           this.myVisualizer.redrawConnectors();
         }
 
-        var s = this.pyInputAceEditor.getSession();
-        s.setAnnotations([{
-          row: errorLineNo,
-          type: 'error',
-          text: trace[0].exception_msg
-        }]);
+        // red full-line highlight on the faulting line (0-based for CM6)
+        this.pyInputAceEditor.setErrorLine(errorLineNo);
       }
     }
   }
@@ -492,39 +461,61 @@ export class OptLiveFrontend extends OptFrontend {
 
   initAceEditor(height: number) {
     assert(!this.pyInputAceEditor);
-    this.pyInputAceEditor = ace.edit('codeInputPane');
-    var s = this.pyInputAceEditor.getSession();
-
-    // Add name attribute to ace's internal textarea to satisfy browser autofill audit
-    var aceTextarea = document.querySelector('#codeInputPane .ace_text-input');
-    if (aceTextarea) {
-      aceTextarea.setAttribute('name', 'ace_code_input');
-    }
-
-    // disable extraneous indicators:
-    s.setFoldStyle('manual'); // no code folding indicators
-    s.getDocument().setNewLineMode('unix'); // canonicalize all newlines to unix format
-    this.pyInputAceEditor.setHighlightActiveLine(false);
-    this.pyInputAceEditor.setShowPrintMargin(false);
-    this.pyInputAceEditor.setBehavioursEnabled(false);
-
-    this.pyInputAceEditor.setHighlightGutterLine(false); // to avoid gray highlight over gutter of active line
-    this.pyInputAceEditor.setDisplayIndentGuides(false); // to avoid annoying gray vertical lines
-
-    this.pyInputAceEditor.$blockScrolling = Infinity; // kludgy to shut up weird warnings
-    this.pyInputAceEditor.setOptions({minLines: 10, maxLines: 1000});
 
     // Responsive width on phones (was fixed 550px, which overflowed small screens)
     $("#pyInputPane,#codeInputPane")
       .css('width', '100%')
       .css('max-width', '700px')
       .css('min-width', '250px');
-    $('#codeInputPane').css('height', height + 'px'); // VERY IMPORTANT so that it works on I.E., ugh!
+    $('#codeInputPane').css('height', height + 'px'); // give CM6 a fixed height to fill
+
+    const containerEl = document.getElementById('codeInputPane');
+    this.pyInputAceEditor = new OptCmEditor({
+      container: containerEl,
+      value: '',
+      mode: 'c_cpp',
+      tabSize: 4,
+      onChange: (text) => {
+        // 2017-11-21: convert all pasted tabs to 4 spaces (soft tabs).
+        if (text.indexOf('\t') >= 0) {
+          this.pyInputSetValue(text.replace(allTabsRE, '    '));
+        }
+
+        // Editing the code invalidates the previous run's error: drop the
+        // persisted error NOW (not just on the debounced re-run) so that a
+        // scrub during the 500ms debounce can't flash the stale error back
+        // on screen. #frontendErrorOutput itself is emptied below.
+        this.persistErrorState = null;
+
+        $.doTimeout('pyInputAceEditorChange',
+          500, /* go a bit faster than CODE_SNAPSHOT_DEBOUNCE_MS to feel more snappy */
+          () => {
+            if (this.preseededCurInstr) {
+              this.executeCode(this.preseededCurInstr);
+              this.preseededCurInstr = undefined; // do this only once, then unset it
+            } else {
+              // if you're trying to execute an empty text
+              // buffer, highlight the code display with a
+              // warning as though you got a syntax error:
+              if (this.pyInputAceEditor && $.trim(this.pyInputGetValue()) == '') {
+                this.toggleSyntaxError(true);
+                this.myVisualizer.redrawConnectors();
+              }
+
+              this.executeCodeFromScratch();
+            }
+          }); // debounce
+        this.clearFrontendError();
+        // clear any lingering error highlight + step arrows while the code is stale
+        this.pyInputAceEditor.setErrorLine(null);
+        this.pyInputAceEditor.setStepMarkers(null, null);
+      },
+    });
 
     // make it resizable!
     $("#codeInputPane").resizable({
       resize: (evt, ui) => {
-        this.pyInputAceEditor.resize(); // to keep Ace internals happy
+        this.pyInputAceEditor.resize(); // keep CM6's internal sizing in sync
         $("#pyInputPane").width($("#codeInputPane").width()); // to keep parent happy
         if (this.myVisualizer) {
           this.myVisualizer.redrawConnectors(); // to keep visualizations happy
@@ -532,61 +523,7 @@ export class OptLiveFrontend extends OptFrontend {
       }
     });
 
-    this.pyInputAceEditor.on('change', (e) => {
-      // 2017-11-21: convert all tabs to 4 spaces so that when you paste
-      // in code from somewhere else that contains tabs, instantly
-      // change all those tabs to spaces. note that all uses of 'tab' key
-      // within the Ace editor on this page will result in spaces (i.e.,
-      // "soft tabs")
-      var curVal = this.pyInputGetValue();
-      if (curVal.indexOf('\t') >= 0) {
-        this.pyInputSetValue(curVal.replace(allTabsRE, '    '));
-        console.log("Converted all tabs to spaces");
-      }
-
-      // Editing the code invalidates the previous run's error: drop the
-      // persisted error NOW (not just on the debounced re-run) so that a
-      // scrub during the 500ms debounce can't flash the stale error back
-      // on screen. #frontendErrorOutput itself is emptied below.
-      this.persistErrorState = null;
-
-      $.doTimeout('pyInputAceEditorChange',
-        500, /* go a bit faster than CODE_SNAPSHOT_DEBOUNCE_MS to feel more snappy */
-        () => {
-          if (this.preseededCurInstr) {
-            this.executeCode(this.preseededCurInstr);
-            this.preseededCurInstr = undefined; // do this only once, then unset it
-          } else {
-            // if you're trying to execute an empty text
-            // buffer, highlight the code display with a
-            // warning as though you got a syntax error:
-            if (this.pyInputAceEditor && $.trim(this.pyInputGetValue()) == '') {
-              this.toggleSyntaxError(true);
-              this.myVisualizer.redrawConnectors();
-            }
-
-            this.executeCodeFromScratch();
-          }
-        }); // debounce
-      this.clearFrontendError();
-      s.clearAnnotations();
-    });
-
-    // don't do real-time syntax checks:
-    // https://github.com/ajaxorg/ace/wiki/Syntax-validation
-    s.setOption("useWorker", false);
     this.pyInputAceEditor.focus();
-
-    // custom gutter renderer, make it wider to accomodate arrows on left
-    // http://stackoverflow.com/a/28404331
-    s.gutterRenderer = {
-      getWidth: (session, lastLineNumber, config) => {
-        return (lastLineNumber.toString().length * config.characterWidth) + 6;
-      },
-      getText: (session, row) => {
-        return (row + 1);
-      }
-    };
   }
 
   executeCodeFromScratch() {

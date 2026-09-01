@@ -362,3 +362,30 @@ textarea.bubbleInputText {
 	background-clip: padding-box;
 }
 
+/* ========================================================================
+   CodeMirror 6 editor — step-arrow gutter images.
+   These background-IMAGE rules MUST live in a real .css file (not a JS theme
+   string) so that css-loader rewrites the relative url() into the hashed
+   asset URL at build time. Both pages (visualize + live) load opt-frontend.css.
+   ======================================================================== */
+.cm-stepGutter .curLineStepGutter {
+  background-image: url("redarrow.png");
+}
+.cm-stepGutter .prevLineStepGutter {
+  background-image: url("lightgreenarrow.png");
+}
+.cm-stepGutter .curPrevOverlapLineStepGutter {
+  background-image: url("redgreenarrow.png");
+}
+
+/* Make sure the code editor container is a real block that CM6 can fill. */
+#codeInputPane {
+  position: relative;
+}
+#codeInputPane .cm-editor {
+  height: 100%;
+}
+#codeInputPane .cm-scroller {
+  overflow: auto;
+}
+

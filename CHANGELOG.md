@@ -5,6 +5,26 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.45] - 2026-09-01
+
+### Changed
+- **Replaced the code editor: ACE → CodeMirror 6.** The 2016-vendored ACE
+  editor had poor mobile touch selection and copy/paste on phones, which is a
+  first-class requirement for this student-facing tool. Both the
+  display/visualize page and the live page now use a thin CodeMirror 6
+  wrapper (`js/cm-editor.ts`) exposing the same surface the pages already
+  used (get/set value, current-line highlight, red/green step arrows, error
+  line, scroll-to-line, focus, resize, mode).
+- **Editor step arrows and the error line are preserved** — the red "next
+  line" / green "previous line" gutter arrows and the red full-line error
+  highlight render exactly as before, now via a CodeMirror gutter + line
+  decoration. Line numbers and C++ / Python syntax highlighting work.
+
+### Removed
+- **The vendored ACE editor** (`js/lib/ace/`, ~648 KB) was deleted — no
+  source file references it anymore and none of it is emitted in the built
+  bundles.
+
 ## [0.3.44] - 2026-08-31
 
 ### Changed
