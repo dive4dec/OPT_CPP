@@ -62,6 +62,10 @@ self.addEventListener('activate', (event) =>
       if (k.startsWith('optcpp-kernel-') && k !== PRECACHE_NAME) {
         await caches.delete(k);
       }
+      // Superseded cache names from earlier iterations of the offline layer.
+      if (k === 'optcpp-runtime') {
+        await caches.delete(k);
+      }
     }
     // Background-fill the kernel precache (best-effort; never blocks activation
     // and never worse than before). Populates the Cache API with the ~34 MB of
@@ -114,6 +118,95 @@ const KERNEL_GZ = new Set([
 const KERNEL_VERSION = '0.10.0';
 const PRECACHE_NAME = 'optcpp-kernel-' + KERNEL_VERSION;
 
+// ── Static-app offline layer (network-first + cache-fallback) ───────────────
+// Everything the app loads from the SAME origin is made offline-reliable here,
+// so that once a user has visited the page online, re-running (or even a cold
+// visit) works with the network off — the same model OPT_Mentor relies on via
+// its JupyterLite service-worker precache.
+//
+// This covers the worker's script chunk (801.<hash>.bundle.js), the main
+// bundles, tree-sitter.js/.wasm, the tree-sitter-cpp grammar, and the worker's
+// importScripts (instrument.js / ts-reformat.js / opt_trace.h). The latter are
+// requested with ?v=Date.now() (a fresh URL every run — see cppworker.js); we
+// key the cache by the QUERY-LESS url so the ever-changing ?v= resolves to the
+// same last-good copy instead of a dead, never-seen URL. (That per-run cache-
+// bust was the root cause of "offline → Compilation error": the worker's
+// script chunk + importScripts had no offline source and died before the
+// kernel loaded. Proven in the offline-sim.)
+//
+// Network-first means ALWAYS FRESH when online (no 30-day staleness — which is
+// why the original author added the ?v=Date.now() cache-bust), while
+// cache-fallback means the last good copy is served when offline. No worker
+// change is required: the SW intercepts the worker's own importScripts/fetch.
+//
+// Paths deliberately EXCLUDED from this layer:
+//   /sw.js      — must stay no-cache so SW updates propagate on next load.
+//   /ai-proxy/  — a live backend proxy, never a static asset; never cache.
+//   *.html docs + extensionless paths — page navigation stays on the standard
+//   COOP/COEP pass-through (unchanged behaviour); only static *asset* files are
+//   mirrored to the offline cache. (Re-running an already-loaded page never
+//   re-fetches the document, so the doc doesn't need an offline copy.)
+const ASSETS_CACHE = 'optcpp-assets';
+const ASSET_EXT = /\.(js|mjs|css|wasm|data|h|ico|png|jpe?g|gif|svg|map|ttf|otf|woff2?|whl)$/i;
+
+// True for a same-origin GET to a static *asset* file this layer should
+// cache-serve (excludes documents, sw.js, the ai-proxy, and extensionless URLs).
+function isAppAsset(request) {
+  if (request.method !== 'GET') return false;
+  const u = new URL(request.url);
+  if (u.origin !== self.location.origin) return false;
+  const p = u.pathname;
+  if (p.endsWith('/sw.js')) return false;
+  if (p.includes('/ai-proxy')) return false;
+  if (!ASSET_EXT.test(p)) return false;   // only real asset files, not docs
+  // The webpack ENTRY bundles (opt-live.<hash>.bundle.js / visualize.<hash>.bundle.js)
+  // are loaded ONCE by the document and never re-fetched on re-run, so they stay
+  // on the fast streaming pass-through (no 6.8 MB SW buffer / per-build cache
+  // growth). They're the NAMED chunks; the worker + split chunks are the NUMERIC
+  // ones (e.g. 801.<hash>.bundle.js) and ARE re-fetched on re-run, so they're
+  // cached. Excluding by entry-name prefix is stable (fixed webpack entry names).
+  const base = baseName(request.url);
+  if (/^(opt-live|visualize)\./.test(base || '')) return false;
+  return true;
+}
+
+// Query-less cache key so ?v=Date.now() (and ?v=0.10.0) resolve to one entry.
+function assetKey(url) {
+  const u = new URL(url);
+  return u.origin + u.pathname;
+}
+
+// Network-first (fresh when online) + cache-fallback (last good copy offline).
+// Uses the DEFAULT cache mode (plain fetch) so the browser's HTTP cache is
+// honoured online: content-hashed bundles stay on nginx's `immutable 30d` (no
+// re-fetch between deploys) and the ?v=Date.now() trio refetches (tiny). The
+// Cache API is only a backup for offline — every online success is (re)stored
+// so the freshest copy is always what we'd serve offline.
+async function serveAsset(request) {
+  const key = assetKey(request.url);
+  let cache;
+  try { cache = await caches.open(ASSETS_CACHE); } catch (e) { cache = null; }
+  try {
+    const fresh = await fetch(request);
+    if (fresh.ok || fresh.type === 'basic') {
+      const body = await fresh.arrayBuffer();
+      const headers = withCoopCoep(fresh.headers);
+      if (cache) await cache.put(key, new Response(body, { status: 200, headers })).catch(() => {});
+      return new Response(body, { status: fresh.status, statusText: fresh.statusText, headers });
+    }
+    // Non-2xx: prefer a good cached copy, else pass the error through.
+    if (cache) { const hit = await cache.match(key); if (hit) return hit; }
+    return fresh;
+  } catch (netErr) {
+    // Offline (or network failed): serve the last good copy from cache.
+    if (cache) {
+      const hit = await cache.match(key);
+      if (hit) return hit;
+    }
+    throw netErr;
+  }
+}
+
 // Canonical URL of the pre-compressed sibling of a raw kernel URL — e.g.
 // .../xcpp.wasm?v=0.10.0  ->  .../xcpp.wasm.gz?v=0.10.0. Used as the single
 // Cache API key so precache / warm / read all agree on the same entry.
@@ -154,6 +247,18 @@ self.addEventListener('fetch', (event) => {
 
 async function fetchWithHeaders(request) {
   const base = baseName(request.url);
+
+  // Kernel big binaries use the .gz decompression path below (wire compression
+  // + kernel precache). Everything ELSE the app loads from this origin — the
+  // worker's script chunk, main bundles, xcpp.js, tree-sitter.js/.wasm, the
+  // tree-sitter-cpp grammar, and the worker's importScripts trio (instrument.js
+  // / ts-reformat.js / opt_trace.h, requested with ?v=Date.now()) — is served
+  // network-first with a cache-fallback, keyed by the query-less URL: always
+  // fresh when online, available offline. This is what makes re-running (and a
+  // cold visit) work with the network off.
+  if (isAppAsset(request) && !(base && KERNEL_GZ.has(base))) {
+    return serveAsset(request);
+  }
 
   // Kernel compression path — only for kernel binaries, and only when the host
   // does NOT already gzip the raw URL (i.e. a serverless host like GH Pages).
