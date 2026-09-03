@@ -53,13 +53,47 @@
 
 self.addEventListener('install', () => self.skipWaiting());
 self.addEventListener('activate', (event) =>
-  event.waitUntil(self.clients.claim().then(() => {
-    // Operational marker: lets us confirm a specific SW build took control
-    // (important because sw.js is served 30d-immutable, so verifying an SW
-    // update actually propagated is not otherwise observable in the field).
+  event.waitUntil((async () => {
+    await self.clients.claim();
+    // Prune stale kernel caches from earlier xeus-cpp versions (the name
+    // embeds KERNEL_VERSION). Keep only the current one.
+    const keys = await caches.keys();
+    for (const k of keys) {
+      if (k.startsWith('optcpp-kernel-') && k !== PRECACHE_NAME) {
+        await caches.delete(k);
+      }
+    }
+    // Background-fill the kernel precache (best-effort; never blocks activation
+    // and never worse than before). Populates the Cache API with the ~34 MB of
+    // compressed kernel so the app works OFFLINE after the first visit, even
+    // if the browser evicts its normal HTTP cache.
+    ensureKernelPrecache().catch((e) => console.warn('[sw] kernel precache skipped:', e));
     console.info('[sw] OPT_CPP kernel-gz service worker active');
-  }))
+  })())
 );
+
+// Populate the versioned kernel precache with the pre-compressed `.gz` siblings
+// (which exist on both K8s and serverless hosts). Idempotent: skips files
+// already present. Sourced directly from the `.gz` so it works regardless of
+// the host's compression mode (independent of the HEAD probe below).
+async function ensureKernelPrecache() {
+  if (!('caches' in self)) return;
+  const cache = await caches.open(PRECACHE_NAME);
+  // Derive the kernel base relative to THIS script (works for both root and
+  // /OPT_CPP/-style PUBLIC_PATH deployments, matching the worker's own path).
+  const base = new URL('./xeus-cpp/', self.location.href).href;
+  const files = ['xcpp.wasm', 'xcpp.data', 'libclangCppInterOp.so', 'libxeus.so'];
+  await Promise.all(files.map(async (f) => {
+    const key = base + f + '.gz?v=' + KERNEL_VERSION;
+    if (await cache.match(key)) return; // already cached
+    const r = await fetch(key, { cache: 'force-cache' });
+    if (!r.ok) throw new Error('precache ' + f + ' -> HTTP ' + r.status);
+    await cache.put(key, new Response(await r.arrayBuffer(), {
+      status: 200,
+      headers: withCoopCoep(r.headers),
+    }));
+  }));
+}
 
 // Kernel binaries that have a pre-compressed `.gz` sibling. Only the big
 // binary files are decompressed here (~99.5% of the 101 MB; fetched as opaque
@@ -73,6 +107,21 @@ const KERNEL_GZ = new Set([
   'libclangCppInterOp.so',
   'libxeus.so',
 ]);
+
+// Kernel version (must match the ?v= the worker's emscripten locateFile uses,
+// see cppworker.js + runner.ts warm-up). The precache name carries it, so a
+// xeus-cpp bump gets a fresh cache and the stale one is pruned on activate.
+const KERNEL_VERSION = '0.10.0';
+const PRECACHE_NAME = 'optcpp-kernel-' + KERNEL_VERSION;
+
+// Canonical URL of the pre-compressed sibling of a raw kernel URL — e.g.
+// .../xcpp.wasm?v=0.10.0  ->  .../xcpp.wasm.gz?v=0.10.0. Used as the single
+// Cache API key so precache / warm / read all agree on the same entry.
+function gzUrlFor(rawUrl) {
+  const u = new URL(rawUrl);
+  u.pathname += '.gz';
+  return u.toString();
+}
 
 // rawUrl -> Promise<{ gz: Uint8Array, cacheControl: string|null }>
 const gzCache = new Map();
@@ -89,6 +138,15 @@ self.addEventListener('fetch', (event) => {
   event.respondWith(
     fetchWithHeaders(request).catch((e) => {
       console.error('[sw] Fetch failed:', e);
+      // If a kernel binary couldn't be served (e.g. the user is offline and
+      // nothing is cached yet), drop the cached host-compression decision so
+      // the next request re-probes. A probe made during a transient offline
+      // must not persist and pin the wrong path. (The decompress fallback in
+      // fetchWithHeaders already recovers from .gz-path errors; this guards the
+      // whole-serve-failed case.)
+      if (baseName(request.url) && KERNEL_GZ.has(baseName(request.url))) {
+        hostCompression = undefined;
+      }
       throw e;
     })
   );
@@ -152,21 +210,40 @@ async function serverCompresses(rawUrl) {
   }
 }
 
-// Fetch the `.gz` sibling once per raw URL (force-cache → HTTP cache covers
-// later page loads) and return its compressed bytes. Deduped via gzCache for
-// the concurrent warm-up + worker-init case.
+// Fetch the `.gz` sibling once per raw URL and return its compressed bytes.
+// Cache-first: the versioned kernel precache (Cache API) is checked first, so
+// the kernel is served OFFLINE after the first visit without depending on the
+// browser's volatile HTTP cache. On miss, fetch (force-cache also warms the
+// HTTP cache) and store into the precache for next time. Deduped via gzCache
+// for the concurrent warm-up + worker-init case.
 function getGz(rawUrl) {
   if (gzCache.has(rawUrl)) return gzCache.get(rawUrl);
 
+  const u = new URL(rawUrl);
+  u.pathname += '.gz';
+  const url = u.toString();
+
   const p = (async () => {
-    const u = new URL(rawUrl);
-    u.pathname += '.gz';
-    const gz = await fetch(u.toString(), { cache: 'force-cache' });
-    if (!gz.ok) throw new Error('kernel .gz unavailable: ' + gz.status);
-    return {
-      gz: new Uint8Array(await gz.arrayBuffer()),
-      cacheControl: gz.headers.get('Cache-Control'),
-    };
+    let cacheControl = null;
+    if ('caches' in self) {
+      const cache = await caches.open(PRECACHE_NAME);
+      const hit = await cache.match(url);
+      if (hit) {
+        return { gz: new Uint8Array(await hit.arrayBuffer()), cacheControl: 'cache' };
+      }
+    }
+    const r = await fetch(url, { cache: 'force-cache' });
+    if (!r.ok) throw new Error('kernel .gz unavailable: ' + r.status);
+    cacheControl = r.headers.get('Cache-Control');
+    const bytes = new Uint8Array(await r.arrayBuffer());
+    if ('caches' in self) {
+      const cache = await caches.open(PRECACHE_NAME);
+      await cache.put(url, new Response(bytes, {
+        status: 200,
+        headers: withCoopCoep(r.headers),
+      })).catch(() => {});
+    }
+    return { gz: bytes, cacheControl };
   })();
 
   gzCache.set(rawUrl, p);

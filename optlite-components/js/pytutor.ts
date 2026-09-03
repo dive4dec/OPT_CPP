@@ -2813,11 +2813,20 @@ class DataVisualizer {
           var srcEl = myViz.domRoot.find('#' + varID);
           var target = srcEl.attr('data-ptr-target');
           if (target === '0x0') {
+            // 'NULL (0x0)' is wider than the 10px stub — let the cell grow.
+            srcEl.css('width', 'auto');
             srcEl.html('<span class="cdataUninit" title="NULL pointer">NULL (0x0)</span>');
           } else if (target && target !== '<UNINITIALIZED>' && target !== '<UNALLOCATED>') {
+            // The stub div was created at a fixed 10px width (to keep arrow
+            // sources compact), but the address text is far wider. Without
+            // widening the container the text overflows the 10px box and
+            // bleeds into adjacent cells — this is what made pointer-array
+            // elements (e.g. vector<int*>) show overlapping addresses. Grow
+            // the cell to fit the address so it renders cleanly.
+            srcEl.css('width', 'auto');
             srcEl.html('<span class="cdataElt" style="width:auto;padding-left:4px" title="points to a non-rendered address">' + target + '</span>');
           } else {
-            srcEl.html('\\uD83D\\uDCA9' /* pile of poo emoji — unresolvable pointer */);
+            srcEl.html('\uD83D\uDCA9' /* pile of poo emoji — unresolvable pointer */);
           }
         }
       } else {

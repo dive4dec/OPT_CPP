@@ -588,75 +588,81 @@ const asyncRun = (() => {
         return;
       }
 
-      init.then(() => {
-        // Reset kernel output collector
-        kernelOutput = [];
-        kernelHasError = false;
-        kernelErrorText = '';
-        lastCrashLine = 0;   // reset per-run so a stale crash line can't leak
-                             // into this run's (possibly unrelated) error
+      // ── Option 1: Fresh worker per execution ──
+      // Terminate the current worker and create a fresh one to get a clean
+      // clang-repl kernel state. This fixes redefinition of ALL functions
+      // (not just main) and eliminates accumulated REPL state.
+      //
+      // This runs UNCONDITIONALLY before we await init, not inside the
+      // init-then block (it used to live there). A previous run's init that
+      // REJECTED — e.g. the user dropped offline and the kernel couldn't
+      // load — would otherwise leave `init` as a permanently-rejected promise
+      // that every later run awaits, so the app stayed stuck showing
+      // "Compilation error" even after the network returned. Recreating the
+      // worker every attempt guarantees a failed init never poisons the next
+      // run: the next click gets a fresh worker + fresh init and simply
+      // succeeds once assets are reachable again.
+      if (cppWorker) {
+        cppWorker.terminate();
+      }
+      // Reset the network-facing state the previous (possibly failed) run
+      // left behind, so a fresh worker starts clean.
+      kernelOutput = [];
+      kernelHasError = false;
+      kernelErrorText = '';
+      lastCrashLine = 0;   // reset per-run so a stale crash line can't leak
+                           // into this run's (possibly unrelated) error
 
-        // ── Option 1: Fresh worker per execution ──
-        // Terminate the current worker and create a fresh one to get a clean
-        // clang-repl kernel state. This fixes redefinition of ALL functions
-        // (not just main) and eliminates accumulated REPL state.
-        // The WASM binary is cached by the browser, so worker creation is fast
-        // after the first run (~2-3s for WASM instantiation).
-        if (cppWorker) {
-          cppWorker.terminate();
+      cppWorker = createWorker();
+      init = initWorker();
+
+      // Execution timeout: if the WASM compiler hangs during heavy template
+      // instantiation, the worker's event loop is blocked and no result
+      // message arrives. This timeout fires on the main thread.
+      const execTimeout = setTimeout(() => {
+        if (callbacks[id]) {
+          delete callbacks[id];
+          reject(new Error(
+            'Compilation timed out. The code may be too complex for ' +
+            'the browser-based compiler.'
+          ));
         }
-        cppWorker = createWorker();
-        init = initWorker();
+      }, 300000); // 5 minutes — <format> compilation can take a while
 
-        // Execution timeout: if the WASM compiler hangs during heavy template
-        // instantiation, the worker's event loop is blocked and no result
-        // message arrives. This timeout fires on the main thread.
-        const execTimeout = setTimeout(() => {
-          if (callbacks[id]) {
-            delete callbacks[id];
-            reject(new Error(
-              'Compilation timed out. The code may be too complex for ' +
-              'the browser-based compiler.'
-            ));
-          }
-        }, 300000); // 5 minutes — <format> compilation can take a while
-
-        // Wait for the new worker to initialize, then send the execution request
-        init.then(() => {
-          callbacks[id] = (data) => {
-            clearTimeout(execTimeout);
-            if (data.error) {
-              // The WASM abort may have sent compiler errors via iopub stderr
-              // messages that haven't been processed yet. Wait briefly for them.
-              setTimeout(() => {
-                if (lastCrashLine > 0) {
-                  // Execution STARTED (we saw crash-line markers in the
-                  // per-step stdout) — this is a RUNTIME crash (use-after-free,
-                  // NULL/invalid-pointer deref, out-of-bounds), NOT a syntax
-                  // error. A non-zero lastCrashLine is proof the program ran.
-                  reject(new Error('Runtime error: your program crashed at line ' +
-                    lastCrashLine + ' (memory/undefined behaviour). Check that ' +
-                    'pointer at that line is valid (not null, not deleted, and ' +
-                    'in range).'));
-                } else if (kernelHasError && kernelErrorText) {
-                  let errorMsg = kernelErrorText.split('\n')
-                    .find(l => l.includes('error:')) || 'Compilation error';
-                  errorMsg = errorMsg.replace(/^input_line_\d+:\d+:\d+:\s*/, '').trim();
-                  errorMsg = errorMsg.replace(/^.*?error:\s*/, 'error: ');
-                  reject(new Error(errorMsg));
-                } else {
-                  reject(new Error(data.error));
-                }
-              }, 500);
-            } else resolve(data);
-          };
-          cppWorker!.postMessage({
-            ...options,
-            script: script,
-            rawInputLst: rawInputLst,
-            id,
-          });
-        }).catch(reject);
+      // Wait for the new worker to initialize, then send the execution request
+      init.then(() => {
+        callbacks[id] = (data) => {
+          clearTimeout(execTimeout);
+          if (data.error) {
+            // The WASM abort may have sent compiler errors via iopub stderr
+            // messages that haven't been processed yet. Wait briefly for them.
+            setTimeout(() => {
+              if (lastCrashLine > 0) {
+                // Execution STARTED (we saw crash-line markers in the
+                // per-step stdout) — this is a RUNTIME crash (use-after-free,
+                // NULL/invalid-pointer deref, out-of-bounds), NOT a syntax
+                // error. A non-zero crash line is proof the program ran.
+                reject(new Error('Runtime error: your program crashed at line ' +
+                  lastCrashLine + ' (memory/undefined behaviour). Check that ' +
+                  'pointer is valid (not null, not deleted, and in range).'));
+              } else if (kernelHasError && kernelErrorText) {
+                let errorMsg = kernelErrorText.split('\n')
+                  .find(l => l.includes('error:')) || 'Compilation error';
+                errorMsg = errorMsg.replace(/^input_line_\d+:\d+:\d+:\s*/, '').trim();
+                errorMsg = errorMsg.replace(/^.*?error:\s*/, 'error: ');
+                reject(new Error(errorMsg));
+              } else {
+                reject(new Error(data.error));
+              }
+            }, 500);
+          } else resolve(data);
+        };
+        cppWorker!.postMessage({
+          ...options,
+          script: script,
+          rawInputLst: rawInputLst,
+          id,
+        });
       }).catch(reject);
     });
   };
