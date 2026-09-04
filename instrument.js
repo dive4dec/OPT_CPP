@@ -1646,8 +1646,13 @@ function instrumentCode(sourceCode) {
 // (instrumentCode now returns an object; cppworker.js handles both)
 
 // ── cin-prompt protocol: post-read marker injection ──
-// Appends a post-read check right after each plain `cin >>` read STATEMENT so
-// the runtime can tell when the pre-seeded input runs out:
+// Appends a post-read check right after each plain std::cin READ STATEMENT so
+// the runtime can tell when the pre-seeded input runs out. A "cin read" is a
+// statement that pulls from std::cin in either of the two forms students use:
+//   * `cin >> …`   (e.g. `std::cin >> x;`, chained `cin >> a >> b;`)
+//   * `getline((std::)cin, …)`  (a line read; its first arg must be cin)
+// For each such statement the runtime can tell when the pre-seeded input runs
+// out:
 //   * `__opt_cin_read_done__();` — the statement is NOT inside a for/while/do
 //     loop body (i.e. the innermost open block is a function/if/else/switch
 //     body). A failed read here means the pre-seeded input is exhausted: the
@@ -1701,9 +1706,22 @@ function __opt_cin_mask__(s) {
 function __opt_is_cin_read_stmt__(maskedLine) {
   if (!maskedLine || maskedLine.endsWith('{') || maskedLine === '}') return false;
   // Loop/control headers never get a marker: their conditions keep natural
-  // EOF semantics, and their bodies are handled by the block-kind check.
+  // EOF semantics, and their bodies are handled by the block-kind check. (This
+  // also covers `while (getline(std::cin, s))` / `if (getline(std::cin, s))` —
+  // a read used as a loop/condition must end naturally on EOF, exactly like
+  // `while (cin >> x)`.)
   if (/^\s*(for|while|do|if|else|switch|return|break|continue)\b/.test(maskedLine)) return false;
-  if (!/(^|[^A-Za-z0-9_])cin\s*>>/.test(maskedLine)) return false;
+  // A plain read from std::cin, in either of the two forms students use:
+  //   * `cin >> …`  (e.g. `std::cin >> x;`, chained `cin >> a >> b;`)
+  //   * `getline((std::)cin, …)`  (line read; getline returns void, so this is
+  //     always a statement). Its FIRST arg must be cin — a getline from some
+  //     other stream won't set std::cin's failbit, so it must not be marked.
+  // (Both are plain reads; a failed one at this point means the pre-seeded
+  // input is exhausted → prompt. The runtime check __opt_cin_read_done__() is
+  // generic — std::cin.fail() — so it fires identically for >> and getline.)
+  const isCinOp = /(^|[^A-Za-z0-9_])cin\s*>>/.test(maskedLine);
+  const isGetline = /(^|[^A-Za-z0-9_])getline\s*\(\s*(std::)?cin\s*,/.test(maskedLine);
+  if (!isCinOp && !isGetline) return false;
   // Require a top-level ';' (statement boundary).
   let depth = 0;
   for (let i = 0; i < maskedLine.length; i++) {
