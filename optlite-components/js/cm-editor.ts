@@ -33,8 +33,9 @@ import { tags } from "@lezer/highlight";
 import type { Range as CmRange } from "@codemirror/state";
 import { cpp } from "@codemirror/lang-cpp";
 import { python } from "@codemirror/lang-python";
-import { autocompletion } from "@codemirror/autocomplete";
+import { autocompletion, completeAnyWord } from "@codemirror/autocomplete";
 import { highlightSelectionMatches, searchKeymap } from "@codemirror/search";
+import { cppStaticCompletion } from "./cpp-completion";
 
 // --- Red error line (0-based), null to clear --------------------------------
 const setErrorLineEffect = StateEffect.define<number | null>();
@@ -163,6 +164,7 @@ export interface OptCmEditorOptions {
 export class OptCmEditor {
   private view: EditorView;
   private modeCompartment = new Compartment();
+  private completionCompartment = new Compartment();
   private opts: OptCmEditorOptions;
 
   constructor(opts: OptCmEditorOptions) {
@@ -230,7 +232,10 @@ export class OptCmEditor {
         dropCursor(),
         history(),
         keymap.of([...defaultKeymap, ...historyKeymap, ...searchKeymap, indentWithTab]),
-        autocompletion(),
+        // Mode-dependent completion (see completionExtension below). C++ uses
+        // our static source (struct members + STL members + std:: names) plus
+        // word-recall; Python keeps CM's default.
+        this.completionCompartment.of(this.completionExtension(opts.mode)),
         highlightSelectionMatches(),
         boxSelect,
         syntaxHighlighting(baseHighlight),
@@ -264,8 +269,28 @@ export class OptCmEditor {
   setMode(mode: "c_cpp" | "python") {
     this.opts.mode = mode;
     this.view.dispatch({
-      effects: this.modeCompartment.reconfigure(mode === "python" ? python() : cpp()),
+      effects: [
+        this.modeCompartment.reconfigure(mode === "python" ? python() : cpp()),
+        // Swap the completion source when the language changes (C++ static
+        // source vs. Python default). Reconfigures independently of the
+        // language extension so the two stay in sync without coupling.
+        this.completionCompartment.reconfigure(this.completionExtension(mode)),
+      ],
     });
+  }
+
+  // Build the mode-appropriate completion extension.
+  //   - c_cpp: our static C++ source (user struct members, STL container
+  //     members, std:: names) composed with `completeAnyWord` so bare
+  //     identifiers still recall names already typed in the document.
+  //     `override` REPLACES the default source (we want our union, not the
+  //     default-on-top).
+  //   - python: CM's default autocompletion() (word + snippet), unchanged.
+  private completionExtension(mode: "c_cpp" | "python") {
+    if (mode === "c_cpp") {
+      return autocompletion({ override: [cppStaticCompletion, completeAnyWord] });
+    }
+    return autocompletion();
   }
 
   // Red full-line error highlight. line0 is 0-based; null clears.
