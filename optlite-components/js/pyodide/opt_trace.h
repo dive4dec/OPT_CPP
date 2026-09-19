@@ -23,6 +23,8 @@
 #include <cxxabi.h>
 #include <iostream>
 #include <vector>
+#include <list>
+#include <deque>
 #include <functional>
 
 // ── cin-prompt protocol (Python Tutor's raw_input, adapted for C++) ──
@@ -881,6 +883,48 @@ void __opt_cap_vector_int__(const char* n, const int* data, int sz) {
   }
   s += "]";
   __opt_current_tracer__->add(n, s);
+}
+// ── Sequence capture for NON-CONTIGUOUS containers: std::list / std::deque ──
+// std::list and std::deque have NO .data() member (no contiguous buffer), so the
+// __opt_cap_vector_*__ path (which calls name.data()) does NOT compile for them —
+// that was the "no member named 'data' in 'std::list<int>'" bug. Instead we
+// materialize the elements into a contiguous std::vector<T> and encode from it,
+// producing the exact same C_ARRAY shape as the equivalent std::vector<T>.
+// `T` is instantiated at the user-code call site — the same category as the
+// existing call-site templates __opt_cap__(T*) / __opt_encode_data__(T), which
+// already run in the clang-repl WASM kernel. Each element is encoded with
+// __opt_encode_data__ so a list<int>/list<double>/list<std::string>/list<T*>/
+// list<Struct> element renders identically to a plain variable of that type.
+// NOTE: the base label is the CONTAINER's own address (&c), NOT buf.data() —
+// the temp std::vector<T> buffer's data() is DELETED for T=bool (vector<bool>
+// is a bit-packed proxy), so &c is the only base that compiles for every T.
+// The base is a cosmetic label (the frontend renders elements positionally by
+// index), so the container address is a valid, stable choice for all T.
+template<class T>
+void __opt_cap_seq_impl__(const char* n, const char* base, const std::vector<T>& buf) {
+  if(!__opt_current_tracer__) return;
+  std::string s = std::string("[\"C_ARRAY\",\"") + base + "\"";
+  for(std::size_t i = 0; i < buf.size(); i++) {
+    s += "," + __opt_encode_data__(buf[i]);
+  }
+  s += "]";
+  __opt_current_tracer__->add(n, s);
+}
+template<class T>
+void __opt_cap_seq__(const char* n, const std::list<T>& c) {
+  if(!__opt_current_tracer__) return;
+  std::vector<T> buf; buf.reserve(c.size());
+  for(const auto& x : c) buf.push_back(x);
+  char base[32]; snprintf(base, sizeof(base), "%s", __opt_addr__((const void*)&c).c_str());
+  __opt_cap_seq_impl__(n, base, buf);
+}
+template<class T>
+void __opt_cap_seq__(const char* n, const std::deque<T>& c) {
+  if(!__opt_current_tracer__) return;
+  std::vector<T> buf; buf.reserve(c.size());
+  for(const auto& x : c) buf.push_back(x);
+  char base[32]; snprintf(base, sizeof(base), "%s", __opt_addr__((const void*)&c).c_str());
+  __opt_cap_seq_impl__(n, base, buf);
 }
 // Deleted pointer — show as NULL pointer, no heap entry
 void __opt_cap_deleted__(const char* n) {

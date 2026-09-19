@@ -469,6 +469,16 @@ function genCaptures(knownVars, heapPointers, deletedPointers, structDefs, exclu
       } else {
         captures.push(`__opt_cap_struct__("${name}", "${info.type}", (void*)&${name}, "");`);
       }
+    } else if (info && info.type && /^(std::)?(list|deque)\s*</.test(info.type)) {
+      // std::list / std::deque are NON-contiguous: they have NO .data() member,
+      // so the __opt_cap_vector_*__ path (which calls name.data()) would fail to
+      // compile with "no member named 'data' in 'std::list<int>'". Instead
+      // __opt_cap_seq__<T> (deduced from the argument) copies the elements into
+      // a contiguous std::vector<T> and encodes each via __opt_encode_data__, so
+      // EVERY supported element type renders — int/long/size_t/double/char/bool/
+      // std::string/T*/struct — with no per-type overloads and no .data() call.
+      // This branch MUST come before the vector/array containerKind branch below.
+      captures.push(`__opt_cap_seq__("${name}", ${name});`);
     } else if (info && info.type && containerKind(info.type, !!info.isPointer)) {
       // std::vector<T> / other containers. parseDeclaration strips the
       // `vector<...>` wrapper (type becomes `vector<int>`), and for pointer
