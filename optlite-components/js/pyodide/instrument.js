@@ -1078,6 +1078,25 @@ function instrumentCode(sourceCode) {
       // Check if this is a function body opening
       // e.g., "int main() {" or "void foo(int x) {"
       let funcMatch = stripped.match(/(\w[\w:]*)\s+(\w+)\s*\(([^)]*)\)\s*\{/);
+      if (!funcMatch) {
+        // The primary regex's return-type group `(\w[\w:]*)` only matches a plain
+        // (or `::`-qualified) word, so it FAILS on:
+        //   template returns:  list<int> f(){}, std::vector<int> f(){},
+        //                      std::map<int,std::string> f(){}
+        //   reference returns: std::string& f(){}, int&& f(){}
+        //   pointer returns:   Point* f(){}
+        // When such a function is not recognized, inFunctionBody stays false in
+        // its body, its locals get registered as FILE-SCOPE (global) vars, and
+        // those globals are then copied into main's frame — where they're out of
+        // scope — so the next trace emits e.g. __opt_cap_seq__("output", output)
+        // inside main and clang-repl fails with "use of undeclared identifier".
+        // Fallback: key on the function NAME (the identifier immediately before
+        // "(params) {"), treating everything before it as a free-form return
+        // type. Same 3-group layout as the primary (name=group2, params=group3),
+        // so all downstream handling is unchanged; the keyword check below still
+        // rejects if/for/while/switch/else/do/catch/try.
+        funcMatch = stripped.match(/(.*)\s+(\w+)\s*\(([^)]*)\)\s*\{/);
+      }
       if (funcMatch && !['if','for','while','switch','else','do','catch','try'].includes(funcMatch[2])) {
         let funcName = funcMatch[2];
         let params = funcMatch[3].trim();
