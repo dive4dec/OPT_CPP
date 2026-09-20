@@ -14,6 +14,7 @@
 
 #include <cstdio>
 #include <cstdlib>
+#include <cstdarg>
 #include <cstring>
 #include <csetjmp>
 #include <string>
@@ -26,6 +27,36 @@
 #include <list>
 #include <deque>
 #include <functional>
+
+// ── C-stdio → std::cout bridge (per-step stdout correctness) ──
+// The per-step SENTINEL (opt_trace.h) is emitted via std::cout, and xeus-cpp
+// delivers std::cout to the main thread PER-STEP (so it interleaves correctly
+// with the sentinels). C-stdio writers (printf/puts) instead reach the main
+// thread as ONE batched stream AFTER all the sentinels, so their text lands on
+// the LAST step, not the step that printed it. This is NOT a flush/buffering
+// issue — fflush(stdout) and setvbuf(stdout,_IONBF) both still batch — it's
+// the cross-channel delivery order. So we override printf/puts in this TU to
+// emit via std::cout (same channel as the sentinel) → correct per-step order.
+// We override by DEFINITION (not #define): a same-TU definition shadows the
+// libc weak symbol, so the user's printf/puts bind to ours. The user's own
+// `#include <cstdio>` redeclares the same signature — harmless. Verified
+// in-browser: printf now shows A/AB/ABC across steps instead of ABC once.
+#include <cstdarg>
+static int __opt_printf(const char* __opt_fmt, ...) {
+  va_list __opt_ap; va_start(__opt_ap, __opt_fmt);
+  char __opt_b[8192];
+  int __opt_n = vsnprintf(__opt_b, sizeof __opt_b, __opt_fmt, __opt_ap);
+  va_end(__opt_ap);
+  if(__opt_n > 0) std::cout.write(__opt_b, __opt_n < (int)sizeof __opt_b ? __opt_n : (int)sizeof __opt_b);
+  return __opt_n;
+}
+static int __opt_puts(const char* __opt_s) {
+  if(__opt_s) std::cout << __opt_s;
+  std::cout << '\n';
+  return 0;
+}
+extern "C" int printf(const char* fmt, ...) { return __opt_printf(fmt); }
+extern "C" int puts(const char* s) { return __opt_puts(s); }
 
 // ── cin-prompt protocol (Python Tutor's raw_input, adapted for C++) ──
 // When the user's code does a plain `cin >>` read (a statement, NOT a loop
