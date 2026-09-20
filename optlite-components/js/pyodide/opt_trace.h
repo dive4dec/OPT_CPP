@@ -918,10 +918,20 @@ void __opt_cap_vector_int__(const char* n, const int* data, int sz) {
 inline std::string __opt_seq_node_addr__(const void* base, std::size_t i) {
   return __opt_addr__((const void*)((unsigned long)base + (unsigned long)(i + 1) * 0x1000UL));
 }
-// A "pointer field value": ["C_DATA","0x0","pointer",ADDR,{"bytes":8}].
-// (Just the VALUE — the field NAME is added by __opt_seq_node_struct__.)
-inline std::string __opt_seq_ptr_field__(const std::string& addr) {
-  return std::string("[\"C_DATA\",\"0x0\",\"pointer\",\"") + addr + "\",{\"bytes\":8}]";
+// Storage address of a pointer FIELD inside node i. Each field gets a UNIQUE
+// address (node base + (i+1)*0x1000 + offset) so the frontend's ptrSrc_/cdata_
+// connection IDs (derived from this address) do NOT collide across fields —
+// the reason the v357 arrows tangled (every field used the same "0x0").
+inline std::string __opt_seq_field_addr__(const void* base, std::size_t i, unsigned long offset) {
+  return __opt_addr__((const void*)((unsigned long)base + (unsigned long)(i + 1) * 0x1000UL + offset));
+}
+// A pointer field: obj[1] = the field's OWN unique storage address, obj[3] =
+// the target node's address ("0x0" for NULL). The frontend draws an arrow from
+// obj[1] to the heap object at obj[3], and (after the frontend fix) prints
+// obj[3] as the cell value.
+inline std::string __opt_seq_ptr_field__(const void* base, std::size_t i, unsigned long fieldOffset, const std::string& targetAddr) {
+  return std::string("[\"C_DATA\",\"") + __opt_seq_field_addr__(base, i, fieldOffset)
+       + "\",\"pointer\",\"" + targetAddr + "\",{\"bytes\":8}]";
 }
 // A C_STRUCT node. Fields are [name, value] PAIRS as DIRECT elements (indices
 // 3, 4, 5…) — NOT wrapped in an inner array. This matches cap_struct's format
@@ -931,11 +941,11 @@ inline std::string __opt_seq_ptr_field__(const std::string& addr) {
 // string (which is exactly what happens if the fields are wrongly nested).
 //   ["C_STRUCT",ADDR,"list node",["val",VAL],["next",NEXT],["prev",PREV]]
 template<class T>
-inline std::string __opt_seq_node_struct__(const std::string& addr, const T& v, const std::string& nextAddr, const std::string& prevAddr) {
+inline std::string __opt_seq_node_struct__(const void* base, std::size_t i, const std::string& addr, const T& v, const std::string& nextAddr, const std::string& prevAddr) {
   return std::string("[\"C_STRUCT\",\"") + addr + "\",\"list node\","
-         + "[\"val\","  + __opt_encode_data__(v)      + "],"
-         + "[\"next\","  + __opt_seq_ptr_field__(nextAddr) + "],"
-         + "[\"prev\","  + __opt_seq_ptr_field__(prevAddr) + "]"
+         + "[\"val\","  + __opt_encode_data__(v)                 + "],"
+         + "[\"next\","  + __opt_seq_ptr_field__(base, i, 8, nextAddr) + "],"
+         + "[\"prev\","  + __opt_seq_ptr_field__(base, i, 16, prevAddr) + "]"
          + "]";
 }
 template<class T>
@@ -943,8 +953,8 @@ void __opt_cap_seq__(const char* n, const std::list<T>& c) {
   if(!__opt_current_tracer__) return;
   const void* base = &c;
   // Stack: pointer to the first node.
-  __opt_current_tracer__->add(n, "[\"C_DATA\",\"" + __opt_addr__(base) + "\",\"pointer\",\""
-                     + (c.empty() ? std::string("0x0") : __opt_seq_node_addr__(base, 0)) + "\",{\"bytes\":8}]");
+  __opt_current_tracer__->add(n, "[\"C_DATA\",\"" + __opt_addr__(base) + "\",\"pointer\","
+                     + (c.empty() ? std::string("0x0") : __opt_seq_node_addr__(base, 0)) + ",{\"bytes\":8}]");
   // Heap: one C_STRUCT per element, chained by next/prev pointers.
   std::size_t sz = c.size();
   std::size_t idx = 0;
@@ -952,7 +962,7 @@ void __opt_cap_seq__(const char* n, const std::list<T>& c) {
     std::string addr  = __opt_seq_node_addr__(base, idx);
     std::string next  = (idx + 1 < sz) ? __opt_seq_node_addr__(base, idx + 1) : std::string("0x0");
     std::string prev  = (idx > 0)     ? __opt_seq_node_addr__(base, idx - 1) : std::string("0x0");
-    __opt_current_tracer__->addHeapEntry("\"" + addr + "\":" + __opt_seq_node_struct__(addr, v, next, prev));
+    __opt_current_tracer__->addHeapEntry("\"" + addr + "\":" + __opt_seq_node_struct__(base, idx, addr, v, next, prev));
     idx++;
   }
 }
@@ -960,15 +970,15 @@ template<class T>
 void __opt_cap_seq__(const char* n, const std::deque<T>& c) {
   if(!__opt_current_tracer__) return;
   const void* base = &c;
-  __opt_current_tracer__->add(n, "[\"C_DATA\",\"" + __opt_addr__(base) + "\",\"pointer\",\""
-                     + (c.empty() ? std::string("0x0") : __opt_seq_node_addr__(base, 0)) + "\",{\"bytes\":8}]");
+  __opt_current_tracer__->add(n, "[\"C_DATA\",\"" + __opt_addr__(base) + "\",\"pointer\","
+                     + (c.empty() ? std::string("0x0") : __opt_seq_node_addr__(base, 0)) + ",{\"bytes\":8}]");
   std::size_t sz = c.size();
   std::size_t idx = 0;
   for(const auto& v : c) {
     std::string addr  = __opt_seq_node_addr__(base, idx);
     std::string next  = (idx + 1 < sz) ? __opt_seq_node_addr__(base, idx + 1) : std::string("0x0");
     std::string prev  = (idx > 0)     ? __opt_seq_node_addr__(base, idx - 1) : std::string("0x0");
-    __opt_current_tracer__->addHeapEntry("\"" + addr + "\":" + __opt_seq_node_struct__(addr, v, next, prev));
+    __opt_current_tracer__->addHeapEntry("\"" + addr + "\":" + __opt_seq_node_struct__(base, idx, addr, v, next, prev));
     idx++;
   }
 }

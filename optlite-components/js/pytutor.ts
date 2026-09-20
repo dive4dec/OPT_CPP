@@ -3126,8 +3126,12 @@ class DataVisualizer {
 
           var debugInfo = '';
 
-          // make it really narrow so that the div doesn't STRETCH too wide
-          d3DomElement.append('<div style="width: 10px;" id="' + ptrSrcId + '" class="cdataElt" data-ptr-target="' + ptrVal + '">&nbsp;' + debugInfo + '</div>');
+          // The pointer cell shows the TARGET address (obj[3]) so the reader can
+          // see exactly which node this pointer refers to; for a 0x0 target we
+          // show NULL. (Previously this was a 10px blank stub that showed no
+          // address at all — the cause of "the pointer value is missing/128.4".)
+          var ptrCellText = (ptrVal === '0x0') ? '<span class="cdataUninit">NULL</span>' : ptrVal;
+          d3DomElement.append('<div id="' + ptrSrcId + '" class="cdataElt" data-ptr-target="' + ptrVal + '">' + ptrCellText + debugInfo + '</div>');
 
           // special case: display 0x0 address as a NULL pointer value,
           // to distinguish it from all other pointers, since sometimes
@@ -3564,11 +3568,15 @@ class DataVisualizer {
       var cdataId = myViz.generateHeapObjID('cdata_' + addr, stepNum);
 
       var leader = '';
+      // Show the object's address in the label (so pointer targets are
+      // identifiable — "this pointer points to 0x1000" must be verifiable).
+      // Only list-node-like single-address objects benefit; harmless otherwise.
+      var addrLabel = (typeof addr === 'string' && addr && addr !== '0x0') ? ' ' + addr : '';
       if (myViz.params.lang === 'cpp') {
         // call it 'object' instead of 'struct'
-        d3DomElement.append('<div class="typeLabel" id="' + cdataId + '">' + leader + 'object ' + typename + '</div>');
+        d3DomElement.append('<div class="typeLabel" id="' + cdataId + '">' + leader + 'object ' + typename + '<span class="cdataAddr">' + addrLabel + '</span></div>');
       } else {
-        d3DomElement.append('<div class="typeLabel" id="' + cdataId + '">' + leader + 'struct ' + typename + '</div>');
+        d3DomElement.append('<div class="typeLabel" id="' + cdataId + '">' + leader + 'struct ' + typename + '<span class="cdataAddr">' + addrLabel + '</span></div>');
       }
 
       if (obj.length > 3) {
