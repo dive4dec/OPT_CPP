@@ -547,6 +547,7 @@ void __opt_trace_impl__(int line, const std::function<void(__opt_tracer__&)>& la
   } catch (...) {
     __t__.add("__opt_error__", "[\"C_DATA\",\"0x0\",\"error\",\"unknown\",{}]");
   }
+  std::fflush(stdout);  // drain C-stdio (std::print/printf) before the step sentinel
   std::cout << __OPT_SENTINEL__;
   std::cout.flush();
   std::string entry = __t__.finish();
@@ -571,6 +572,7 @@ void __opt_trace_fn_impl__(const char* func_name, int line, const std::function<
   } catch (...) {
     __t__.add("__opt_error__", "[\"C_DATA\",\"0x0\",\"error\",\"unknown\",{}]");
   }
+  std::fflush(stdout);  // drain C-stdio (std::print/printf) before the step sentinel
   std::cout << __OPT_SENTINEL__;
   std::cout.flush();
   std::string entry = __t__.finish();
@@ -596,6 +598,7 @@ void __opt_trace_impl__(int line) {
 void __opt_trace_end__() {
   if(!__opt_current_tracer__) return;
   auto& st = __opt_get_state__();
+  std::fflush(stdout);  // drain C-stdio (std::print/printf) before the step sentinel
   std::cout << __OPT_SENTINEL__;
   std::cout.flush();
   std::string entry = __opt_current_tracer__->finish();
