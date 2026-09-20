@@ -55,6 +55,64 @@ async function loadTraceHeader() {
   return optTraceHeader;
 }
 
+// ── Rewrite std::println / std::print to std::cout-based output ──
+// std::println/std::print (C++23 <print>) write to C stdout (fd 1), which
+// emscripten delivers to the main thread as ONE batch AFTER all the per-step
+// sentinels, so their text lands on the LAST step, not the one that printed
+// it. std::cout, by contrast, is the same channel as the sentinels and is
+// delivered per-step. So rewrite them to route through std::cout:
+//     std::println(FMT, args...) -> std::cout << std::format(FMT, args...) << '\n'
+//     std::print(FMT, args...)   -> std::cout << std::format(FMT, args...)
+// The format FMT must stay an INLINE literal (not a runtime variable): this
+// kernel's std::format is consteval, so it only compiles with a compile-time
+// literal — which is exactly what std::println's format_string already
+// requires, so no real code is lost. std::println is std::namespaced, so it
+// can't be #define- or symbol-shadowed (macro names can't contain '::'); it
+// needs this source transform. String/char-literal and comment aware so a
+// paren or quote inside a format string ("f({}) = f(3)") doesn't break the
+// matching. No-op when the code has no std::print(ln).
+function rewriteStdPrint(code) {
+  if (!code || !/std::print(ln)?\s*\(/.test(code)) return code;
+  let out = '';
+  let i = 0;
+  const n = code.length;
+  while (i < n) {
+    const rest = code.slice(i);
+    const mLN = rest.search(/\bstd::println\b/);
+    const mPR = rest.search(/\bstd::print\b(?!ln)/);
+    let hit = null;
+    if (mLN >= 0 && (mPR < 0 || mLN < mPR)) hit = { key: 'println', at: i + mLN, len: 'std::println'.length };
+    else if (mPR >= 0) hit = { key: 'print', at: i + mPR, len: 'std::print'.length };
+    if (!hit) { out += code[i]; i++; continue; }
+    out += code.slice(i, hit.at);
+    let j = hit.at + hit.len;
+    while (j < n && /[ \t\r\n]/.test(code[j])) j++;
+    if (code[j] !== '(') { out += code[hit.at]; i = hit.at + 1; continue; }
+    // find matching close paren, string/char/comment aware
+    let depth = 0, k = j, inStr = false, inChr = false, inLCM = false, inBCM = false;
+    for (; k < n; k++) {
+      const c = code[k], c2 = code[k + 1];
+      if (inLCM) { if (c === '\n') inLCM = false; continue; }
+      if (inBCM) { if (c === '*' && c2 === '/') { inBCM = false; k++; } continue; }
+      if (inStr) { if (c === '\\') { k++; continue; } if (c === '"') inStr = false; continue; }
+      if (inChr) { if (c === '\\') { k++; continue; } if (c === "'") inChr = false; continue; }
+      if (c === '"') { inStr = true; continue; }
+      if (c === "'") { inChr = true; continue; }
+      if (c === '/' && c2 === '/') { inLCM = true; k++; continue; }
+      if (c === '/' && c2 === '*') { inBCM = true; k++; continue; }
+      if (c === '(') depth++;
+      else if (c === ')') { depth--; if (depth === 0) break; }
+    }
+    const close = k;
+    const inner = code.slice(j, close + 1);
+    out += (hit.key === 'println')
+      ? 'std::cout << std::format' + inner + " << '\\n'"
+      : 'std::cout << std::format' + inner;
+    i = close + 1;
+  }
+  return out;
+}
+
 // ── Create a fresh kernel from a clean module ──
 async function createKernel(XEUS_CPP_BASE, waitForDeps = false) {
   const M = self.xeusModule;
@@ -232,10 +290,10 @@ self.onmessage = async (event) => {
       // one line too high in the editor — the arrows land on the wrong lines. A
       // comment is inert for the instrumenter and the kernel alike, and other
       // headers (string, iostream, ...) are left untouched.
-      const cleanedCode = code.replace(
+      const cleanedCode = rewriteStdPrint(code.replace(
         /^([ \t]*)#[ \t]*include[ \t]*[<"][ \t]*format[ \t]*[>"].*$/gim,
         '$1// (format is provided by the kernel preamble)',
-      );
+      ));
 
       // ── Instrument the user code (v2 with legacy fallback) ──
       // v2 = CST (tree-sitter) line reformat -> the UNCHANGED legacy
