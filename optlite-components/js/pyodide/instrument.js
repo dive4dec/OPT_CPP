@@ -73,6 +73,33 @@ function stripCommentsAndStrings(code) {
   return result;
 }
 
+// Are the braces balanced (net depth 0, never going negative) in `s`, ignoring
+// anything inside string/char literals? Used to gate brace-initializer
+// detection: a valid `Name{...}` initializer has balanced braces, whereas a
+// struct/class/enum definition like `struct Foo {` or a function body `main() {`
+// has an unbalanced trailing `{`.
+function bracesBalanced(s) {
+  let d = 0, inStr = false, inChar = false;
+  for (let i = 0; i < s.length; i++) {
+    const c = s[i];
+    if (inStr) {
+      if (c === '\\' && i + 1 < s.length) i++;
+      else if (c === '"') inStr = false;
+      continue;
+    }
+    if (inChar) {
+      if (c === '\\' && i + 1 < s.length) i++;
+      else if (c === "'") inChar = false;
+      continue;
+    }
+    if (c === '"') { inStr = true; continue; }
+    if (c === "'") { inChar = true; continue; }
+    if (c === '{') d++;
+    else if (c === '}') { d--; if (d < 0) return false; }
+  }
+  return d === 0;
+}
+
 // Parse a variable declaration to extract type and variable name(s)
 // Returns array of { type, name, isArray, arraySize, isPointer, isReference }
 function parseDeclaration(line) {
@@ -133,7 +160,7 @@ function parseDeclaration(line) {
 
   // Extract the type (everything before the first variable name)
   // Strategy: find the first identifier that's followed by [=,;[] or end
-  const tokens = line.match(/^((?:const\s+)?(?:static\s+)?(?:unsigned\s+|signed\s+)?(?:std::)?[\w:]+(?:\s*<[^>]*>)?)\s*([*&]*)\s*(.+)$/);
+  const tokens = line.match(/^((?:const\s+)?(?:static\s+)?(?:unsigned\s+|signed\s+)?(?:std::)?[\w:]+(?:\s*<[^<>]*(?:<[^<>]*>[^<>]*)*>)?)\s*([*&]*)\s*(.+)$/);
   if (!tokens) return [];
 
   let baseType = tokens[1].trim();
@@ -190,6 +217,18 @@ function parseDeclaration(line) {
     // Also match constructor-call syntax: name(args)
     if (!nameMatch) {
       nameMatch = v.match(/^(\w+)\s*\([^)]*\)$/);
+    }
+    // Also match brace-initializer syntax: name{...} (C++11 list-init, e.g.
+    // `list<size_t> x{1,2,3}` or `list<list<size_t>> y{x}`). Without this path
+    // brace-initialized variables were silently dropped (never registered → not
+    // visualized), even though `= {...}` and `( ... )` forms worked. The braces
+    // must be BALANCED, so a function/struct opening `main() {` / `struct Foo {`
+    // (unbalanced trailing brace, and those also fail the earlier type/keyword
+    // checks) is never mistaken for an initializer. The comma-split above already
+    // respects brace depth, so `m{{"a",1}}` arrives here intact as `m{{"a",1}}`.
+    if (!nameMatch) {
+      let bm = v.match(/^(\w+)\s*\{.*\}$/);
+      if (bm && bracesBalanced(v)) nameMatch = bm;
     }
     if (!nameMatch) continue;
 
