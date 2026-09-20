@@ -73,6 +73,33 @@ function stripCommentsAndStrings(code) {
   return result;
 }
 
+// Are the braces balanced (net depth 0, never going negative) in `s`, ignoring
+// anything inside string/char literals? Used to gate brace-initializer
+// detection: a valid `Name{...}` initializer has balanced braces, whereas a
+// struct/class/enum definition like `struct Foo {` or a function body `main() {`
+// has an unbalanced trailing `{`.
+function bracesBalanced(s) {
+  let d = 0, inStr = false, inChar = false;
+  for (let i = 0; i < s.length; i++) {
+    const c = s[i];
+    if (inStr) {
+      if (c === '\\' && i + 1 < s.length) i++;
+      else if (c === '"') inStr = false;
+      continue;
+    }
+    if (inChar) {
+      if (c === '\\' && i + 1 < s.length) i++;
+      else if (c === "'") inChar = false;
+      continue;
+    }
+    if (c === '"') { inStr = true; continue; }
+    if (c === "'") { inChar = true; continue; }
+    if (c === '{') d++;
+    else if (c === '}') { d--; if (d < 0) return false; }
+  }
+  return d === 0;
+}
+
 // Parse a variable declaration to extract type and variable name(s)
 // Returns array of { type, name, isArray, arraySize, isPointer, isReference }
 function parseDeclaration(line) {
@@ -133,7 +160,7 @@ function parseDeclaration(line) {
 
   // Extract the type (everything before the first variable name)
   // Strategy: find the first identifier that's followed by [=,;[] or end
-  const tokens = line.match(/^((?:const\s+)?(?:static\s+)?(?:unsigned\s+|signed\s+)?(?:std::)?[\w:]+(?:\s*<[^>]*>)?)\s*([*&]*)\s*(.+)$/);
+  const tokens = line.match(/^((?:const\s+)?(?:static\s+)?(?:unsigned\s+|signed\s+)?(?:std::)?[\w:]+(?:\s*<[^<>]*(?:<[^<>]*>[^<>]*)*>)?)\s*([*&]*)\s*(.+)$/);
   if (!tokens) return [];
 
   let baseType = tokens[1].trim();
@@ -190,6 +217,18 @@ function parseDeclaration(line) {
     // Also match constructor-call syntax: name(args)
     if (!nameMatch) {
       nameMatch = v.match(/^(\w+)\s*\([^)]*\)$/);
+    }
+    // Also match brace-initializer syntax: name{...} (C++11 list-init, e.g.
+    // `list<size_t> x{1,2,3}` or `list<list<size_t>> y{x}`). Without this path
+    // brace-initialized variables were silently dropped (never registered → not
+    // visualized), even though `= {...}` and `( ... )` forms worked. The braces
+    // must be BALANCED, so a function/struct opening `main() {` / `struct Foo {`
+    // (unbalanced trailing brace, and those also fail the earlier type/keyword
+    // checks) is never mistaken for an initializer. The comma-split above already
+    // respects brace depth, so `m{{"a",1}}` arrives here intact as `m{{"a",1}}`.
+    if (!nameMatch) {
+      let bm = v.match(/^(\w+)\s*\{.*\}$/);
+      if (bm && bracesBalanced(v)) nameMatch = bm;
     }
     if (!nameMatch) continue;
 
@@ -469,6 +508,16 @@ function genCaptures(knownVars, heapPointers, deletedPointers, structDefs, exclu
       } else {
         captures.push(`__opt_cap_struct__("${name}", "${info.type}", (void*)&${name}, "");`);
       }
+    } else if (info && info.type && /^(std::)?(list|deque)\s*</.test(info.type)) {
+      // std::list / std::deque are NON-contiguous: they have NO .data() member,
+      // so the __opt_cap_vector_*__ path (which calls name.data()) would fail to
+      // compile with "no member named 'data' in 'std::list<int>'". Instead
+      // __opt_cap_seq__<T> (deduced from the argument) copies the elements into
+      // a contiguous std::vector<T> and encodes each via __opt_encode_data__, so
+      // EVERY supported element type renders — int/long/size_t/double/char/bool/
+      // std::string/T*/struct — with no per-type overloads and no .data() call.
+      // This branch MUST come before the vector/array containerKind branch below.
+      captures.push(`__opt_cap_seq__("${name}", ${name});`);
     } else if (info && info.type && containerKind(info.type, !!info.isPointer)) {
       // std::vector<T> / other containers. parseDeclaration strips the
       // `vector<...>` wrapper (type becomes `vector<int>`), and for pointer
@@ -1068,6 +1117,25 @@ function instrumentCode(sourceCode) {
       // Check if this is a function body opening
       // e.g., "int main() {" or "void foo(int x) {"
       let funcMatch = stripped.match(/(\w[\w:]*)\s+(\w+)\s*\(([^)]*)\)\s*\{/);
+      if (!funcMatch) {
+        // The primary regex's return-type group `(\w[\w:]*)` only matches a plain
+        // (or `::`-qualified) word, so it FAILS on:
+        //   template returns:  list<int> f(){}, std::vector<int> f(){},
+        //                      std::map<int,std::string> f(){}
+        //   reference returns: std::string& f(){}, int&& f(){}
+        //   pointer returns:   Point* f(){}
+        // When such a function is not recognized, inFunctionBody stays false in
+        // its body, its locals get registered as FILE-SCOPE (global) vars, and
+        // those globals are then copied into main's frame — where they're out of
+        // scope — so the next trace emits e.g. __opt_cap_seq__("output", output)
+        // inside main and clang-repl fails with "use of undeclared identifier".
+        // Fallback: key on the function NAME (the identifier immediately before
+        // "(params) {"), treating everything before it as a free-form return
+        // type. Same 3-group layout as the primary (name=group2, params=group3),
+        // so all downstream handling is unchanged; the keyword check below still
+        // rejects if/for/while/switch/else/do/catch/try.
+        funcMatch = stripped.match(/(.*)\s+(\w+)\s*\(([^)]*)\)\s*\{/);
+      }
       if (funcMatch && !['if','for','while','switch','else','do','catch','try'].includes(funcMatch[2])) {
         let funcName = funcMatch[2];
         let params = funcMatch[3].trim();

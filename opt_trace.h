@@ -23,6 +23,8 @@
 #include <cxxabi.h>
 #include <iostream>
 #include <vector>
+#include <list>
+#include <deque>
 #include <functional>
 
 // ── cin-prompt protocol (Python Tutor's raw_input, adapted for C++) ──
@@ -881,6 +883,107 @@ void __opt_cap_vector_int__(const char* n, const int* data, int sz) {
   }
   s += "]";
   __opt_current_tracer__->add(n, s);
+}
+// ── Sequence capture for NON-CONTIGUOUS containers: std::list / std::deque ──
+// (replaces the old C_ARRAY rendering, which was WRONG — a list is a linked
+// list, not a contiguous indexed array: its nodes are separately allocated and
+// elements are reached by iterator, not by integer subscript. Rendering it as a
+// C_ARRAY with columns 0,1,2 implied contiguity and indexing that a list does
+// not have.)
+//
+// New rendering: the stack variable is a POINTER to the first node, and the
+// nodes are drawn on the HEAP as C_STRUCT objects with fields val, next, prev,
+// connected by the frontend's jsPlumb pointer arrows — the textbook
+// linked-list diagram (stack pointer → [val|next|prev] → [val|next|prev] → 0x0).
+//   * val  — __opt_encode_data__(v): arithmetic/string/pointer/etc.; a nested
+//             list/deque renders as an opaque C_STRUCT with its type name
+//             (matches Python Tutor's C++ view; avoids a heap-ref race).
+//   * next — pointer to the next node's synthetic address, "0x0" for the tail
+//   * prev — pointer to the previous node's synthetic address, "0x0" for the head
+//
+// Node addresses are SYNTHETIC and STABLE: base + (i+1)*0x1000 (i = element
+// index), where base is the container's own address (&c). Stable because
+// generateHeapObjID() keys off the address with NO step component
+// (pytutor.ts:1318), so a node must keep the same address across steps for the
+// frontend to persist its position. Synthetic (not real node pointers) because
+// real std::list node pointers are NOT public (no portable way to read them).
+//
+// std::deque uses the same visual (a doubly-linked node chain). A small
+// deliberate simplification — deque is not internally a list — but it conveys
+// "non-contiguous, no O(1) indexing", which is the pedagogical point.
+//
+// The base is &c (the CONTAINER's own address) — exists for every T and is the
+// natural "head of the list" pointer to show on the stack.
+// Synthetic node address for element i (stable across steps for a given list).
+inline std::string __opt_seq_node_addr__(const void* base, std::size_t i) {
+  return __opt_addr__((const void*)((unsigned long)base + (unsigned long)(i + 1) * 0x1000UL));
+}
+// Storage address of a pointer FIELD inside node i. Each field gets a UNIQUE
+// address (node base + (i+1)*0x1000 + offset) so the frontend's ptrSrc_/cdata_
+// connection IDs (derived from this address) do NOT collide across fields —
+// the reason the v357 arrows tangled (every field used the same "0x0").
+inline std::string __opt_seq_field_addr__(const void* base, std::size_t i, unsigned long offset) {
+  return __opt_addr__((const void*)((unsigned long)base + (unsigned long)(i + 1) * 0x1000UL + offset));
+}
+// A pointer field: obj[1] = the field's OWN unique storage address, obj[3] =
+// the target node's address ("0x0" for NULL). The frontend draws an arrow from
+// obj[1] to the heap object at obj[3], and (after the frontend fix) prints
+// obj[3] as the cell value.
+inline std::string __opt_seq_ptr_field__(const void* base, std::size_t i, unsigned long fieldOffset, const std::string& targetAddr) {
+  return std::string("[\"C_DATA\",\"") + __opt_seq_field_addr__(base, i, fieldOffset)
+       + "\",\"pointer\",\"" + targetAddr + "\",{\"bytes\":8}]";
+}
+// A C_STRUCT node. Fields are [name, value] PAIRS as DIRECT elements (indices
+// 3, 4, 5…) — NOT wrapped in an inner array. This matches cap_struct's format
+// (["C_STRUCT",addr,"type",["x",3],["y",4]]) and the frontend's renderCStructArray
+// / traverseCStructArray, which $.each() over the array directly (skipping the 3
+// header fields) and read kvPair[1] as the value, bailing if kvPair[0] is not a
+// string (which is exactly what happens if the fields are wrongly nested).
+//   ["C_STRUCT",ADDR,"list node",["val",VAL],["next",NEXT],["prev",PREV]]
+template<class T>
+inline std::string __opt_seq_node_struct__(const void* base, std::size_t i, const std::string& addr, const T& v, const std::string& nextAddr, const std::string& prevAddr) {
+  return std::string("[\"C_STRUCT\",\"") + addr + "\",\"list node\","
+         + "[\"val\","  + __opt_encode_data__(v)                 + "],"
+         + "[\"next\","  + __opt_seq_ptr_field__(base, i, 8, nextAddr) + "],"
+         + "[\"prev\","  + __opt_seq_ptr_field__(base, i, 16, prevAddr) + "]"
+         + "]";
+}
+template<class T>
+void __opt_cap_seq__(const char* n, const std::list<T>& c) {
+  if(!__opt_current_tracer__) return;
+  const void* base = &c;
+  // Stack: pointer to the first node. The pointer VALUE (obj[3]) MUST be a
+  // quoted string ("0x…"/"0x0") — an unquoted hex literal is not valid JSON and
+  // crashes the frontend's JSON.parse, killing the whole run.
+  __opt_current_tracer__->add(n, "[\"C_DATA\",\"" + __opt_addr__(base) + "\",\"pointer\",\""
+                     + (c.empty() ? std::string("0x0") : __opt_seq_node_addr__(base, 0)) + "\",{\"bytes\":8}]");
+  // Heap: one C_STRUCT per element, chained by next/prev pointers.
+  std::size_t sz = c.size();
+  std::size_t idx = 0;
+  for(const auto& v : c) {
+    std::string addr  = __opt_seq_node_addr__(base, idx);
+    std::string next  = (idx + 1 < sz) ? __opt_seq_node_addr__(base, idx + 1) : std::string("0x0");
+    std::string prev  = (idx > 0)     ? __opt_seq_node_addr__(base, idx - 1) : std::string("0x0");
+    __opt_current_tracer__->addHeapEntry("\"" + addr + "\":" + __opt_seq_node_struct__(base, idx, addr, v, next, prev));
+    idx++;
+  }
+}
+template<class T>
+void __opt_cap_seq__(const char* n, const std::deque<T>& c) {
+  if(!__opt_current_tracer__) return;
+  const void* base = &c;
+  // pointer VALUE (obj[3]) MUST be a quoted string — unquoted hex breaks JSON.parse.
+  __opt_current_tracer__->add(n, "[\"C_DATA\",\"" + __opt_addr__(base) + "\",\"pointer\",\""
+                     + (c.empty() ? std::string("0x0") : __opt_seq_node_addr__(base, 0)) + "\",{\"bytes\":8}]");
+  std::size_t sz = c.size();
+  std::size_t idx = 0;
+  for(const auto& v : c) {
+    std::string addr  = __opt_seq_node_addr__(base, idx);
+    std::string next  = (idx + 1 < sz) ? __opt_seq_node_addr__(base, idx + 1) : std::string("0x0");
+    std::string prev  = (idx > 0)     ? __opt_seq_node_addr__(base, idx - 1) : std::string("0x0");
+    __opt_current_tracer__->addHeapEntry("\"" + addr + "\":" + __opt_seq_node_struct__(base, idx, addr, v, next, prev));
+    idx++;
+  }
 }
 // Deleted pointer — show as NULL pointer, no heap entry
 void __opt_cap_deleted__(const char* n) {
