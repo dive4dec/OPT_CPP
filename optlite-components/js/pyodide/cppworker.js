@@ -55,60 +55,112 @@ async function loadTraceHeader() {
   return optTraceHeader;
 }
 
-// ── Rewrite std::println / std::print to std::cout-based output ──
-// std::println/std::print (C++23 <print>) write to C stdout (fd 1), which
-// emscripten delivers to the main thread as ONE batch AFTER all the per-step
-// sentinels, so their text lands on the LAST step, not the one that printed
-// it. std::cout, by contrast, is the same channel as the sentinels and is
-// delivered per-step. So rewrite them to route through std::cout:
-//     std::println(FMT, args...) -> std::cout << std::format(FMT, args...) << '\n'
-//     std::print(FMT, args...)   -> std::cout << std::format(FMT, args...)
-// The format FMT must stay an INLINE literal (not a runtime variable): this
-// kernel's std::format is consteval, so it only compiles with a compile-time
-// literal — which is exactly what std::println's format_string already
-// requires, so no real code is lost. std::println is std::namespaced, so it
-// can't be #define- or symbol-shadowed (macro names can't contain '::'); it
-// needs this source transform. String/char-literal and comment aware so a
-// paren or quote inside a format string ("f({}) = f(3)") doesn't break the
-// matching. No-op when the code has no std::print(ln).
+// ── Rewrite std::println / std::print (and bare print/println under
+//    `using namespace std;`) to std::cout-based output ──
+// println/print (C++23 <print>) write to C stdout (fd 1), which emscripten
+// delivers to the main thread as ONE batch AFTER all the per-step sentinels,
+// so their text lands on the LAST step, not the one that printed it. std::cout
+// is the same channel as the sentinels and is delivered per-step. Rewrite:
+//     println(FMT, args...) -> std::cout << std::format(FMT, args...) << '\n'
+//     print(FMT, args...)   -> std::cout << std::format(FMT, args...)
+//     println()             -> std::cout << '\n'   (no format string)
+// Both qualified (std::print) and unqualified (print) call forms are handled,
+// so `using namespace std;` code works too. Bare forms are only rewritten when
+// `#include <print>` is present, so a user-defined `void print(...)` in code
+// without that header is left alone. The format FMT must stay an INLINE
+// literal (not a runtime variable): this kernel's std::format is consteval, so
+// it only compiles with a compile-time literal — exactly what <print>'s
+// format_string requires, so no real code is lost. print/println are
+// std::namespaced (or bare), so they can't be #define- or symbol-shadowed
+// (macro names can't contain '::'); they need this source transform.
+// String/char-literal and comment aware so a paren or quote inside a format
+// string ("f({}) = f(3)") doesn't break the matching. No-op when the code has
+// no print/println calls.
 function rewriteStdPrint(code) {
-  if (!code || !/std::print(ln)?\s*\(/.test(code)) return code;
+  if (!code) return code;
+  // Two call forms of the C++23 <print> functions are handled:
+  //   std::print / std::println   (qualified — always rewritten)
+  //   print / println             (bare, via `using namespace std;`)
+  // Qualified calls are always safe to rewrite. Bare calls are only rewritten
+  // when BOTH `using namespace std;` and `#include <print>` are present, so a
+  // user-defined `void print(...)` in code without that header is left alone.
+  const hasPrintInclude = /^[ \t]*#[ \t]*include[ \t]*<print>[ \t]*$/m.test(code);
+  const hasUsingStd = /using\s+namespace\s+std\b/.test(code);
+  const allowBare = hasPrintInclude && hasUsingStd;
+  if (!hasPrintInclude && !/std::print(ln)?\s*\(/.test(code) && !allowBare) return code;
+
   let out = '';
   let i = 0;
   const n = code.length;
-  while (i < n) {
-    const rest = code.slice(i);
-    const mLN = rest.search(/\bstd::println\b/);
-    const mPR = rest.search(/\bstd::print\b(?!ln)/);
-    let hit = null;
-    if (mLN >= 0 && (mPR < 0 || mLN < mPR)) hit = { key: 'println', at: i + mLN, len: 'std::println'.length };
-    else if (mPR >= 0) hit = { key: 'print', at: i + mPR, len: 'std::print'.length };
-    if (!hit) { out += code[i]; i++; continue; }
-    out += code.slice(i, hit.at);
-    let j = hit.at + hit.len;
-    while (j < n && /[ \t\r\n]/.test(code[j])) j++;
-    if (code[j] !== '(') { out += code[hit.at]; i = hit.at + 1; continue; }
-    // find matching close paren, string/char/comment aware
-    let depth = 0, k = j, inStr = false, inChr = false, inLCM = false, inBCM = false;
-    for (; k < n; k++) {
-      const c = code[k], c2 = code[k + 1];
-      if (inLCM) { if (c === '\n') inLCM = false; continue; }
-      if (inBCM) { if (c === '*' && c2 === '/') { inBCM = false; k++; } continue; }
-      if (inStr) { if (c === '\\') { k++; continue; } if (c === '"') inStr = false; continue; }
-      if (inChr) { if (c === '\\') { k++; continue; } if (c === "'") inChr = false; continue; }
-      if (c === '"') { inStr = true; continue; }
-      if (c === "'") { inChr = true; continue; }
-      if (c === '/' && c2 === '/') { inLCM = true; k++; continue; }
-      if (c === '/' && c2 === '*') { inBCM = true; k++; continue; }
-      if (c === '(') depth++;
-      else if (c === ')') { depth--; if (depth === 0) break; }
+  let inStr = false, inChr = false, inLCM = false, inBCM = false;
+
+  // Given index p pointing at '(', find the index of the matching ')',
+  // tracking string/char literals and comments so a paren inside "f({})" or
+  // a comment doesn't break the balance.
+  function matchClose(p) {
+    let depth = 0, q = p, s = false, ch = false, lc = false, bc = false;
+    for (; q < n; q++) {
+      const d = code[q], e = code[q + 1];
+      if (lc) { if (d === '\n') lc = false; continue; }
+      if (bc) { if (d === '*' && e === '/') { bc = false; q++; } continue; }
+      if (s) { if (d === '\\') { q++; continue; } if (d === '"') s = false; continue; }
+      if (ch) { if (d === '\\') { q++; continue; } if (d === "'") ch = false; continue; }
+      if (d === '"') { s = true; continue; }
+      if (d === "'") { ch = true; continue; }
+      if (d === '/' && e === '/') { lc = true; q++; continue; }
+      if (d === '/' && e === '*') { bc = true; q++; continue; }
+      if (d === '(') depth++;
+      else if (d === ')') { depth--; if (depth === 0) break; }
     }
-    const close = k;
-    const inner = code.slice(j, close + 1);
-    out += (hit.key === 'println')
-      ? 'std::cout << std::format' + inner + " << '\\n'"
-      : 'std::cout << std::format' + inner;
-    i = close + 1;
+    return q;
+  }
+
+  while (i < n) {
+    const c = code[i], c2 = code[i + 1];
+    // ── track string/char/comment state (rewriting only happens in code) ──
+    if (inLCM) { out += c; if (c === '\n') inLCM = false; i++; continue; }
+    if (inBCM) { out += c; if (c === '*' && c2 === '/') { out += '/'; inBCM = false; i += 2; continue; } i++; continue; }
+    if (inStr) { out += c; if (c === '\\') { out += (c2 || ''); i += 2; continue; } if (c === '"') inStr = false; i++; continue; }
+    if (inChr) { out += c; if (c === '\\') { out += (c2 || ''); i += 2; continue; } if (c === "'") inChr = false; i++; continue; }
+    if (c === '"') { inStr = true; out += c; i++; continue; }
+    if (c === "'") { inChr = true; out += c; i++; continue; }
+    if (c === '/' && c2 === '/') { inLCM = true; out += c; i++; continue; }
+    if (c === '/' && c2 === '*') { inBCM = true; out += c; i++; continue; }
+
+    // ── a print / println token starting here (word character) ──
+    if (c === 'p' && code[i + 1] === 'r') {
+      const word = code.startsWith('println', i) ? 'println'
+               : code.startsWith('print', i) ? 'print' : null;
+      if (word) {
+        const prev = i > 0 ? code[i - 1] : '';
+        const prevAlpha = /[A-Za-z0-9_]/.test(prev);   // part of a longer word, e.g. myprint
+        const isMember = prev === '.';                  // obj.print — not the <print> fn
+        // exactly "std::print" (not e.g. xstd::print, not foo::std::print)
+        const qualified = code.slice(i - 5, i) === 'std::'
+                          && (i < 6 || !/[A-Za-z0-9_]/.test(code[i - 6]));
+        const gated = qualified || (!prevAlpha && allowBare);
+        if (gated && !isMember) {
+          let k = i + word.length;
+          while (k < n && /[ \t\r\n]/.test(code[k])) k++;
+          if (code[k] === '(') {
+            const close = matchClose(k);
+            const inner = code.slice(k, close + 1);    // incl. outer parens
+            const innerBody = inner.slice(1, -1).trim();
+            // For the qualified form, the "std::" prefix was already emitted
+            // char-by-char in earlier loop iterations — drop it so the
+            // replacement doesn't duplicate it (avoids "std::std::cout").
+            if (qualified && out.endsWith('std::')) out = out.slice(0, -5);
+            if (word === 'println' && innerBody === '') out += "std::cout << '\\n'";
+            else if (word === 'println') out += 'std::cout << std::format' + inner + " << '\\n'";
+            else out += 'std::cout << std::format' + inner;
+            i = close + 1;
+            continue;
+          }
+        }
+      }
+    }
+    out += c;
+    i++;
   }
   return out;
 }
