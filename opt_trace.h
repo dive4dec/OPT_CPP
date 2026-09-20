@@ -14,6 +14,7 @@
 
 #include <cstdio>
 #include <cstdlib>
+#include <cstdarg>
 #include <cstring>
 #include <csetjmp>
 #include <string>
@@ -26,6 +27,39 @@
 #include <list>
 #include <deque>
 #include <functional>
+
+// ── C-stdio → std::cout bridge (per-step stdout correctness) ──
+// The per-step SENTINEL (opt_trace.h) is emitted via std::cout, and xeus-cpp
+// delivers std::cout to the main thread PER-STEP (so it interleaves correctly
+// with the sentinels). C-stdio writers (printf/puts) instead reach the main
+// thread as ONE batched stream AFTER all the sentinels, so their text lands on
+// the LAST step, not the step that printed it. This is NOT a flush/buffering
+// issue — fflush(stdout) and setvbuf(stdout,_IONBF) both still batch — it's
+// the cross-channel delivery order. So we override printf/puts in this TU to
+// emit via std::cout (same channel as the sentinel) → correct per-step order.
+// We override by DEFINITION (not #define): a same-TU definition shadows the
+// libc weak symbol, so the user's printf/puts bind to ours. The user's own
+// `#include <cstdio>` redeclares the same signature — harmless. Verified
+// in-browser: printf now shows A/AB/ABC across steps instead of ABC once.
+#include <cstdarg>
+static int __opt_vprintf(const char* __opt_fmt, va_list __opt_ap) {
+  char __opt_b[8192];
+  int __opt_n = vsnprintf(__opt_b, sizeof __opt_b, __opt_fmt, __opt_ap);
+  if(__opt_n > 0) std::cout.write(__opt_b, __opt_n < (int)sizeof __opt_b ? __opt_n : (int)sizeof __opt_b);
+  return __opt_n;
+}
+static int __opt_puts(const char* __opt_s) {
+  if(__opt_s) std::cout << __opt_s;
+  std::cout << '\n';
+  return 0;
+}
+extern "C" int printf(const char* fmt, ...) {
+  va_list ap; va_start(ap, fmt);
+  int r = __opt_vprintf(fmt, ap);
+  va_end(ap);
+  return r;
+}
+extern "C" int puts(const char* s) { return __opt_puts(s); }
 
 // ── cin-prompt protocol (Python Tutor's raw_input, adapted for C++) ──
 // When the user's code does a plain `cin >>` read (a statement, NOT a loop
@@ -547,6 +581,7 @@ void __opt_trace_impl__(int line, const std::function<void(__opt_tracer__&)>& la
   } catch (...) {
     __t__.add("__opt_error__", "[\"C_DATA\",\"0x0\",\"error\",\"unknown\",{}]");
   }
+  std::fflush(stdout);  // drain C-stdio (std::print/printf) before the step sentinel
   std::cout << __OPT_SENTINEL__;
   std::cout.flush();
   std::string entry = __t__.finish();
@@ -571,6 +606,7 @@ void __opt_trace_fn_impl__(const char* func_name, int line, const std::function<
   } catch (...) {
     __t__.add("__opt_error__", "[\"C_DATA\",\"0x0\",\"error\",\"unknown\",{}]");
   }
+  std::fflush(stdout);  // drain C-stdio (std::print/printf) before the step sentinel
   std::cout << __OPT_SENTINEL__;
   std::cout.flush();
   std::string entry = __t__.finish();
@@ -596,6 +632,7 @@ void __opt_trace_impl__(int line) {
 void __opt_trace_end__() {
   if(!__opt_current_tracer__) return;
   auto& st = __opt_get_state__();
+  std::fflush(stdout);  // drain C-stdio (std::print/printf) before the step sentinel
   std::cout << __OPT_SENTINEL__;
   std::cout.flush();
   std::string entry = __opt_current_tracer__->finish();
