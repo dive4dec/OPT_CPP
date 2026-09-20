@@ -42,11 +42,9 @@
 // `#include <cstdio>` redeclares the same signature — harmless. Verified
 // in-browser: printf now shows A/AB/ABC across steps instead of ABC once.
 #include <cstdarg>
-static int __opt_printf(const char* __opt_fmt, ...) {
-  va_list __opt_ap; va_start(__opt_ap, __opt_fmt);
+static int __opt_vprintf(const char* __opt_fmt, va_list __opt_ap) {
   char __opt_b[8192];
   int __opt_n = vsnprintf(__opt_b, sizeof __opt_b, __opt_fmt, __opt_ap);
-  va_end(__opt_ap);
   if(__opt_n > 0) std::cout.write(__opt_b, __opt_n < (int)sizeof __opt_b ? __opt_n : (int)sizeof __opt_b);
   return __opt_n;
 }
@@ -55,7 +53,12 @@ static int __opt_puts(const char* __opt_s) {
   std::cout << '\n';
   return 0;
 }
-extern "C" int printf(const char* fmt, ...) { return __opt_printf(fmt); }
+extern "C" int printf(const char* fmt, ...) {
+  va_list ap; va_start(ap, fmt);
+  int r = __opt_vprintf(fmt, ap);
+  va_end(ap);
+  return r;
+}
 extern "C" int puts(const char* s) { return __opt_puts(s); }
 
 // ── cin-prompt protocol (Python Tutor's raw_input, adapted for C++) ──
