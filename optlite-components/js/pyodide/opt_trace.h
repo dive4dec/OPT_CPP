@@ -923,17 +923,20 @@ inline std::string __opt_seq_node_addr__(const void* base, std::size_t i) {
 inline std::string __opt_seq_ptr_field__(const std::string& addr) {
   return std::string("[\"C_DATA\",\"0x0\",\"pointer\",\"") + addr + "\",{\"bytes\":8}]";
 }
-// A C_STRUCT node. Fields are [name, value] PAIRS (matches cap_struct's
-// [["x",3],["y",4]] format and the frontend's traverseCStructArray, which reads
-// kvPair[1] as the value):
-//   ["C_STRUCT",ADDR,"list node",[["val",VAL],["next",NEXT],["prev",PREV]]]
+// A C_STRUCT node. Fields are [name, value] PAIRS as DIRECT elements (indices
+// 3, 4, 5…) — NOT wrapped in an inner array. This matches cap_struct's format
+// (["C_STRUCT",addr,"type",["x",3],["y",4]]) and the frontend's renderCStructArray
+// / traverseCStructArray, which $.each() over the array directly (skipping the 3
+// header fields) and read kvPair[1] as the value, bailing if kvPair[0] is not a
+// string (which is exactly what happens if the fields are wrongly nested).
+//   ["C_STRUCT",ADDR,"list node",["val",VAL],["next",NEXT],["prev",PREV]]
 template<class T>
 inline std::string __opt_seq_node_struct__(const std::string& addr, const T& v, const std::string& nextAddr, const std::string& prevAddr) {
-  return std::string("[\"C_STRUCT\",\"") + addr + "\",\"list node\",["
-         + "[\"val\","  + __opt_encode_data__(v)                        + "],"
-         + "[\"next\","  + __opt_seq_ptr_field__(nextAddr)               + "],"
-         + "[\"prev\","  + __opt_seq_ptr_field__(prevAddr)               + "]"
-         + "]]";
+  return std::string("[\"C_STRUCT\",\"") + addr + "\",\"list node\","
+         + "[\"val\","  + __opt_encode_data__(v)      + "],"
+         + "[\"next\","  + __opt_seq_ptr_field__(nextAddr) + "],"
+         + "[\"prev\","  + __opt_seq_ptr_field__(prevAddr) + "]"
+         + "]";
 }
 template<class T>
 void __opt_cap_seq__(const char* n, const std::list<T>& c) {
