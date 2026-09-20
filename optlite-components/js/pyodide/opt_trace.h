@@ -952,9 +952,11 @@ template<class T>
 void __opt_cap_seq__(const char* n, const std::list<T>& c) {
   if(!__opt_current_tracer__) return;
   const void* base = &c;
-  // Stack: pointer to the first node.
-  __opt_current_tracer__->add(n, "[\"C_DATA\",\"" + __opt_addr__(base) + "\",\"pointer\","
-                     + (c.empty() ? std::string("0x0") : __opt_seq_node_addr__(base, 0)) + ",{\"bytes\":8}]");
+  // Stack: pointer to the first node. The pointer VALUE (obj[3]) MUST be a
+  // quoted string ("0x…"/"0x0") — an unquoted hex literal is not valid JSON and
+  // crashes the frontend's JSON.parse, killing the whole run.
+  __opt_current_tracer__->add(n, "[\"C_DATA\",\"" + __opt_addr__(base) + "\",\"pointer\",\""
+                     + (c.empty() ? std::string("0x0") : __opt_seq_node_addr__(base, 0)) + "\",{\"bytes\":8}]");
   // Heap: one C_STRUCT per element, chained by next/prev pointers.
   std::size_t sz = c.size();
   std::size_t idx = 0;
@@ -970,8 +972,9 @@ template<class T>
 void __opt_cap_seq__(const char* n, const std::deque<T>& c) {
   if(!__opt_current_tracer__) return;
   const void* base = &c;
-  __opt_current_tracer__->add(n, "[\"C_DATA\",\"" + __opt_addr__(base) + "\",\"pointer\","
-                     + (c.empty() ? std::string("0x0") : __opt_seq_node_addr__(base, 0)) + ",{\"bytes\":8}]");
+  // pointer VALUE (obj[3]) MUST be a quoted string — unquoted hex breaks JSON.parse.
+  __opt_current_tracer__->add(n, "[\"C_DATA\",\"" + __opt_addr__(base) + "\",\"pointer\",\""
+                     + (c.empty() ? std::string("0x0") : __opt_seq_node_addr__(base, 0)) + "\",{\"bytes\":8}]");
   std::size_t sz = c.size();
   std::size_t idx = 0;
   for(const auto& v : c) {
