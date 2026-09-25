@@ -1581,9 +1581,24 @@ function instrumentCode(sourceCode) {
     // but does have expression content (not just a brace, preprocessor, etc.).
     // We set inMultiLineStmt so the next line is treated as a continuation.
     // Skip control-flow keywords and lines that are obviously not expressions.
+    //
+    // !stripped.startsWith('}') is the critical guard: a line that BEGINS by
+    // closing a brace can never be the START of an expression — it is the tail
+    // of a loop/if (e.g. the `} while (cond);` that closes a do-while, or a
+    // lone `}` / `} else ...`). But its leading `}` makes the statement-complete
+    // scan (which tracks braceDepth) read the `;` at depth -1, so stmtComplete
+    // is computed false even though the `;` is a genuine top-level terminator.
+    // Without this guard that false feeds the multi-line detector below and the
+    // NEXT line (typically `return …;`) gets misflagged as a "continuation", so
+    // it receives a POST-statement trace emitted AFTER the return — dead code.
+    // That is exactly why a do-while's following `return` never appeared in the
+    // visualization (the trace froze one line early, looking "stuck in the
+    // middle"). A genuine multi-line expression's first line never starts with
+    // `}` (an expression can't open with a closing brace), so this never blocks
+    // real continuations.
     if (!stmtComplete && stripped && !stripped.match(/^\s*(for|while|if|else|switch|do|try|catch)\b/)
         && !stripped.endsWith('{') && !stripped.match(/^[};\s]*$/)
-        && !stripped.startsWith('#')) {
+        && !stripped.startsWith('#') && !stripped.startsWith('}')) {
       inMultiLineStmt = true;
     }
 
@@ -1865,7 +1880,24 @@ function postprocessCinReads(instrumentedCode) {
         // A for/while's own `{` (or any `{` that isn't a do-body) ends a
         // pending `do` — only the `{` that actually follows the `do` does.
         pendingDo = false;
-        blockKinds.push(isDo ? 'loop' : __opt_cin_block_kind__(masked, i));
+        // for/while → 'loop' (cin reads stay QUIET / EOF-terminating), but a
+        // do-while body → 'dowhile'. Why the distinction (and why this matters):
+        //   * for/while body may NEVER run, and the canonical idiom
+        //     `while (cin >> x) …` / `for(;;) cin >> x;` relies on the read
+        //     failing cleanly at EOF — a prompt there would loop forever. So
+        //     their reads get the no-op `_quiet` marker (EOF terminates).
+        //   * A do-while body ALWAYS runs at least once, so its first
+        //     `cin >> x` is a PRIMARY read the user must be able to answer —
+        //     the command-menu idiom
+        //         do { cin >> cmd; … } while (cmd != 'q');
+        //     should behave exactly like Python Tutor's `input()`: prompt for
+        //     the command when pre-seeded input runs out. Giving it 'dowhile'
+        //     (not 'loop') makes `inLoop` below false, so postprocessCinReads
+        //     emits the prompt (non-quiet) marker. Verified (g++, real header):
+        //     empty input → prompt; 'a' → loop + prompt; 'aq' → break + exit.
+        //     No hang. ('dowhile' never matches the `=== 'loop'` check below,
+        //     and no other code reads blockKinds, so nothing else changes.)
+        blockKinds.push(isDo ? 'dowhile' : __opt_cin_block_kind__(masked, i));
       }
       else if (c === '}' && blockKinds.length > 0) blockKinds.pop();
     }
