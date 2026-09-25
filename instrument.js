@@ -627,14 +627,22 @@ function genCaptures(knownVars, heapPointers, deletedPointers, structDefs, exclu
         // for complex types (std::function, lambdas, etc.) that have no overload.
         let inferredSimpleType = null;
         if (info.init) {
-          const initStr = info.init.trim();
-          // Integer literals with suffixes
+          // Collapse whitespace right after the '=' so that literal inference
+          // works for BOTH `auto x = 12uLL;` (space) and `auto x=12uLL;`.
+          // Without this, `= 12uLL` fails every `^=...` pattern below and the
+          // var falls back to the "auto" label instead of its real type.
+          const initStr = info.init.trim().replace(/^=\s+/, '=');
+          // Integer literals with suffixes. C++ suffix chars: u/U (unsigned) and
+          // l/L (long) may appear in EITHER order, and 'll'/'LL' = long long.
+          // Count the l's so `12uLL` → unsigned long long (not the 32-bit
+          // `unsigned long` the old single-char check produced).
           if (/^=-?\d+[uU]?[lL]?[lL]?$/.test(initStr)) {
-            if (/[uU]/.test(initStr) && /[lL]/.test(initStr)) inferredSimpleType = 'unsigned long';
-            else if (/[lL]{2}/.test(initStr)) inferredSimpleType = 'long long';
-            else if (/[uU]/.test(initStr)) inferredSimpleType = 'unsigned';
-            else if (/[lL]/.test(initStr)) inferredSimpleType = 'long';
-            else inferredSimpleType = 'int';
+            const hasU = /[uU]/.test(initStr);
+            const lCount = (initStr.match(/[lL]/g) || []).length;
+            const sign = hasU ? 'unsigned ' : '';
+            if (lCount >= 2) inferredSimpleType = sign + 'long long';
+            else if (lCount === 1) inferredSimpleType = sign + 'long';
+            else inferredSimpleType = hasU ? 'unsigned' : 'int';
           }
           // Floating point literals
           else if (/^=-?\d+\.\d*[fF]?$/.test(initStr) || /^=-?\d+[eE][+-]?\d+$/.test(initStr)) {
