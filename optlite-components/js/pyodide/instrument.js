@@ -1880,7 +1880,24 @@ function postprocessCinReads(instrumentedCode) {
         // A for/while's own `{` (or any `{` that isn't a do-body) ends a
         // pending `do` — only the `{` that actually follows the `do` does.
         pendingDo = false;
-        blockKinds.push(isDo ? 'loop' : __opt_cin_block_kind__(masked, i));
+        // for/while → 'loop' (cin reads stay QUIET / EOF-terminating), but a
+        // do-while body → 'dowhile'. Why the distinction (and why this matters):
+        //   * for/while body may NEVER run, and the canonical idiom
+        //     `while (cin >> x) …` / `for(;;) cin >> x;` relies on the read
+        //     failing cleanly at EOF — a prompt there would loop forever. So
+        //     their reads get the no-op `_quiet` marker (EOF terminates).
+        //   * A do-while body ALWAYS runs at least once, so its first
+        //     `cin >> x` is a PRIMARY read the user must be able to answer —
+        //     the command-menu idiom
+        //         do { cin >> cmd; … } while (cmd != 'q');
+        //     should behave exactly like Python Tutor's `input()`: prompt for
+        //     the command when pre-seeded input runs out. Giving it 'dowhile'
+        //     (not 'loop') makes `inLoop` below false, so postprocessCinReads
+        //     emits the prompt (non-quiet) marker. Verified (g++, real header):
+        //     empty input → prompt; 'a' → loop + prompt; 'aq' → break + exit.
+        //     No hang. ('dowhile' never matches the `=== 'loop'` check below,
+        //     and no other code reads blockKinds, so nothing else changes.)
+        blockKinds.push(isDo ? 'dowhile' : __opt_cin_block_kind__(masked, i));
       }
       else if (c === '}' && blockKinds.length > 0) blockKinds.pop();
     }
