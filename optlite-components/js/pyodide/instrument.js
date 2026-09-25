@@ -1581,9 +1581,24 @@ function instrumentCode(sourceCode) {
     // but does have expression content (not just a brace, preprocessor, etc.).
     // We set inMultiLineStmt so the next line is treated as a continuation.
     // Skip control-flow keywords and lines that are obviously not expressions.
+    //
+    // !stripped.startsWith('}') is the critical guard: a line that BEGINS by
+    // closing a brace can never be the START of an expression — it is the tail
+    // of a loop/if (e.g. the `} while (cond);` that closes a do-while, or a
+    // lone `}` / `} else ...`). But its leading `}` makes the statement-complete
+    // scan (which tracks braceDepth) read the `;` at depth -1, so stmtComplete
+    // is computed false even though the `;` is a genuine top-level terminator.
+    // Without this guard that false feeds the multi-line detector below and the
+    // NEXT line (typically `return …;`) gets misflagged as a "continuation", so
+    // it receives a POST-statement trace emitted AFTER the return — dead code.
+    // That is exactly why a do-while's following `return` never appeared in the
+    // visualization (the trace froze one line early, looking "stuck in the
+    // middle"). A genuine multi-line expression's first line never starts with
+    // `}` (an expression can't open with a closing brace), so this never blocks
+    // real continuations.
     if (!stmtComplete && stripped && !stripped.match(/^\s*(for|while|if|else|switch|do|try|catch)\b/)
         && !stripped.endsWith('{') && !stripped.match(/^[};\s]*$/)
-        && !stripped.startsWith('#')) {
+        && !stripped.startsWith('#') && !stripped.startsWith('}')) {
       inMultiLineStmt = true;
     }
 
