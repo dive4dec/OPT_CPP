@@ -663,7 +663,25 @@ void __opt_trace_end__() {
 //     return cannot unwind nested call frames.
 void __opt_cin_read_done__() {
   auto& st = __opt_get_state__();
-  if (st.cin_active && !st.cin_prompt && std::cin.fail()) {
+  // Prompt ONLY when the read failed because the input was EXHAUSTED (EOF),
+  // NOT when it failed due to a format error (e.g. `q` typed for an `int`).
+  //
+  // std::cin.fail() is set by BOTH conditions, so a bare fail() check was a
+  // bug: a wrong-type token format-errored the read (failbit set, eofbit NOT
+  // set) and we'd prompt. But the bad token is never consumed, and the
+  // frontend re-executes the whole program from the rebuilt input list — so
+  // the unconsumed `q` sat at the front every time, format-errored again, and
+  // prompted forever ("keeps asking for input even though the while
+  // condition is false"). std::cin.eof() distinguishes the two:
+  //   * input ran out  -> failbit AND eofbit  -> prompt (input() semantics)
+  //   * wrong type     -> failbit only         -> do NOT prompt (real C++:
+  //                                                value stays unchanged,
+  //                                                no retry — and the stream
+  //                                                is left failed, so the next
+  //                                                read also no-ops, ending
+  //                                                the run cleanly)
+  //   * read succeeded -> neither              -> do nothing, keep running
+  if (st.cin_active && !st.cin_prompt && std::cin.fail() && std::cin.eof()) {
     st.cin_prompt = true;
     longjmp(st.cin_jmpbuf, 1);
   }
