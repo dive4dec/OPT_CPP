@@ -62,6 +62,22 @@
     const firstNwCol = lines.map(l => { const m = l.match(/\S/); return m ? m.index : l.length; });
 
     const splitPos = new Set(); // byte offsets to insert a newline BEFORE
+    // A control-flow header (for/while/do/if) that is NOT at the first
+    // non-whitespace column of its line must be split onto its own line. This
+    // is the nested-body case the plain statement/`}` rules miss: the header
+    // is the *body* of another loop (its parent is a for/while/do node, NOT a
+    // compound_statement), so `for (...) while (...) { body }` on one line
+    // would otherwise leave the `while` header glued to the `for`. The legacy
+    // line-based instrumenter then mis-braces it — the loop body ends up EMPTY
+    // and the real statements dangle OUTSIDE it — producing an infinite loop
+    // (`while(n%p==0) {}`) or a wrong result (`if(..) {}` → body runs every
+    // iteration). Putting the header on its own line is the layout the
+    // instrumenter is proven to handle. If the header IS already at line start
+    // there is nothing to split (its body statements/`}` are handled by the
+    // rules below). NOTE: a nested `else if` is deliberately NOT split here —
+    // the `} else if (...) {` layout is already handled correctly by the legacy
+    // instrumenter, and splitting it would churn a working case for no benefit.
+    const CONTROL_FLOW = new Set(['for_statement', 'while_statement', 'do_statement', 'if_statement']);
     const walk = (node) => {
       for (let i = 0; i < node.childCount; i++) {
         const c = node.child(i);
@@ -75,6 +91,25 @@
           const row = c.startPosition.row;
           const col = c.startPosition.column;
           if (col > firstNwCol[row]) splitPos.add(lineStart[row] + col);
+        }
+        if (CONTROL_FLOW.has(c.type) && c.parent &&
+            (c.parent.type === 'for_statement' || c.parent.type === 'while_statement' || c.parent.type === 'do_statement')) {
+          // Only split when the nested header's body is a braced block
+          // (compound_statement). That is the layout the legacy instrumenter
+          // mis-handles: `for (...) while (...) { stmts }` on one line leaves
+          // the `while` header glued to the `for`, and the instrumenter's
+          // brace-matching then turns the braced body into an EMPTY loop body
+          // with `stmts` dangled OUTSIDE it → infinite loop (`while(..) {}`) or
+          // a wrong result (`if(..) {}`). A braceless nested body
+          // (`for (...) for (...) c++;`) has no `{` to confuse the
+          // brace-matching, so the legacy instrumenter handles it correctly and
+          // must be left alone (splitting it regresses working cases).
+          const bodyNode = c.child(c.childCount - 1);
+          if (bodyNode && bodyNode.type === 'compound_statement') {
+            const row = c.startPosition.row;
+            const col = c.startPosition.column;
+            if (col !== firstNwCol[row]) splitPos.add(lineStart[row] + col);
+          }
         }
         walk(c);
       }
