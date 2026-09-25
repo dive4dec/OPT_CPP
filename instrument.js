@@ -403,9 +403,13 @@ function buildFieldEncoders(baseExpr, fields) {
     if (f.isPointer) {
       // Pointer fields — const char* overload for char pointers, generic for others
       fieldFn = (ft === 'char' || ft === 'const char') ? '__opt_field_const_char_ptr__' : '__opt_field_ptr__';
-    } else if (ft === 'int' || ft === 'short' || ft === 'size_t') {
+    } else if (ft === 'short') {
+      fieldFn = '__opt_field_short__';
+    } else if (ft === 'unsigned short') {
+      fieldFn = '__opt_field_ushort__';
+    } else if (ft === 'int' || ft === 'size_t') {
       fieldFn = '__opt_field_int__';
-    } else if (ft === 'unsigned' || ft === 'unsigned int' || ft === 'unsigned short') {
+    } else if (ft === 'unsigned' || ft === 'unsigned int') {
       fieldFn = '__opt_field_unsigned__';
     } else if (ft === 'long' || ft === 'long long') {
       fieldFn = '__opt_field_long__';
@@ -446,6 +450,16 @@ function containerKind(type, isPointer) {
   if (/^(std::)?(map|set|multimap|multiset|unordered_map|unordered_set|queue|stack|priority_queue)\s*</.test(type)) return 'opaque';
   return null;
 }
+
+// Scalar types that have a direct __opt_cap__ overload in opt_trace.h (so a
+// plain `__opt_cap__(name, var)` call will compile and report the right type
+// label). Anything NOT in this set is treated as an unknown class/struct type
+// and skipped. Pointer suffixes (`... *`) are handled separately by the caller.
+const KNOWN_SIMPLE_TYPES = new Set([
+  'int', 'signed', 'short', 'long', 'long long', 'size_t',
+  'unsigned', 'unsigned int', 'unsigned short', 'unsigned long', 'unsigned long long',
+  'double', 'float', 'bool', 'char', 'string', 'std::string'
+]);
 
 // Generate capture calls for all known variables
 function genCaptures(knownVars, heapPointers, deletedPointers, structDefs, excludeVars) {
@@ -571,9 +585,13 @@ function genCaptures(knownVars, heapPointers, deletedPointers, structDefs, exclu
             } else {
               fieldFn = '__opt_field_ptr__';
             }
-          } else if (ft === 'int' || ft === 'short' || ft === 'size_t') {
+          } else if (ft === 'short') {
+            fieldFn = '__opt_field_short__';
+          } else if (ft === 'unsigned short') {
+            fieldFn = '__opt_field_ushort__';
+          } else if (ft === 'int' || ft === 'size_t') {
             fieldFn = '__opt_field_int__';
-          } else if (ft === 'unsigned' || ft === 'unsigned int' || ft === 'unsigned short') {
+          } else if (ft === 'unsigned' || ft === 'unsigned int') {
             fieldFn = '__opt_field_unsigned__';
           } else if (ft === 'long' || ft === 'long long') {
             fieldFn = '__opt_field_long__';
@@ -649,11 +667,7 @@ function genCaptures(knownVars, heapPointers, deletedPointers, structDefs, exclu
         }
       }
     } else if (info && info.type && !info.isPointer && !info.isArray && !structDefs.has(info.type) &&
-               info.type !== 'int' && info.type !== 'double' && info.type !== 'float' &&
-               info.type !== 'char' && info.type !== 'bool' && info.type !== 'short' &&
-               info.type !== 'long' && info.type !== 'unsigned' && info.type !== 'string' &&
-               info.type !== 'std::string' && !info.type.endsWith('*') &&
-               info.type !== 'size_t') {
+               !KNOWN_SIMPLE_TYPES.has(info.type) && !info.type.endsWith('*')) {
       // Unknown class/struct type — skip (can't capture without templates)
     } else {
       // All other types: use overloaded __opt_cap__
@@ -1802,19 +1816,38 @@ function __opt_is_cin_read_stmt__(maskedLine) {
 }
 
 // Kind of the block opened by a '{' at position i on this line: 'loop' if a
-// for/while header (or `do`) immediately precedes it, 'plain' otherwise.
+// for/while header immediately precedes it, 'plain' otherwise. for/while must
+// have their condition ')' sitting right before the brace, so `do` (whose body
+// brace is NOT preceded by a condition) is handled by the pendingDo flag in
+// postprocessCinReads — a bare `do` can sit on its OWN line with the `{` on the
+// next line (Allman style, or the v2 tree-sitter reformat), where a same-line
+// check would see an empty `before` and miss it.
 function __opt_cin_block_kind__(masked, i) {
   const before = masked.substring(0, i);
-  if (/\b(for|while)\s*\([^()]*\)\s*$/.test(before) || /^\s*do\s*$/.test(before)) {
+  if (/\b(for|while)\s*\([^()]*\)\s*$/.test(before)) {
     return 'loop';
   }
   return 'plain';
+}
+
+// True if the '{' at index i in `masked` opens the body of a `do` whose `do`
+// keyword is on the SAME line (i.e. `do {`). `do` is only ever followed by its
+// body brace, so the last keyword before the brace must be `do`.
+function __opt_is_do_body_brace__(masked, i) {
+  const before = masked.substring(0, i).replace(/\s+$/, '');
+  return /\bdo$/.test(before);
 }
 
 function postprocessCinReads(instrumentedCode) {
   const lines = instrumentedCode.split('\n');
   const out = [];
   const blockKinds = []; // kind of each currently open block (innermost last)
+  // A `do` keyword may sit on its OWN line with the `{` on the next line
+  // (Allman style, or the v2 tree-sitter reformat that splits `do {` across
+  // lines). Remember that bare trailing `do` so the next '{' is classified as
+  // a loop body. A `do` is never an expression, so it must be followed by its
+  // `{` before any other token; a for/while's own `{` overrides it.
+  let pendingDo = false;
   for (const rawLine of lines) {
     const noComment = rawLine.replace(/\/\/.*$/, '');
     const masked = __opt_cin_mask__(noComment);
@@ -1824,8 +1857,23 @@ function postprocessCinReads(instrumentedCode) {
     // multiple blocks on one line like `} else if (...) {` are handled).
     for (let i = 0; i < masked.length; i++) {
       const c = masked[i];
-      if (c === '{') blockKinds.push(__opt_cin_block_kind__(masked, i));
+      if (c === '{') {
+        const before = masked.substring(0, i);
+        const isForOrWhile = /\b(for|while)\s*\([^()]*\)\s*$/.test(before);
+        const isDo = isForOrWhile ? false :
+                     (__opt_is_do_body_brace__(masked, i) || pendingDo);
+        // A for/while's own `{` (or any `{` that isn't a do-body) ends a
+        // pending `do` — only the `{` that actually follows the `do` does.
+        pendingDo = false;
+        blockKinds.push(isDo ? 'loop' : __opt_cin_block_kind__(masked, i));
+      }
       else if (c === '}' && blockKinds.length > 0) blockKinds.pop();
+    }
+    // A bare `do` at the very end of this line (no `{` yet) primes the next
+    // '{' as a do-body. If a `{` is already on this line, the do-body is
+    // handled by __opt_is_do_body_brace__ above and we don't need pendingDo.
+    if (!masked.includes('{') && /\bdo\s*$/.test(masked.trim())) {
+      pendingDo = true;
     }
     out.push(rawLine);
     if (isCin) out.push(inLoop ? __CIN_MARK_QUIET__ : __CIN_MARK__);

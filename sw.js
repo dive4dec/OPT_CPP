@@ -66,6 +66,12 @@ self.addEventListener('activate', (event) =>
       if (k === 'optcpp-runtime') {
         await caches.delete(k);
       }
+      // v2: the assets cache was renamed optcpp-assets -> optcpp-assets-v2 so
+      // users holding a stale (pre-fix) offline copy of the deploy-changing
+      // trio get a clean cache instead of keeping the old bytes. One-time prune.
+      if (k === 'optcpp-assets') {
+        await caches.delete(k);
+      }
     }
     // Background-fill the kernel precache (best-effort; never blocks activation
     // and never worse than before). Populates the Cache API with the ~34 MB of
@@ -146,7 +152,7 @@ const PRECACHE_NAME = 'optcpp-kernel-' + KERNEL_VERSION;
 //   COOP/COEP pass-through (unchanged behaviour); only static *asset* files are
 //   mirrored to the offline cache. (Re-running an already-loaded page never
 //   re-fetches the document, so the doc doesn't need an offline copy.)
-const ASSETS_CACHE = 'optcpp-assets';
+const ASSETS_CACHE = 'optcpp-assets-v2';
 const ASSET_EXT = /\.(js|mjs|css|wasm|data|h|ico|png|jpe?g|gif|svg|map|ttf|otf|woff2?|whl)$/i;
 
 // True for a same-origin GET to a static *asset* file this layer should
@@ -167,6 +173,8 @@ function isAppAsset(request) {
   // cached. Excluding by entry-name prefix is stable (fixed webpack entry names).
   const base = baseName(request.url);
   if (/^(opt-live|visualize)\./.test(base || '')) return false;
+  // The deploy-changing trio must be network-only (see DEPLOY_CHANGE_ASSETS).
+  if (DEPLOY_CHANGE_ASSETS.has(base || '')) return false;
   return true;
 }
 
@@ -175,6 +183,26 @@ function assetKey(url) {
   const u = new URL(url);
   return u.origin + u.pathname;
 }
+
+// ── Deploy-changing trio: NETWORK-ONLY, never cache-fallback ─────────────────
+// instrument.js / ts-reformat.js / opt_trace.h are reloaded by the worker on
+// EVERY run (importScripts './instrument.js?v=Date.now()' — cppworker.js:17).
+// They change on EVERY deploy. The worker's ?v=Date.now() cache-bust was added
+// specifically so it could never get a stale copy from the browser HTTP cache.
+//
+// The offline layer below would defeat that: it keys its cache by the QUERY-
+// LESS url (assetKey), so every ?v= resolves to one entry, and serveAsset's
+// network-first/cache-fallback serves the stale cached copy (and RE-CACHES it)
+// whenever the network fetch is briefly slow or fails. Net effect: an instrumenter
+// fix can be served to users for up to its full stale lifetime — the exact
+// "fix deployed but the user still sees the old behaviour" bug.
+//
+// Fix: exclude the trio from the offline layer entirely. They are small and the
+// worker re-fetches them from the network on every run anyway, so they must
+// ALWAYS be the current server copy. (The stable, version-locked kernel/grammar
+// files keep their offline cache — they're the bytes that actually need offline
+// reliability and don't change on a deploy.)
+const DEPLOY_CHANGE_ASSETS = new Set(['instrument.js', 'ts-reformat.js', 'opt_trace.h']);
 
 // Network-first (fresh when online) + cache-fallback (last good copy offline).
 // Uses the DEFAULT cache mode (plain fetch) so the browser's HTTP cache is
