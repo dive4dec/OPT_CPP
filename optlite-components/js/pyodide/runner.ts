@@ -16,6 +16,18 @@ let kernelOutput: string[] = [];
 // NULL-deref can be reported on the exact line instead of "compilation error".
 // 0 == execution never started (compile error or no code ran).
 let lastCrashLine = 0;
+// Bumped (with a timestamp) every time a line-progress marker is seen, so
+// asyncRun can tell "the program started but is now stuck in a loop" (no new
+// markers for a long stretch) from "still compiling" (no markers yet). See
+// the infinite-loop watchdog in asyncRun. 0 means "execution never started".
+let lastProgressAt = 0;
+// True once we've seen at least one line marker — i.e. the program actually
+// STARTED running. Gates the infinite-loop watchdog so it never fires during
+// compilation (which emits no markers and can legitimately take minutes).
+let runStarted = false;
+// Timestamp (Date.now()) the run first started (first marker seen). 0 = not
+// started. The infinite-loop watchdog's hard cap is measured from here.
+let runStartAt = 0;
 
 // Track whether the kernel reported an error
 let kernelHasError = false;
@@ -140,6 +152,9 @@ async function handleWorkerMessage(event: MessageEvent) {
   // non-zero lastCrashLine is a reliable signal the failure is a runtime crash.
   if (msg && typeof msg.crash_line === 'number') {
     if (msg.crash_line > lastCrashLine) lastCrashLine = msg.crash_line;
+    // Any marker = the program is running and progressed (see asyncRun watchdog)
+    if (!runStarted) { runStarted = true; runStartAt = Date.now(); }
+    lastProgressAt = Date.now();
     return;
   }
 
@@ -171,6 +186,9 @@ async function handleWorkerMessage(event: MessageEvent) {
             if (n > max) max = n;
           }
           if (max > lastCrashLine) lastCrashLine = max;
+          // Progress signal for the infinite-loop watchdog (see asyncRun)
+          if (!runStarted) { runStarted = true; runStartAt = Date.now(); }
+          lastProgressAt = Date.now();
           text = text.replace(/__OPT_STEP_LINE__:\d+/g, '');
         }
         if (text.length > 0) kernelOutput.push(text);
@@ -612,9 +630,48 @@ const asyncRun = (() => {
       kernelErrorText = '';
       lastCrashLine = 0;   // reset per-run so a stale crash line can't leak
                            // into this run's (possibly unrelated) error
+      runStarted = false;  // reset the infinite-loop watchdog progress state
+      lastProgressAt = 0;
+      runStartAt = 0;
 
       cppWorker = createWorker();
       init = initWorker();
+
+      // ── Infinite-loop watchdog ──
+      // The WASM run executes the WHOLE program on the worker thread with no
+      // per-iteration checkpoint, so an infinite loop (e.g. `while (true);`)
+      // spins forever and the worker never posts a result. We detect it from
+      // the line-progress markers that stream to the main thread as the program
+      // runs:
+      //   * no-progress: the program STARTED (a marker was seen) but then went
+      //     silent — e.g. `while(true);` / `for(;;);` with an empty body, which
+      //     emits no per-line steps. Fires fast (15s) with an accurate message.
+      //   * hard cap: a loop WITH a non-empty body keeps re-emitting markers
+      //     (looks like progress), so the no-progress check can't see it — a
+      //     90s backstop from run start stops those too. 90s is far longer than
+      //     any legitimate student program, and the message says "infinite loop
+      //     OR very long program" so a slow-but-finite run isn't mislabeled.
+      // Neither fires during compilation (runStarted stays false until the first
+      // marker), so the existing 300s compile timeout is unaffected.
+      const INFINITE_NO_PROGRESS_MS = 15000;
+      const INFINITE_HARD_MS = 90000;
+      const watchdog = setInterval(() => {
+        if (!callbacks[id]) return;              // run settled — clear below
+        if (!runStarted) return;                  // still compiling; not our job
+        const now = Date.now();
+        if (now - lastProgressAt > INFINITE_NO_PROGRESS_MS ||
+            (runStartAt > 0 && now - runStartAt > INFINITE_HARD_MS)) {
+          clearInterval(watchdog);
+          clearTimeout(execTimeout);
+          delete callbacks[id];
+          if (cppWorker) { try { cppWorker.terminate(); } catch (e) {} }
+          reject(new Error(
+            'Your code appears to be in an infinite loop (or a program that runs ' +
+            'for a very long time), so OPT_CPP stopped it. Check your loop ' +
+            'condition and make sure it eventually becomes false.'
+          ));
+        }
+      }, 1000);
 
       // Execution timeout: if the WASM compiler hangs during heavy template
       // instantiation, the worker's event loop is blocked and no result
@@ -632,6 +689,7 @@ const asyncRun = (() => {
       // Wait for the new worker to initialize, then send the execution request
       init.then(() => {
         callbacks[id] = (data) => {
+          clearInterval(watchdog);
           clearTimeout(execTimeout);
           if (data.error) {
             // The WASM abort may have sent compiler errors via iopub stderr

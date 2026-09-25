@@ -1816,19 +1816,38 @@ function __opt_is_cin_read_stmt__(maskedLine) {
 }
 
 // Kind of the block opened by a '{' at position i on this line: 'loop' if a
-// for/while header (or `do`) immediately precedes it, 'plain' otherwise.
+// for/while header immediately precedes it, 'plain' otherwise. for/while must
+// have their condition ')' sitting right before the brace, so `do` (whose body
+// brace is NOT preceded by a condition) is handled by the pendingDo flag in
+// postprocessCinReads — a bare `do` can sit on its OWN line with the `{` on the
+// next line (Allman style, or the v2 tree-sitter reformat), where a same-line
+// check would see an empty `before` and miss it.
 function __opt_cin_block_kind__(masked, i) {
   const before = masked.substring(0, i);
-  if (/\b(for|while)\s*\([^()]*\)\s*$/.test(before) || /^\s*do\s*$/.test(before)) {
+  if (/\b(for|while)\s*\([^()]*\)\s*$/.test(before)) {
     return 'loop';
   }
   return 'plain';
+}
+
+// True if the '{' at index i in `masked` opens the body of a `do` whose `do`
+// keyword is on the SAME line (i.e. `do {`). `do` is only ever followed by its
+// body brace, so the last keyword before the brace must be `do`.
+function __opt_is_do_body_brace__(masked, i) {
+  const before = masked.substring(0, i).replace(/\s+$/, '');
+  return /\bdo$/.test(before);
 }
 
 function postprocessCinReads(instrumentedCode) {
   const lines = instrumentedCode.split('\n');
   const out = [];
   const blockKinds = []; // kind of each currently open block (innermost last)
+  // A `do` keyword may sit on its OWN line with the `{` on the next line
+  // (Allman style, or the v2 tree-sitter reformat that splits `do {` across
+  // lines). Remember that bare trailing `do` so the next '{' is classified as
+  // a loop body. A `do` is never an expression, so it must be followed by its
+  // `{` before any other token; a for/while's own `{` overrides it.
+  let pendingDo = false;
   for (const rawLine of lines) {
     const noComment = rawLine.replace(/\/\/.*$/, '');
     const masked = __opt_cin_mask__(noComment);
@@ -1838,8 +1857,23 @@ function postprocessCinReads(instrumentedCode) {
     // multiple blocks on one line like `} else if (...) {` are handled).
     for (let i = 0; i < masked.length; i++) {
       const c = masked[i];
-      if (c === '{') blockKinds.push(__opt_cin_block_kind__(masked, i));
+      if (c === '{') {
+        const before = masked.substring(0, i);
+        const isForOrWhile = /\b(for|while)\s*\([^()]*\)\s*$/.test(before);
+        const isDo = isForOrWhile ? false :
+                     (__opt_is_do_body_brace__(masked, i) || pendingDo);
+        // A for/while's own `{` (or any `{` that isn't a do-body) ends a
+        // pending `do` — only the `{` that actually follows the `do` does.
+        pendingDo = false;
+        blockKinds.push(isDo ? 'loop' : __opt_cin_block_kind__(masked, i));
+      }
       else if (c === '}' && blockKinds.length > 0) blockKinds.pop();
+    }
+    // A bare `do` at the very end of this line (no `{` yet) primes the next
+    // '{' as a do-body. If a `{` is already on this line, the do-body is
+    // handled by __opt_is_do_body_brace__ above and we don't need pendingDo.
+    if (!masked.includes('{') && /\bdo\s*$/.test(masked.trim())) {
+      pendingDo = true;
     }
     out.push(rawLine);
     if (isCin) out.push(inLoop ? __CIN_MARK_QUIET__ : __CIN_MARK__);
