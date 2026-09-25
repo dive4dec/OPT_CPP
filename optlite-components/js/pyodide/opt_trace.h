@@ -723,6 +723,19 @@ void __opt_cap__(const char* n, unsigned v) {
   std::ostringstream os; os<<v;
   __opt_current_tracer__->add(n, "[\"C_DATA\",\""+__opt_addr__(&v)+"\",\"unsigned\","+os.str()+",{\"bytes\":4}]");
 }
+// short / unsigned short — separate overloads so the type label reports the
+// real width (without these, integer promotion sent them to the int/unsigned
+// overloads and they displayed as "int").
+void __opt_cap__(const char* n, short v) {
+  if(!__opt_current_tracer__) return;
+  std::ostringstream os; os<<v;
+  __opt_current_tracer__->add(n, "[\"C_DATA\",\""+__opt_addr__(&v)+"\",\"short\","+os.str()+",{\"bytes\":2}]");
+}
+void __opt_cap__(const char* n, unsigned short v) {
+  if(!__opt_current_tracer__) return;
+  std::ostringstream os; os<<v;
+  __opt_current_tracer__->add(n, "[\"C_DATA\",\""+__opt_addr__(&v)+"\",\"unsigned short\","+os.str()+",{\"bytes\":2}]");
+}
 void __opt_cap__(const char* n, long v) {
   if(!__opt_current_tracer__) return;
   std::ostringstream os; os<<v;
@@ -1044,6 +1057,17 @@ std::string __opt_field_int__(const char* name, int v) {
 std::string __opt_field_unsigned__(const char* name, unsigned v) {
   std::ostringstream os; os<<v;
   return "[\""+__opt_esc__(name)+"\",[\"C_DATA\",\""+__opt_addr__(&v)+"\",\"unsigned\","+os.str()+",{\"bytes\":4}]]";
+}
+// short / unsigned short struct-field encoders — report the real width in the
+// struct field list (otherwise these were routed to the int/unsigned encoders
+// and displayed as "int" / "unsigned").
+std::string __opt_field_short__(const char* name, short v) {
+  std::ostringstream os; os<<v;
+  return "[\""+__opt_esc__(name)+"\",[\"C_DATA\",\""+__opt_addr__(&v)+"\",\"short\","+os.str()+",{\"bytes\":2}]]";
+}
+std::string __opt_field_ushort__(const char* name, unsigned short v) {
+  std::ostringstream os; os<<v;
+  return "[\""+__opt_esc__(name)+"\",[\"C_DATA\",\""+__opt_addr__(&v)+"\",\"unsigned short\","+os.str()+",{\"bytes\":2}]]";
 }
 std::string __opt_field_long__(const char* name, long v) {
   std::ostringstream os; os<<v;

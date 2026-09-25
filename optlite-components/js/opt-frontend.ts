@@ -707,7 +707,11 @@ export class OptFrontend extends AbstractBaseFrontend {
       //this.preferredDisplayMode = queryStrOptions.appMode == 'ai_display' ? 'ai_display' : 'display';
       this.preferredDisplayMode = 'ai_display'; // always use "ai_display" even when "mode=display" is used in the url
 
-      this.executeCode(this.preseededCurInstr); // will switch to 'display' mode
+      // Pass the URL-seeded rawInputLst explicitly: executeCodeFromScratch now
+      // clears rawInputLst on every fresh run (so stale input doesn't leak into
+      // later runs), so the initial display run must re-supply URL input to keep
+      // shared links (rawInputLstJSON=…) working for the first std::cin read.
+      this.executeCode(this.preseededCurInstr, this.rawInputLst); // will switch to 'display' mode
     }
     $.bbq.removeState(); // clean up the URL no matter what
   }

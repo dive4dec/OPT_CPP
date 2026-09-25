@@ -403,9 +403,13 @@ function buildFieldEncoders(baseExpr, fields) {
     if (f.isPointer) {
       // Pointer fields — const char* overload for char pointers, generic for others
       fieldFn = (ft === 'char' || ft === 'const char') ? '__opt_field_const_char_ptr__' : '__opt_field_ptr__';
-    } else if (ft === 'int' || ft === 'short' || ft === 'size_t') {
+    } else if (ft === 'short') {
+      fieldFn = '__opt_field_short__';
+    } else if (ft === 'unsigned short') {
+      fieldFn = '__opt_field_ushort__';
+    } else if (ft === 'int' || ft === 'size_t') {
       fieldFn = '__opt_field_int__';
-    } else if (ft === 'unsigned' || ft === 'unsigned int' || ft === 'unsigned short') {
+    } else if (ft === 'unsigned' || ft === 'unsigned int') {
       fieldFn = '__opt_field_unsigned__';
     } else if (ft === 'long' || ft === 'long long') {
       fieldFn = '__opt_field_long__';
@@ -446,6 +450,16 @@ function containerKind(type, isPointer) {
   if (/^(std::)?(map|set|multimap|multiset|unordered_map|unordered_set|queue|stack|priority_queue)\s*</.test(type)) return 'opaque';
   return null;
 }
+
+// Scalar types that have a direct __opt_cap__ overload in opt_trace.h (so a
+// plain `__opt_cap__(name, var)` call will compile and report the right type
+// label). Anything NOT in this set is treated as an unknown class/struct type
+// and skipped. Pointer suffixes (`... *`) are handled separately by the caller.
+const KNOWN_SIMPLE_TYPES = new Set([
+  'int', 'signed', 'short', 'long', 'long long', 'size_t',
+  'unsigned', 'unsigned int', 'unsigned short', 'unsigned long', 'unsigned long long',
+  'double', 'float', 'bool', 'char', 'string', 'std::string'
+]);
 
 // Generate capture calls for all known variables
 function genCaptures(knownVars, heapPointers, deletedPointers, structDefs, excludeVars) {
@@ -571,9 +585,13 @@ function genCaptures(knownVars, heapPointers, deletedPointers, structDefs, exclu
             } else {
               fieldFn = '__opt_field_ptr__';
             }
-          } else if (ft === 'int' || ft === 'short' || ft === 'size_t') {
+          } else if (ft === 'short') {
+            fieldFn = '__opt_field_short__';
+          } else if (ft === 'unsigned short') {
+            fieldFn = '__opt_field_ushort__';
+          } else if (ft === 'int' || ft === 'size_t') {
             fieldFn = '__opt_field_int__';
-          } else if (ft === 'unsigned' || ft === 'unsigned int' || ft === 'unsigned short') {
+          } else if (ft === 'unsigned' || ft === 'unsigned int') {
             fieldFn = '__opt_field_unsigned__';
           } else if (ft === 'long' || ft === 'long long') {
             fieldFn = '__opt_field_long__';
@@ -649,11 +667,7 @@ function genCaptures(knownVars, heapPointers, deletedPointers, structDefs, exclu
         }
       }
     } else if (info && info.type && !info.isPointer && !info.isArray && !structDefs.has(info.type) &&
-               info.type !== 'int' && info.type !== 'double' && info.type !== 'float' &&
-               info.type !== 'char' && info.type !== 'bool' && info.type !== 'short' &&
-               info.type !== 'long' && info.type !== 'unsigned' && info.type !== 'string' &&
-               info.type !== 'std::string' && !info.type.endsWith('*') &&
-               info.type !== 'size_t') {
+               !KNOWN_SIMPLE_TYPES.has(info.type) && !info.type.endsWith('*')) {
       // Unknown class/struct type — skip (can't capture without templates)
     } else {
       // All other types: use overloaded __opt_cap__
