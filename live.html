@@ -1,4 +1,14 @@
-<!doctype html><!--[if lt IE 7 ]> <html lang="en" class="ie6" > <![endif]--><!--[if IE 7 ]>    <html lang="en" class="ie7" > <![endif]--><!--[if IE 8 ]>    <html lang="en" class="ie8" > <![endif]--><!--[if IE 9 ]>    <html lang="en" class="ie9" > <![endif]--><!--[if (gt IE 9)|!(IE)]><!--><html lang="en" class=""><!--<![endif]--><head><meta charset="utf-8"><title>Live C++ Programming Mode</title><link rel="shortcut icon" href="optlite.ico"><meta name="viewport" content="width=device-width,initial-scale=1"><style>#temperature-control{display:none!important}</style><script>if ('serviceWorker' in navigator) {
+<!doctype html><!--[if lt IE 7 ]> <html lang="en" class="ie6" > <![endif]--><!--[if IE 7 ]>    <html lang="en" class="ie7" > <![endif]--><!--[if IE 8 ]>    <html lang="en" class="ie8" > <![endif]--><!--[if IE 9 ]>    <html lang="en" class="ie9" > <![endif]--><!--[if (gt IE 9)|!(IE)]><!--><html lang="en" class=""><!--<![endif]--><head><meta charset="utf-8"><script>// Normalize a directory-style app URL to its trailing-slash form so PWA
+        // resources (manifest + icons) and the service-worker scope resolve under a
+        // sub-path (e.g. /OPT_CPP -> /OPT_CPP/). No-op for real files
+        // (live.html) and already-canonical URLs (trailing slash, GH Pages root).
+        (function () {
+          var p = location.pathname;
+          var seg = p.split("/").pop();
+          if (p.length > 1 && p.charAt(p.length - 1) !== "/" && seg.indexOf(".") < 0) {
+            location.replace(p + "/" + location.search + location.hash);
+          }
+        })();</script><title>Live C++ Programming Mode</title><link rel="shortcut icon" href="optlite.ico"><meta name="viewport" content="width=device-width,initial-scale=1"><link rel="manifest" href="manifest.webmanifest"><meta name="theme-color" content="#30b0f0"><meta name="mobile-web-app-capable" content="yes"><meta name="apple-mobile-web-app-capable" content="yes"><meta name="apple-mobile-web-app-status-bar-style" content="default"><meta name="apple-mobile-web-app-title" content="OPT C++"><link rel="apple-touch-icon" href="pwa/apple-icon-180.png"><style>#temperature-control{display:none!important}</style><script>if ('serviceWorker' in navigator) {
           window.addEventListener('load', function() {
             navigator.serviceWorker.register('./sw.js').then(function(reg) {
               console.log('[sw] Registered, scope:', reg.scope);

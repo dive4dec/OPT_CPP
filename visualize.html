@@ -1,4 +1,18 @@
-<!doctype html><!--[if lt IE 7 ]> <html lang="en" class="ie6" > <![endif]--><!--[if IE 7 ]>    <html lang="en" class="ie7" > <![endif]--><!--[if IE 8 ]>    <html lang="en" class="ie8" > <![endif]--><!--[if IE 9 ]>    <html lang="en" class="ie9" > <![endif]--><!--[if (gt IE 9)|!(IE)]><!--><html lang="en" class=""><!--<![endif]--><head><meta charset="utf-8"><title>Visualize C++ Code Execution</title><link rel="shortcut icon" href="optlite.ico"><meta name="viewport" content="width=device-width,initial-scale=1"><style>body #pyInputPane {
+<!doctype html><!--[if lt IE 7 ]> <html lang="en" class="ie6" > <![endif]--><!--[if IE 7 ]>    <html lang="en" class="ie7" > <![endif]--><!--[if IE 8 ]>    <html lang="en" class="ie8" > <![endif]--><!--[if IE 9 ]>    <html lang="en" class="ie9" > <![endif]--><!--[if (gt IE 9)|!(IE)]><!--><html lang="en" class=""><!--<![endif]--><head><meta charset="utf-8"><script>// Normalize a directory-style app URL to its trailing-slash form so PWA
+    // resources (web app manifest + icons) and the service-worker scope resolve
+    // correctly under a sub-path (e.g. /OPT_CPP). Path-agnostic: only appends a
+    // "/" to a path with NO file extension (so /OPT_CPP -> /OPT_CPP/, hash
+    // preserved); a no-op for real files (/OPT_CPP/live.html) and already-
+    // canonical URLs (/OPT_CPP/, GH Pages root). Without this, a no-slash URL
+    // sits outside the service worker's scope, so the browser won't offer
+    // "Install app". Runs in <head> before the bundle, so it fires early.
+    (function () {
+      var p = location.pathname;
+      var seg = p.split("/").pop();
+      if (p.length > 1 && p.charAt(p.length - 1) !== "/" && seg.indexOf(".") < 0) {
+        location.replace(p + "/" + location.search + location.hash);
+      }
+    })();</script><title>Visualize C++ Code Execution</title><link rel="shortcut icon" href="optlite.ico"><meta name="viewport" content="width=device-width,initial-scale=1"><link rel="manifest" href="manifest.webmanifest"><meta name="theme-color" content="#30b0f0"><meta name="mobile-web-app-capable" content="yes"><meta name="apple-mobile-web-app-capable" content="yes"><meta name="apple-mobile-web-app-status-bar-style" content="default"><meta name="apple-mobile-web-app-title" content="OPT C++"><link rel="apple-touch-icon" href="pwa/apple-icon-180.png"><style>body #pyInputPane {
       margin-left: 0;
       margin-right: 0;
     }</style><script>if ('serviceWorker' in navigator) {
