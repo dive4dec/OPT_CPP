@@ -22,6 +22,18 @@
             <meta name="viewport" content="width=device-width, initial-scale=1">
             <% } %>
 
+      <!-- PWA: makes the page installable (web app manifest + icons). All URLs are
+           RELATIVE (no hardcoded path) so they resolve identically under /OPT_CPP/,
+           /OPT_CPP_/ (flex) and the GitHub Pages root; the manifest's scope/start_url
+           are relative too, keeping it path-agnostic. -->
+      <link rel="manifest" href="manifest.webmanifest">
+      <meta name="theme-color" content="#30b0f0">
+      <meta name="mobile-web-app-capable" content="yes">
+      <meta name="apple-mobile-web-app-capable" content="yes">
+      <meta name="apple-mobile-web-app-status-bar-style" content="default">
+      <meta name="apple-mobile-web-app-title" content="OPT C++">
+      <link rel="apple-touch-icon" href="pwa/apple-icon-180.png">
+
               <% for (var css in htmlWebpackPlugin.files.css) { %>
                 <link href="<%= htmlWebpackPlugin.files.css[css] %>" rel="stylesheet">
                 <% } %>

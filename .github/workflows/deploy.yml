@@ -72,6 +72,10 @@ jobs:
         mkdir -p build/grammars
         cp js/pyodide/grammars/tree-sitter-cpp.wasm build/grammars/
         cp sw.js build/
+        # PWA: web app manifest + icons so the site is installable. Relative
+        # paths in the manifest keep it base-path-agnostic (/OPT_CPP/, GH Pages).
+        cp manifest.webmanifest build/
+        cp -r pwa build/pwa
 
     - name: Verify build output
       run: |

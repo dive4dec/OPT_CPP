@@ -95,7 +95,9 @@ RUN npm run build:prod \
     && mkdir -p build/grammars \
     && cp js/pyodide/grammars/tree-sitter-cpp.wasm build/grammars/ \
     && cp sw.js build/ \
-    && chmod 644 build/instrument.js build/opt_trace.h build/ts-reformat.js build/tree-sitter.js build/tree-sitter.wasm build/grammars/tree-sitter-cpp.wasm build/sw.js
+    && cp manifest.webmanifest build/ \
+    && cp -r pwa build/pwa \
+    && chmod 644 build/instrument.js build/opt_trace.h build/ts-reformat.js build/tree-sitter.js build/tree-sitter.wasm build/grammars/tree-sitter-cpp.wasm build/sw.js build/manifest.webmanifest build/pwa/*.png
 
 # ── Stage 4: nginx serving static files + xeus-cpp WASM ──
 FROM nginx:1.29-alpine3.23
