@@ -50,6 +50,17 @@
 // ROBUSTNESS: if DecompressionStream is unavailable, the server compresses the
 // raw URL, or the `.gz` is missing / errors, the SW serves the raw file.
 // Never worse than before.
+//
+// BUILD-VERSION AUTO-RELOAD:
+//   This worker's functional logic above (COOP/COEP, kernel .gz, offline cache)
+//   does NOT change on a pure front-end deploy — but we still need the browser to
+//   notice a new build so an already-open tab self-heals without the user
+//   clearing its cache. sw.js is served 'no-cache', so the browser re-validates
+//   it on every navigation; the Dockerfile stamps BUILD_VERSION into it (derived
+//   from the emitted bundle names), so the bytes differ on every real deploy.
+//   The page's registration handler (see *.html templates) reloads once when a
+//   newer sw.js activates. The placeholder below is replaced at build time.
+const BUILD_VERSION = "__BUILD_VERSION__";
 
 self.addEventListener('install', () => self.skipWaiting());
 self.addEventListener('activate', (event) =>
@@ -267,6 +278,14 @@ self.addEventListener('fetch', (event) => {
       // whole-serve-failed case.)
       if (baseName(request.url) && KERNEL_GZ.has(baseName(request.url))) {
         hostCompression = undefined;
+      }
+      // An explicit abort (AbortError) — e.g. the browser cancelling a fetch when
+      // the build-version auto-reload calls location.reload() — must not rethrow:
+      // it would surface as an unhandled "Failed to fetch" in the console. Real
+      // network failures (TypeError) are rethrown exactly as before, so the
+      // offline-cache fallback behaviour is unchanged.
+      if (e instanceof DOMException && e.name === 'AbortError') {
+        return new Response(null, { status: 503, statusText: 'Service Unavailable' });
       }
       throw e;
     })
