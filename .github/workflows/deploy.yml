@@ -71,7 +71,23 @@ jobs:
         cp js/pyodide/tree-sitter.wasm build/
         mkdir -p build/grammars
         cp js/pyodide/grammars/tree-sitter-cpp.wasm build/grammars/
-        cp sw.js build/
+        # Stamp BUILD_VERSION into sw.js so a new front-end build reaches
+        # returning users. sw.js is served no-cache and the page's registration
+        # handler auto-reloads once when BUILD_VERSION changes, which is what
+        # un-sticks a browser pinned to the old cached bundle. A bare
+        # `cp sw.js build/` leaves the __BUILD_VERSION__ placeholder identical
+        # every deploy, so the version never changes and the self-heal never
+        # fires (the "deploy doesn't show up" bug).
+        #
+        # NOTE: CPP names bundles "[name].[contenthash].bundle.js" (hash
+        # BEFORE .bundle), so the correct glob is "*.bundle.js" — NOT the
+        # "*.bundle.*.js" that Mentor uses (Mentor names them "[name].bundle.
+        # [contenthash].js"). Using the wrong glob here matches nothing, BV
+        # becomes the empty-input sha (e3b0c44298fc1c14), and the version is
+        # constant across deploys, i.e. the bug stays.
+        BV=$(ls build/*.bundle.js 2>/dev/null | sort | sha256sum | cut -c1-16)
+        sed "s/__BUILD_VERSION__/${BV:-none}/g" sw.js > build/sw.js
+        chmod 644 build/sw.js
         # PWA: web app manifest + icons so the site is installable. Relative
         # paths in the manifest keep it base-path-agnostic (/OPT_CPP/, GH Pages).
         cp manifest.webmanifest build/
