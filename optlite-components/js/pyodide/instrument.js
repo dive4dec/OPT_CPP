@@ -1170,7 +1170,21 @@ function instrumentCode(sourceCode) {
         output.push(line);
         // Inject a trace call at function entry (the opening brace line)
         let entryFnArg = `"${funcName}", `;
-        output.push(`__opt_trace_fn__(${entryFnArg}${lineNum});`);
+        if (funcName === 'main') {
+          // main is already primed globally (the top-level __opt_ensure_frame__
+          // ("main", 0) emitted above). Use the plain trace_fn (→ ensure_frame),
+          // which treats main-on-top as a continuation → keeps exactly one main
+          // frame.
+          output.push(`__opt_trace_fn__(${entryFnArg}${lineNum});`);
+        } else {
+          // Non-main free function: use the ENTRY marker, which ALWAYS pushes a
+          // fresh frame. This is what makes recursion show a growing call stack
+          // (each call re-executes this '{' line), while per-statement traces
+          // still use __opt_trace_fn__ (→ ensure_frame, a continuation/resumption
+          // handler) so for-loops don't spawn duplicate frames. See
+          // __opt_trace_fn_enter__ in opt_trace.h.
+          output.push(`__opt_trace_fn_enter__(${entryFnArg}${lineNum});`);
+        }
         output.push(`__opt_trace_end__();`);
         // Push new scope
         scopeStack.push({ depth: scopeStack[scopeStack.length-1].depth + 1, vars: new Set() });

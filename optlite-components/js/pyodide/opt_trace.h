@@ -708,6 +708,32 @@ void __opt_step_mark__(int line) {
   std::cout.flush();
 }
 
+// ── Function ENTRY marker ──
+// Emitted by the instrumenter exactly ONCE PER REAL CALL — at the function's
+// opening '{' line. This is what makes genuine recursion show a GROWING call
+// stack: a recursive call re-executes the '{' line, so it re-fires this marker
+// and pushes a NEW frame. A loop iteration / same-frame continuation NEVER
+// re-executes the '{' line, so it never fires here — which is exactly what
+// preserves the v0.3.11 for-loop fix (commit e9597a9) that stopped loops from
+// spawning duplicate frames.
+//
+// Why a separate entry marker: __opt_trace_fn__(name, line) is ALSO used for
+// per-statement traces, where the same name on top must be treated as a
+// continuation (NOT a new frame) or for-loops break. But at a genuine call
+// entry, the same name on top IS a new frame (recursion). Those two cases are
+// textually identical at the runtime, so the instrumenter disambiguates by
+// emitting THIS marker for entries and __opt_trace_fn__ for per-statement
+// traces. __opt_ensure_frame__ (used by the latter) is the resumption handler:
+// it pops back to a parent frame when control returns after a child call.
+void __opt_trace_fn_enter__(const char* func_name, int line) {
+  auto& st = __opt_get_state__();
+  __opt_push_frame__(func_name, line);   // always a fresh frame (a fresh call)
+  __opt_step_mark__(line);
+  if(__opt_current_tracer__) delete __opt_current_tracer__;
+  __opt_current_tracer__ = new __opt_tracer__(line, st.call_stack.back().func_name.c_str(),
+                        st.call_stack.back().frame_id.c_str());
+}
+
 void __opt_trace_fn_impl__(const char* func_name, int line) {
   __opt_ensure_frame__(func_name, line);
   auto& st = __opt_get_state__();
