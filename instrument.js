@@ -160,7 +160,7 @@ function parseDeclaration(line) {
 
   // Extract the type (everything before the first variable name)
   // Strategy: find the first identifier that's followed by [=,;[] or end
-  const tokens = line.match(/^((?:const\s+)?(?:static\s+)?(?:unsigned\s+|signed\s+)?(?:std::)?[\w:]+(?:\s*<[^<>]*(?:<[^<>]*>[^<>]*)*>)?)\s*([*&]*)\s*(.+)$/);
+  const tokens = line.match(/^((?:const\s+)?(?:static\s+)?(?:unsigned\s+|signed\s+)?(?:std::)?[\w:]+(?:\s+long\b)?(?:\s+(?:long|int|double)\b)?(?:\s*<[^<>]*(?:<[^<>]*>[^<>]*)*>)?)\s*([*&]*)\s*(.+)$/);
   if (!tokens) return [];
 
   let baseType = tokens[1].trim();
@@ -1166,16 +1166,10 @@ function instrumentCode(sourceCode) {
         currentFunc = funcName;
         funcNameStack.push(funcName);
 
-        // Output the function signature line
-        output.push(line);
-        // Inject a trace call at function entry (the opening brace line)
-        let entryFnArg = `"${funcName}", `;
-        output.push(`__opt_trace_fn__(${entryFnArg}${lineNum});`);
-        output.push(`__opt_trace_end__();`);
-        // Push new scope
-        scopeStack.push({ depth: scopeStack[scopeStack.length-1].depth + 1, vars: new Set() });
-
-        // Parse function parameters and add to knownVars
+        // Parse function parameters (BEFORE emitting the entry trace) so the
+        // entry step can capture them. Split top-level comma-separated
+        // parameter declarations (angle/paren/bracket-aware) and parse each.
+        let paramDecls = [];
         if (params) {
           let paramParts = [];
           let depth = 0;
@@ -1188,14 +1182,56 @@ function instrumentCode(sourceCode) {
             else current += c;
           }
           if (current.trim()) paramParts.push(current.trim());
-          
           for (let p of paramParts) {
             let declared = parseDeclaration(p);
-            for (let d of declared) {
-              knownVars.set(d.name, d);
-              scopeStack[scopeStack.length-1].vars.add(d.name);
-            }
+            for (let d of declared) paramDecls.push(d);
           }
+        }
+        // paramsOnlyVars: a knownVars-like map of JUST this function's params,
+        // so genCaptures emits exactly the parameter captures (and nothing else)
+        // for the entry step. 'this' is dropped (handled by __opt_trace_fn_this__).
+        let paramsOnlyVars = new Map();
+        for (let d of paramDecls) if (d.name !== 'this') paramsOnlyVars.set(d.name, d);
+
+        // Output the function signature line
+        output.push(line);
+        // Inject a trace call at function entry (the opening brace line)
+        let entryFnArg = `"${funcName}", `;
+        if (funcName === 'main') {
+          // main is already primed globally (the top-level __opt_ensure_frame__
+          // ("main", 0) emitted above). Use the plain trace_fn (→ ensure_frame),
+          // which treats main-on-top as a continuation → keeps exactly one main
+          // frame.
+          output.push(`__opt_trace_fn__(${entryFnArg}${lineNum});`);
+        } else {
+          // Non-main free function: use the ENTRY marker, which ALWAYS pushes a
+          // fresh frame. This is what makes recursion show a growing call stack
+          // (each call re-executes this '{' line), while per-statement traces
+          // still use __opt_trace_fn__ (→ ensure_frame, a continuation/resumption
+          // handler) so for-loops don't spawn duplicate frames. See
+          // __opt_trace_fn_enter__ in opt_trace.h.
+          output.push(`__opt_trace_fn_enter__(${entryFnArg}${lineNum});`);
+        }
+        // Capture the function's PARAMETERS in this entry step. This is what
+        // makes each call frame show its arguments (e.g. n = 4) even when the
+        // body's only statement is `return <expr>;` — in that case the sole
+        // per-statement trace is placed AFTER the return and never runs, so
+        // without this the frame would record no variables at all. The
+        // entry marker created the active tracer, so these captures attach to
+        // the entry step; __opt_trace_end__ (below) finalizes it and stamps the
+        // params onto the frame. Matches Python Tutor's per-frame argument row.
+        if (paramsOnlyVars.size > 0) {
+          output.push(genCaptures(paramsOnlyVars, heapPointers, deletedPointers, structDefs).join(' '));
+        }
+        output.push(`__opt_trace_end__();`);
+        // Push new scope
+        scopeStack.push({ depth: scopeStack[scopeStack.length-1].depth + 1, vars: new Set() });
+
+        // Register the parameters in knownVars + the new scope (parse results
+        // computed above before the entry trace was emitted).
+        for (let d of paramDecls) {
+          knownVars.set(d.name, d);
+          scopeStack[scopeStack.length-1].vars.add(d.name);
         }
         // For main, add global variables to knownVars so they appear in the frame
         if (funcName === 'main') {
