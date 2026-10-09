@@ -160,7 +160,7 @@ function parseDeclaration(line) {
 
   // Extract the type (everything before the first variable name)
   // Strategy: find the first identifier that's followed by [=,;[] or end
-  const tokens = line.match(/^((?:const\s+)?(?:static\s+)?(?:unsigned\s+|signed\s+)?(?:std::)?[\w:]+(?:\s*<[^<>]*(?:<[^<>]*>[^<>]*)*>)?)\s*([*&]*)\s*(.+)$/);
+  const tokens = line.match(/^((?:const\s+)?(?:static\s+)?(?:unsigned\s+|signed\s+)?(?:std::)?[\w:]+(?:\s+long\b)?(?:\s+(?:long|int|double)\b)?(?:\s*<[^<>]*(?:<[^<>]*>[^<>]*)*>)?)\s*([*&]*)\s*(.+)$/);
   if (!tokens) return [];
 
   let baseType = tokens[1].trim();
