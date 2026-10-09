@@ -1166,6 +1166,33 @@ function instrumentCode(sourceCode) {
         currentFunc = funcName;
         funcNameStack.push(funcName);
 
+        // Parse function parameters (BEFORE emitting the entry trace) so the
+        // entry step can capture them. Split top-level comma-separated
+        // parameter declarations (angle/paren/bracket-aware) and parse each.
+        let paramDecls = [];
+        if (params) {
+          let paramParts = [];
+          let depth = 0;
+          let current = '';
+          for (let j = 0; j < params.length; j++) {
+            const c = params[j];
+            if (c === '<' || c === '(' || c === '[') depth++;
+            if (c === '>' || c === ')' || c === ']') depth--;
+            if (c === ',' && depth === 0) { paramParts.push(current.trim()); current = ''; }
+            else current += c;
+          }
+          if (current.trim()) paramParts.push(current.trim());
+          for (let p of paramParts) {
+            let declared = parseDeclaration(p);
+            for (let d of declared) paramDecls.push(d);
+          }
+        }
+        // paramsOnlyVars: a knownVars-like map of JUST this function's params,
+        // so genCaptures emits exactly the parameter captures (and nothing else)
+        // for the entry step. 'this' is dropped (handled by __opt_trace_fn_this__).
+        let paramsOnlyVars = new Map();
+        for (let d of paramDecls) if (d.name !== 'this') paramsOnlyVars.set(d.name, d);
+
         // Output the function signature line
         output.push(line);
         // Inject a trace call at function entry (the opening brace line)
@@ -1185,31 +1212,26 @@ function instrumentCode(sourceCode) {
           // __opt_trace_fn_enter__ in opt_trace.h.
           output.push(`__opt_trace_fn_enter__(${entryFnArg}${lineNum});`);
         }
+        // Capture the function's PARAMETERS in this entry step. This is what
+        // makes each call frame show its arguments (e.g. n = 4) even when the
+        // body's only statement is `return <expr>;` — in that case the sole
+        // per-statement trace is placed AFTER the return and never runs, so
+        // without this the frame would record no variables at all. The
+        // entry marker created the active tracer, so these captures attach to
+        // the entry step; __opt_trace_end__ (below) finalizes it and stamps the
+        // params onto the frame. Matches Python Tutor's per-frame argument row.
+        if (paramsOnlyVars.size > 0) {
+          output.push(genCaptures(paramsOnlyVars, heapPointers, deletedPointers, structDefs).join(' '));
+        }
         output.push(`__opt_trace_end__();`);
         // Push new scope
         scopeStack.push({ depth: scopeStack[scopeStack.length-1].depth + 1, vars: new Set() });
 
-        // Parse function parameters and add to knownVars
-        if (params) {
-          let paramParts = [];
-          let depth = 0;
-          let current = '';
-          for (let j = 0; j < params.length; j++) {
-            const c = params[j];
-            if (c === '<' || c === '(' || c === '[') depth++;
-            if (c === '>' || c === ')' || c === ']') depth--;
-            if (c === ',' && depth === 0) { paramParts.push(current.trim()); current = ''; }
-            else current += c;
-          }
-          if (current.trim()) paramParts.push(current.trim());
-          
-          for (let p of paramParts) {
-            let declared = parseDeclaration(p);
-            for (let d of declared) {
-              knownVars.set(d.name, d);
-              scopeStack[scopeStack.length-1].vars.add(d.name);
-            }
-          }
+        // Register the parameters in knownVars + the new scope (parse results
+        // computed above before the entry trace was emitted).
+        for (let d of paramDecls) {
+          knownVars.set(d.name, d);
+          scopeStack[scopeStack.length-1].vars.add(d.name);
         }
         // For main, add global variables to knownVars so they appear in the frame
         if (funcName === 'main') {
