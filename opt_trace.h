@@ -510,6 +510,23 @@ void __opt_pop_frame__() {
   if(!st.call_stack.empty()) st.call_stack.pop_back();
 }
 
+// RAII frame guard: popped when the function's scope exits (ANY return path).
+// The instrumenter declares one at each non-main function entry, paired with
+// __opt_trace_fn_enter__ (which pushes the frame). So every call pushes a frame
+// and pops it exactly once, when the function returns — the standard
+// call/return model. Destructors fire in LIFO order (matching frame push
+// order), so __opt_pop_frame__ always removes the correct (top) frame. This is
+// what makes recursive frames appear and disappear like Python Tutor: a child
+// frame vanishes the moment its call returns, and the parent resumes. (The old
+// name-based __opt_ensure_frame__ resumption could not pop, because after a
+// same-name child returns the top is still that child → the parent's resume was
+// misread as a continuation.)
+struct __opt_frame_guard__ {
+  __opt_frame_guard__() {}
+  __opt_frame_guard__(const char* /*func_name*/) {}  // function name for trace/debug
+  ~__opt_frame_guard__() { __opt_pop_frame__(); }
+};
+
 // Update the top frame's variables
 void __opt_update_frame__(int line, const std::string& locals,
                           const std::vector<std::string>& names) {
@@ -1089,6 +1106,21 @@ void __opt_cap_deleted__(const char* n) {
 void __opt_cap_unknown__(const char* n, const char* typeName, const void* addr) {
   if(!__opt_current_tracer__) return;
   __opt_current_tracer__->add(n, "[\"C_STRUCT\",\""+__opt_addr__(addr)+"\",\""+__opt_esc__(typeName)+"\",[]]");
+}
+
+// Type-deducing capture for `auto`-typed variables. The instrumenter cannot
+// statically deduce an `auto` initializer (e.g. `auto ret = <multi-line
+// ternary>;`), so it can't pick a concrete __opt_cap__ overload. But the
+// COMPILER knows the real deduced type, so T is deduced here and
+// __opt_encode_data__ renders it with the correct type name + value
+// (arithmetic, string, bool, char, pointer, class). This is what makes
+// `auto ret = <expr>` show e.g. "long long = 5" instead of the opaque "auto".
+// Template precedent: __opt_cap_seq__<T> is likewise instantiated from
+// generated code in the WASM worker, so per-type instantiation is safe.
+template<typename T>
+void __opt_cap_auto__(const char* n, const T& v) {
+  if(!__opt_current_tracer__) return;
+  __opt_current_tracer__->add(n, __opt_encode_data__(v));
 }
 
 // ── Non-template struct field encoding ──

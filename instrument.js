@@ -670,8 +670,14 @@ function genCaptures(knownVars, heapPointers, deletedPointers, structDefs, exclu
             captures.push(`__opt_cap__("${name}", (static_cast<${inferredSimpleType}>(${name})));`);
           }
         } else {
-          // Can't determine type (std::function, lambda, etc.) — use fallback
-          captures.push(`__opt_cap_unknown__("${name}", "auto", (void*)&${name});`);
+          // Can't determine the type statically (multi-line ternary, function
+          // call, etc.) — let the COMPILER deduce it via the template param T.
+          // __opt_cap_auto__ encodes through __opt_encode_data__, which renders
+          // arithmetic types with their real name + value (e.g. "long long = 5"),
+          // strings, bool, char, pointers, and classes — so `auto ret = <expr>`
+          // shows its deduced type instead of opaque "auto". (Lambdas /
+          // std::function still resolve to <unknown> via the template.)
+          captures.push(`__opt_cap_auto__("${name}", ${name});`);
         }
       }
     } else if (info && info.type && !info.isPointer && !info.isArray && !structDefs.has(info.type) &&
@@ -1204,6 +1210,16 @@ function instrumentCode(sourceCode) {
           // frame.
           output.push(`__opt_trace_fn__(${entryFnArg}${lineNum});`);
         } else {
+          // Non-main free function: declare an RAII frame guard FIRST, then the
+          // ENTRY marker (which pushes the frame). The guard is constructed
+          // before the frame is pushed, so it is destroyed AFTER the frame
+          // exists — i.e. on every return path it pops exactly this frame.
+          // This gives Python Tutor's call/return semantics: each call pushes a
+          // frame and it vanishes the moment the call returns, so a child frame
+          // disappears before the parent resumes. See __opt_frame_guard__ in
+          // opt_trace.h. (main needs no guard — it is primed globally and is the
+          // outermost frame.)
+          output.push(`__opt_frame_guard__ __opt_frame_guard{};`);
           // Non-main free function: use the ENTRY marker, which ALWAYS pushes a
           // fresh frame. This is what makes recursion show a growing call stack
           // (each call re-executes this '{' line), while per-statement traces
