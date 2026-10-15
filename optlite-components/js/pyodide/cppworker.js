@@ -521,10 +521,40 @@ self.onmessage = async (event) => {
         const allStderr = workerStderr;
         if (allStderr && allStderr.includes('error:')) {
           // A genuine compiler diagnostic → this is a compile-time error.
-          const errorLine = allStderr.split('\n')
-            .find(l => l.includes('error:')) || '';
-          errorMsg = errorLine.replace(/^input_line_\d+:\d+:\d+:\s*/, '').trim()
-            .replace(/^.*?error:\s*/, 'error: ');
+          // clang may deliver the diagnostic in ONE line or SPLIT across several
+          // (each printErr call appends its own \n). So take the first line that
+          // contains 'error:' AND every following line up to (but not including)
+          // the next diagnostic marker — 'note:', 'warning:', or another 'error:'
+          // — so a multi-chunk diagnostic is reassembled whole. Drop any trailing
+          // 'WASM aborted' tail (the abort reason is not part of the diagnostic).
+          const sl = allStderr.split('\n');
+          const start = sl.findIndex(l => l.includes('error:'));
+          if (start >= 0) {
+            // Reassemble a diagnostic that clang split across several printErr
+            // chunks (each appended with its own \n). Start at the line that
+            // contains 'error:', then absorb following lines that are
+            // continuations of THIS diagnostic — i.e. NOT themselves a new
+            // diagnostic marker, not the 'WASM aborted' tail, and reached while
+            // the accumulated message is still incomplete (doesn't end in a
+            // sentence terminator). Stopping on a complete sentence is what
+            // keeps a SECOND, separate 'error:' on a later line from being
+            // wrongly glued onto the first.
+            const clean = (l) => l.replace(/^input_line_\d+:\d+:\d+:\s*/, '').replace(/WASM aborted.*$/, '').trim();
+            const nextMarker = /^(error:|warning:|note:)/;
+            const isComplete = (s) => /[.?];?['\")]?$/.test(s);
+            let end = start;
+            while (end + 1 < sl.length) {
+              const nx = clean(sl[end + 1]);
+              if (nextMarker.test(nx) || nx === '') break;
+              const soFar = sl.slice(start, end + 1).map(clean).filter(Boolean).join(' ');
+              if (isComplete(soFar)) break;   // this diagnostic is already whole
+              end++;
+            }
+            let errorLine = sl.slice(start, end + 1)
+              .map(clean).filter(Boolean).join(' ');
+            errorLine = errorLine.replace(/^.*?(error:)\s*/, '$1 ').replace(/\s+/g, ' ').trim();
+            errorMsg = errorLine;
+          }
         } else if (self._lastCrashLine) {
           // No compiler diagnostic, but execution STARTED (we saw crash-line
           // markers). This is a RUNTIME crash (e.g. use-after-free, NULL
