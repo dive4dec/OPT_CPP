@@ -139,8 +139,12 @@
   }
 
   // Pure: remap __opt_trace_fn*("f", N) line numbers from reformatted->original.
+  // MUST cover every trace-fn marker variant, including __opt_trace_fn_enter__
+  // (the recursion entry marker). If a variant is missing from the regex, its
+  // line number stays in reformat space, so with blank lines above the signature
+  // the enter step highlights a blank/previous line instead of the function line.
   function remapTraceLines(instr, reformToOrig) {
-    return instr.replace(/(__opt_trace_fn_this__|__opt_trace_fn__)\("([^"]*)",\s*(\d+)\)/g,
+    return instr.replace(/(__opt_trace_fn_this__|__opt_trace_fn_enter__|__opt_trace_fn__)\("([^"]*)",\s*(\d+)\)/g,
       (m, fn, name, numStr) => {
         const k = parseInt(numStr, 10);
         const orig = reformToOrig[k - 1];

@@ -284,7 +284,28 @@ function parseDeclaration(line) {
       let bm = v.match(/^(\w+)\s*\{.*\}$/);
       if (bm && bracesBalanced(v)) nameMatch = bm;
     }
+    // Reference-to-array `(&arr)[]` and function-pointer `(*cmp)(int,int)`
+    // parameter forms: the variable name sits INSIDE the leading parentheses,
+    // so the `^\w+` patterns above never match and the parameter was silently
+    // dropped (never registered -> not visualized in the function frame, and for
+    // a reference-to-array the whole recursion lost that param). Extract the
+    // name from the leading (…) group, and flag it as a reference/pointer so
+    // genCaptures routes it to the generic pointer capture (a reference-to-array
+    // decays to `const T*` and a function pointer is a pointer, so `__opt_cap__`
+    // renders its address — the parameter now shows in the function frame).
+    let isRefOrPtrParam = false;
+    if (!nameMatch) {
+      let rm = v.match(/^\(\s*(&?)\s*(\*?)\s*(\w+)\s*\)\s*(?:\[[^\]]*\])?\s*(?:\([^)]*\))?$/);
+      if (rm) { nameMatch = { 1: rm[3] }; varPointerExtra += (rm[1] || rm[2] || ''); isRefOrPtrParam = true; }
+      else {
+        rm = v.match(/^\(\s*\*\s*(\w+)\s*\)\s*\([^)]*\)$/);
+        if (rm) { nameMatch = { 1: rm[1] }; varPointerExtra += '*'; isRefOrPtrParam = true; }
+      }
+    }
     if (!nameMatch) continue;
+    // nameMatch[1] must be the name (the code below reads nameMatch[1] as name).
+    let __nm = nameMatch[1];
+    if (typeof __nm !== 'string' || __nm.length === 0) continue;
 
     let name = nameMatch[1];
     let arrayPart = nameMatch[2];
@@ -319,6 +340,7 @@ function parseDeclaration(line) {
       arrayDims: arrayDims,
       isPointer: isPointer,
       isReference: isReference,
+      isRefOrPtrParam: isRefOrPtrParam || undefined,
       isStatic: isStatic,
       init: init || null,
     });
@@ -734,6 +756,14 @@ function genCaptures(knownVars, heapPointers, deletedPointers, structDefs, exclu
           captures.push(`__opt_cap_auto__("${name}", ${name});`);
         }
       }
+    } else if (info && info.isRefOrPtrParam) {
+      // Reference-to-array `const int (&arr)[]` or function-pointer
+      // `int (*cmp)(int,int)` parameter: at runtime `arr` decays to `const int*`
+      // and `cmp` is a pointer, so the generic `__opt_cap__` const-void* overload
+      // accepts it. Shows the parameter in the function frame (its address), which
+      // is what Python Tutor does for such params. Without this branch the param
+      // fell into the "unknown class — skip" case and never rendered.
+      captures.push(`__opt_cap__("${name}", (const void*)${name});`);
     } else if (info && info.type && !info.isPointer && !info.isArray && !structDefs.has(info.type) &&
                !KNOWN_SIMPLE_TYPES.has(info.type) && !info.type.endsWith('*')) {
       // Unknown class/struct type — skip (can't capture without templates)
