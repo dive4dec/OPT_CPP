@@ -61,6 +61,15 @@ html[data-theme="dark"] div.ExecutionVisualizer td.funcCod {
   background-color: var(--viz-object-bg);
   color: var(--viz-code-line-fg);
 }
+/* vector/array ELEMENT cells: the light base (pytutor.css) hard-codes
+   `color: black` on these, which the table-level override above does NOT
+   reach (a directly-applied cell color beats the inherited table color), so
+   the values stayed black-on-dark in dark mode. Re-point them to the light
+   viz text token so vector/array elements are readable. */
+html[data-theme="dark"] div.ExecutionVisualizer table.cArrayTbl td.cArrayElt,
+html[data-theme="dark"] div.ExecutionVisualizer table.cArrayTbl td.cMultidimArrayElt {
+  color: var(--viz-code-line-fg);
+}
 /* step-control buttons + input (were default light browser widgets) */
 html[data-theme="dark"] div.ExecutionVisualizer #vcrControls button,
 html[data-theme="dark"] div.ExecutionVisualizer #raw_input_submit_btn {
@@ -139,6 +148,12 @@ html[data-theme="dark"] div.ExecutionVisualizer .ui-icon { filter: invert(0.85);
   html[data-theme="auto"] div.ExecutionVisualizer table.classTbl td.classVal,
   html[data-theme="auto"] div.ExecutionVisualizer td.funcCod {
     background-color: var(--viz-object-bg);
+    color: var(--viz-code-line-fg);
+  }
+  /* vector/array ELEMENT cells — same black-on-dark fix as the explicit-dark
+     half (see the matching rule above). */
+  html[data-theme="auto"] div.ExecutionVisualizer table.cArrayTbl td.cArrayElt,
+  html[data-theme="auto"] div.ExecutionVisualizer table.cArrayTbl td.cMultidimArrayElt {
     color: var(--viz-code-line-fg);
   }
   html[data-theme="auto"] div.ExecutionVisualizer #vcrControls button,
