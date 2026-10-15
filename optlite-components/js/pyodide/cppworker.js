@@ -501,6 +501,7 @@ self.onmessage = async (event) => {
 
       // If the WASM aborted, extract the real error from stderr.
       if (execAborted) {
+        self.__lastRawStderr = workerStderr;   // TEMP diagnostic: expose raw capture
         // The WASM abort fires when compilation fails, but the FULL clang
         // diagnostic is still streaming in over async iopub stderr chunks.
         // Reading workerStderr immediately captures only the chunk(s) that had
@@ -568,7 +569,10 @@ self.onmessage = async (event) => {
           // a compile/link problem, but not one clang reported.
           errorMsg = 'Compilation error (WASM aborted). Check your code.';
         }
-        throw new Error(errorMsg);
+        // TEMP DIAGNOSTIC: surface the raw captured stderr so we can see
+        // exactly what the worker has vs. what reaches the display.
+        self.__lastRawStderr = workerStderr;
+        throw new Error('[DIAG rawlen=' + (workerStderr||'').length + ' raw=' + JSON.stringify(workerStderr||'') + ' || built=' + JSON.stringify(errorMsg) + ']');
       }
 
       await new Promise(r => setTimeout(r, 300));
