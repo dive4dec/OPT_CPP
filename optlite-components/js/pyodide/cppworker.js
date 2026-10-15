@@ -494,6 +494,7 @@ self.onmessage = async (event) => {
         self.xserver.notify_listener(executeRequest);
       } catch (e) {
         execAborted = true;
+        await new Promise(r => setTimeout(r, 1000));
       }
 
       // Wait for execution to complete
@@ -501,61 +502,14 @@ self.onmessage = async (event) => {
 
       // If the WASM aborted, extract the real error from stderr.
       if (execAborted) {
-        self.__lastRawStderr = workerStderr;   // TEMP diagnostic: expose raw capture
-        // The WASM abort fires when compilation fails, but the FULL clang
-        // diagnostic is still streaming in over async iopub stderr chunks.
-        // Reading workerStderr immediately captures only the chunk(s) that had
-        // landed by the abort instant — truncating the diagnostic mid-line
-        // (e.g. "...pop_back' has" with the "'const std::vector<int>'; did you
-        // mean to remove 'const'?" tail dropped). Wait until stderr STABILIZES
-        // (stops growing for two consecutive polls) so the complete diagnostic
-        // has been delivered before we extract the error line. Bounded so a
-        // stream that never settles can't hang the error path.
-        let _prevLen = -1, _stablePolls = 0;
-        for (let _s = 0; _s < 25; _s++) {   // up to ~5s
-          await new Promise(r => setTimeout(r, 200));
-          const _curLen = workerStderr.length;
-          if (_curLen === _prevLen) { if (++_stablePolls >= 2) break; }
-          else { _stablePolls = 0; _prevLen = _curLen; }
-        }
         let errorMsg = '';
         const allStderr = workerStderr;
         if (allStderr && allStderr.includes('error:')) {
           // A genuine compiler diagnostic → this is a compile-time error.
-          // clang may deliver the diagnostic in ONE line or SPLIT across several
-          // (each printErr call appends its own \n). So take the first line that
-          // contains 'error:' AND every following line up to (but not including)
-          // the next diagnostic marker — 'note:', 'warning:', or another 'error:'
-          // — so a multi-chunk diagnostic is reassembled whole. Drop any trailing
-          // 'WASM aborted' tail (the abort reason is not part of the diagnostic).
-          const sl = allStderr.split('\n');
-          const start = sl.findIndex(l => l.includes('error:'));
-          if (start >= 0) {
-            // Reassemble a diagnostic that clang split across several printErr
-            // chunks (each appended with its own \n). Start at the line that
-            // contains 'error:', then absorb following lines that are
-            // continuations of THIS diagnostic — i.e. NOT themselves a new
-            // diagnostic marker, not the 'WASM aborted' tail, and reached while
-            // the accumulated message is still incomplete (doesn't end in a
-            // sentence terminator). Stopping on a complete sentence is what
-            // keeps a SECOND, separate 'error:' on a later line from being
-            // wrongly glued onto the first.
-            const clean = (l) => l.replace(/^input_line_\d+:\d+:\d+:\s*/, '').replace(/WASM aborted.*$/, '').trim();
-            const nextMarker = /^(error:|warning:|note:)/;
-            const isComplete = (s) => /[.?];?['\")]?$/.test(s);
-            let end = start;
-            while (end + 1 < sl.length) {
-              const nx = clean(sl[end + 1]);
-              if (nextMarker.test(nx) || nx === '') break;
-              const soFar = sl.slice(start, end + 1).map(clean).filter(Boolean).join(' ');
-              if (isComplete(soFar)) break;   // this diagnostic is already whole
-              end++;
-            }
-            let errorLine = sl.slice(start, end + 1)
-              .map(clean).filter(Boolean).join(' ');
-            errorLine = errorLine.replace(/^.*?(error:)\s*/, '$1 ').replace(/\s+/g, ' ').trim();
-            errorMsg = errorLine;
-          }
+          const errorLine = allStderr.split('\n')
+            .find(l => l.includes('error:')) || '';
+          errorMsg = errorLine.replace(/^input_line_\d+:\d+:\d+:\s*/, '').trim()
+            .replace(/^.*?error:\s*/, 'error: ');
         } else if (self._lastCrashLine) {
           // No compiler diagnostic, but execution STARTED (we saw crash-line
           // markers). This is a RUNTIME crash (e.g. use-after-free, NULL
@@ -569,10 +523,7 @@ self.onmessage = async (event) => {
           // a compile/link problem, but not one clang reported.
           errorMsg = 'Compilation error (WASM aborted). Check your code.';
         }
-        // TEMP DIAGNOSTIC: surface the raw captured stderr so we can see
-        // exactly what the worker has vs. what reaches the display.
-        self.__lastRawStderr = workerStderr;
-        throw new Error('[DIAG rawlen=' + (workerStderr||'').length + ' raw=' + JSON.stringify(workerStderr||'') + ' || built=' + JSON.stringify(errorMsg) + ']');
+        throw new Error(errorMsg);
       }
 
       await new Promise(r => setTimeout(r, 300));

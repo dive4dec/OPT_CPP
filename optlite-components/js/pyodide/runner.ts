@@ -33,6 +33,52 @@ let runStartAt = 0;
 let kernelHasError = false;
 let kernelErrorText = '';
 
+// clang wraps a long diagnostic across several physical stderr lines. The part
+// before each wrapped line is either the SAME `input_line_N:LN:COL:` prefix
+// (clang re-emits the location at the start of each wrapped segment) or a run
+// of spaces aligning the continuation under the first line. Both are
+// continuations of the FIRST diagnostic. A source-context line (clang's
+// `  12 |         vec1.pop_back();` view) always contains a '|' column marker,
+// as do `  |` pointer lines — those are NOT part of the message. This
+// reassembles the full message so a long error isn't truncated at its first
+// physical line (the old `.find(l => l.includes('error:'))` returned just the
+// head, e.g. "...member function 'pop_back' has" without the type/fix hint).
+function extractErrorDiagnostic(text: string): string {
+  if (!text) return '';
+  const sl = text.split('\n');
+  const start = sl.findIndex(l => l.includes('error:'));
+  if (start < 0) return '';
+  const locRe = /^(?:input_line_\d+|user_code\.cpp|<unknown>):\d+:\d+:\s*/;
+  const stripLoc = (l: string) => l.replace(locRe, '').trim();
+  // A continuation of THIS diagnostic is a line that:
+  //   • is not a source-context / pointer line (those contain a '|' column
+  //     marker: `  14 | ...`, `     | ^`), and
+  //   • either re-emits the `input_line_N:LN:COL:` location prefix, OR begins
+  //     (after any alignment spaces) with an ordinary word character.
+  // A fresh diagnostic (`error:`/`note:`/`warning:` as its first token) is NOT
+  // a continuation — it is a separate note/error and we stop before it.
+  const isCont = (l: string): boolean => {
+    if (l.includes('|')) return false;
+    const body = stripLoc(l);
+    if (body === '') return false;
+    if (/^(error|warning|note):/.test(body)) return false;
+    return /^\w/.test(body);
+  };
+  const complete = (s: string) => /[.?];?['")]?$/.test(s);
+  let end = start;
+  let joined = stripLoc(sl[start]);
+  // Absorb wrapped-continuation lines until a new diagnostic, a source line,
+  // or a blank line ends the message.
+  while (end + 1 < sl.length) {
+    if (!isCont(sl[end + 1])) break;
+    joined += ' ' + stripLoc(sl[end + 1]);
+    end++;
+    if (complete(joined)) break;
+  }
+  let msg = joined.replace(/^\s*.*?(error:)/, '$1 ').replace(/\s+/g, ' ').trim();
+  return msg;
+}
+
 // Timeout for kernel recreation (Option 3). If xkernel.delete() hangs,
 // we terminate the worker and create a fresh one.
 let kernelRecreatingTimeout: ReturnType<typeof setTimeout> | null = null;
@@ -239,10 +285,7 @@ async function handleWorkerMessage(event: MessageEvent) {
           
           // If we still don't have a line, try to find it from the error message
           // by searching for the error token in the source code
-          let errorMsg = kernelErrorText.split('\n')
-            .find(l => l.includes('error:')) || 'Compilation error';
-          errorMsg = errorMsg.replace(/^input_line_\d+:\d+:\d+:\s*/, '').trim();
-          errorMsg = errorMsg.replace(/^.*?error:\s*/, 'error: ');
+          let errorMsg = extractErrorDiagnostic(kernelErrorText) || 'Compilation error';
           
           // If errorLine is still 1 (default) or too large (line in full code),
           // try to find the error line by searching the user's source code.
@@ -435,10 +478,7 @@ function handleWorkerError(event: ErrorEvent) {
       });
     } else if (kernelHasError && kernelErrorText) {
       // A real compiler diagnostic is present → genuine compile-time error.
-      let errorMsg = kernelErrorText.split('\n')
-        .find(l => l.includes('error:')) || 'Compilation error';
-      errorMsg = errorMsg.replace(/^input_line_\d+:\d+:\d+:\s*/, '').trim();
-      errorMsg = errorMsg.replace(/^.*?error:\s*/, 'error: ');
+      let errorMsg = extractErrorDiagnostic(kernelErrorText) || 'Compilation error';
       cb({ error: errorMsg });
     } else {
       // Aborted before any code executed → most likely a compile/link problem.

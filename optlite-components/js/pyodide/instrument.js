@@ -851,12 +851,57 @@ function instrumentCode(sourceCode) {
   let currentFunc = 'main';
   let funcNameStack = ['main'];
 
+  // Reconstruct a MULTI-LINE function signature that this "{" line opens.
+  // e.g.
+  //   std::vector<int> merge_sorted(std::vector<int> vec1,
+  //                                 std::vector<int> vec2)
+  //   {
+  // The single-line detector needs "name(params) {" on ONE line, so it misses
+  // this; without a fix the body is treated as file scope and the function's
+  // locals leak into the next function's frame ("use of undeclared identifier").
+  // Join up to a few lines before the brace and test whether they form a
+  // balanced "... name(params)" ending in a top-level ')'. Returns
+  // { name, params } or null. `lines` is the full line array, `braceIdx` the
+  // index of the "{" line.
+  function reconstructMultiLineSig(lines, braceIdx) {
+    for (let k = 1; k <= 8 && k <= braceIdx; k++) {
+      const parts = lines.slice(braceIdx - k, braceIdx);
+      const text = stripCommentsAndStrings(parts.join('\n')).replace(/\s+/g, ' ').trim();
+      if (!text.endsWith(')')) continue;
+      let d = 0, bad = false;
+      for (const ch of text) {
+        if (ch === '(') d++;
+        else if (ch === ')') { d--; if (d < 0) { bad = true; break; } }
+      }
+      if (bad || d !== 0) continue;
+      let depth = 0, openIdx = -1;
+      for (let c = text.length - 1; c >= 0; c--) {
+        if (text[c] === ')') depth++;
+        else if (text[c] === '(') { depth--; if (depth === 0) { openIdx = c; break; } }
+      }
+      if (openIdx < 0) continue;
+      const before = text.substring(0, openIdx).trim();
+      const nm = before.match(/([A-Za-z_]\w*)\s*$/);
+      if (!nm) continue;
+      const name = nm[1];
+      if (['if','for','while','switch','else','do','catch','try','return','sizeof','new','delete'].includes(name)) continue;
+      if (before.replace(/\s*$/, '').endsWith('=')) continue;  // global init "int g = f(" is a call
+      const params = text.substring(openIdx + 1, text.length - 1).trim();
+      return { name, params };
+    }
+    return null;
+  }
+
   for (let i = 0; i < lines.length; i++) {
     let line = lines[i];
     let lineNum = i + 1;
 
     // Strip comments for analysis but keep original for output
     let stripped = stripCommentsAndStrings(line).trim();
+    // Set when a "} else {"-style line's CLOSING brace was already handled in the
+    // "{" branch below (close-before-open ordering), so the separate "}" handler
+    // must not pop the scope a second time.
+    let closedOnOpenLine = false;
 
     // Flush deferred block-opening declarations whose initializer block has now
     // closed. After a `};` popped its block scope, the owning scope is the
@@ -1226,6 +1271,23 @@ function instrumentCode(sourceCode) {
     // function definitions like "int add(int a, int b) {" also match
     // parseDeclaration's skip pattern but need to be handled as functions
     if (stripped.includes('{')) {
+      // A line like "} else {" / "} catch (...) {" closes one block AND opens
+      // the next on the SAME line. The "{" is normally processed before the
+      // "}" (which lives further down), so the new scope would be pushed before
+      // the old one is popped — the just-closed block's locals then stay in
+      // knownVars and leak into the new block's captures ("use of undeclared
+      // identifier" in the else branch). Handle the close first when a "}"
+      // precedes the "{", and flag it so the "}" handler below doesn't pop again.
+      if (stripped.startsWith('}') && scopeStack.length > 1) {
+        let closed = scopeStack.pop();
+        for (let v of closed.vars) {
+          knownVars.delete(v); heapPointers.delete(v); deletedPointers.delete(v);
+        }
+        if (lambdaStack.length > 0 && lambdaStack[lambdaStack.length-1].scopeDepth === scopeStack.length) {
+          lambdaStack.pop();
+        }
+        closedOnOpenLine = true;
+      }
       // Check if this is a function body opening
       // e.g., "int main() {" or "void foo(int x) {"
       let funcMatch = stripped.match(/(\w[\w:]*)\s+(\w+)\s*\(([^)]*)\)\s*\{/);
@@ -1262,6 +1324,17 @@ function instrumentCode(sourceCode) {
         // last resort (e.g. a return type the greedy free-form regex mishandled).
         const m = __optMatchFuncBalanced(line);
         if (m) funcMatch = m;
+      }
+      // Multi-line signature: the "{" is on its OWN line and the parameter
+      // list closed on an earlier line ("name(params)" then "{"). None of the
+      // single-line detectors match a bare "{", so reconstruct the signature by
+      // scanning backward. Only at file scope (not in a function or struct body)
+      // and only for a lone "{". On success synthesize a funcMatch in the same
+      // 3-group layout (name=group2, params=group3) so the shared handler below
+      // runs unchanged.
+      if (!funcMatch && !inFunctionBody && !inStructBody && /^\{\s*$/.test(stripped)) {
+        const mml = reconstructMultiLineSig(lines, i);
+        if (mml) funcMatch = [null, null, mml.name, mml.params];
       }
       if (funcMatch && !['if','for','while','switch','else','do','catch','try'].includes(funcMatch[2])) {
         let funcName = funcMatch[2];
@@ -1441,7 +1514,7 @@ function instrumentCode(sourceCode) {
     }
 
     // Check for closing brace — leaving a scope
-    if (stripped.includes('}')) {
+    if (stripped.includes('}') && !closedOnOpenLine) {
       // Pop scope and remove its variables
       if (scopeStack.length > 1) {
         let popped = scopeStack.pop();
@@ -1634,17 +1707,28 @@ function instrumentCode(sourceCode) {
           initVars.add(d.name);
         }
       }
-      // Inject a trace call BEFORE the for header (captures pre-loop state)
-      // Exclude loop variables (they're not initialized yet)
+      // This for may be the single-statement BODY of a brace-less for/while/if
+      // on the PREVIOUS line (pendingBracelessBody). A pre-header trace here
+      // would land BETWEEN that header and its body, becoming the outer loop's
+      // own single-statement body and pushing this for OUT of the outer loop's
+      // scope — so the outer loop's variable (e.g. "i") would be "undeclared".
+      // Consume the flag and skip the pre-header trace so this for simply
+      // becomes the outer loop's body (where the outer var is in scope).
+      const isBracelessBody = pendingBracelessBody;
+      if (pendingBracelessBody) pendingBracelessBody = false;
       let fnArg = `"${currentFunc}", `;
-      let captures = genCaptures(varsForCaps(scopeStack, lambdaStack, knownVars), heapPointers, deletedPointers, structDefs, initVars);
-      if (captures.length > 0) {
-        output.push(`__opt_trace_fn__(${fnArg}${lineNum});`);
-          if (captures.length > 0) { output.push(captures.join(' ')); }
+      if (!isBracelessBody) {
+        // Inject a trace call BEFORE the for header (captures pre-loop state)
+        // Exclude loop variables (they're not initialized yet)
+        let captures = genCaptures(varsForCaps(scopeStack, lambdaStack, knownVars), heapPointers, deletedPointers, structDefs, initVars);
+        if (captures.length > 0) {
+          output.push(`__opt_trace_fn__(${fnArg}${lineNum});`);
+            if (captures.length > 0) { output.push(captures.join(' ')); }
+            output.push(`__opt_trace_end__();`);
+        } else {
+          output.push(`__opt_trace_fn__(${fnArg}${lineNum});`);
           output.push(`__opt_trace_end__();`);
-      } else {
-        output.push(`__opt_trace_fn__(${fnArg}${lineNum});`);
-        output.push(`__opt_trace_end__();`);
+        }
       }
       // Now add init vars to knownVars (they'll be visible after the for header executes)
       if (initPart) {
