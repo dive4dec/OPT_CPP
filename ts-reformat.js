@@ -126,11 +126,19 @@
       let segStart = ls;
       for (const p of pts) {
         const seg = src.slice(segStart, p);
-        if (seg.trim() !== '') reformLines.push({ text: seg, origLine: li + 1 });
+        // PRESERVE every segment, including blank/whitespace-only ones. The user's
+        // source (blank lines between functions, indentation) must survive the
+        // reformat verbatim, and each original line must map 1:1 to its original
+        // line number so the "next line" cursor and call-stack entry point at the
+        // right place. Dropping blank lines (the old `seg.trim() !== ''` filter)
+        // shifted line numbers and forced a lossy remap that mis-pointed the
+        // recursion entry marker at a blank line. Blank original lines carry no
+        // split point, so preserving them never creates a spurious mid-split line.
+        reformLines.push({ text: seg, origLine: li + 1 });
         segStart = p;
       }
       const seg = src.slice(segStart, le);
-      if (seg.trim() !== '') reformLines.push({ text: seg, origLine: li + 1 });
+      reformLines.push({ text: seg, origLine: li + 1 });
     }
 
     const reformatted = reformLines.map(l => l.text).join('\n');
@@ -139,8 +147,12 @@
   }
 
   // Pure: remap __opt_trace_fn*("f", N) line numbers from reformatted->original.
+  // MUST cover every trace-fn marker variant, including __opt_trace_fn_enter__
+  // (the recursion entry marker). If a variant is missing from the regex, its
+  // line number stays in reformat space, so with blank lines above the signature
+  // the enter step highlights a blank/previous line instead of the function line.
   function remapTraceLines(instr, reformToOrig) {
-    return instr.replace(/(__opt_trace_fn_this__|__opt_trace_fn__)\("([^"]*)",\s*(\d+)\)/g,
+    return instr.replace(/(__opt_trace_fn_this__|__opt_trace_fn_enter__|__opt_trace_fn__)\("([^"]*)",\s*(\d+)\)/g,
       (m, fn, name, numStr) => {
         const k = parseInt(numStr, 10);
         const orig = reformToOrig[k - 1];

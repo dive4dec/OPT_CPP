@@ -78,6 +78,60 @@ function stripCommentsAndStrings(code) {
 // detection: a valid `Name{...}` initializer has balanced braces, whereas a
 // struct/class/enum definition like `struct Foo {` or a function body `main() {`
 // has an unbalanced trailing `{`.
+// Given a `line` and the index of an opening `(`, return the index of the
+// MATCHING `)` (balanced, one level deep or more), or -1 if none on the line.
+// Needed because function parameter lists can contain nested parens — e.g.
+//   const int (&arr)[]      (reference-to-array)
+//   int (*cmp)(int, int)    (function pointer)
+// which a plain `([^)]*)` parameter group cannot span.
+function findMatchingParen(line, openIdx) {
+  let depth = 0;
+  for (let i = openIdx; i < line.length; i++) {
+    const c = line[i];
+    if (c === '(') depth++;
+    else if (c === ')') { depth--; if (depth === 0) return i; }
+  }
+  return -1;
+}
+
+// Balanced-paren function-signature detector. Returns {name, params} or null.
+// Only called as a last resort (both regex attempts already failed), so it is
+// safe to be slightly permissive: the caller still rejects keywords
+// (if/for/while/...) and a non-matching line simply yields null.
+function __optMatchFuncBalanced(line) {
+  const open = line.indexOf('(');
+  if (open < 0) return null;
+  const close = findMatchingParen(line, open);
+  if (close < 0) return null;
+  // After the closing paren: optional specifiers (const/noexcept/->type/&/&&),
+  // a virtual-inheritance list `: ...`, then the opening brace.
+  if (!/^\s*(?:(?:const|override|noexcept|final|volatile|\&|\&\&)\s+)*(?::\s*[^{]*?)?\s*\{/.test(line.slice(close + 1))) return null;
+  // The function name is the identifier immediately before `(`.
+  const nm = line.slice(0, open).match(/([A-Za-z_]\w*)\s*$/);
+  if (!nm) return null;
+  // Return a 4-element array matching RegExp.match's layout: [full, type, name,
+  // params]. The primary regex has groups [1]=type [2]=name [3]=params, so the
+  // full array is [0]=fullmatch [1]=type [2]=name [3]=params. Downstream reads
+  // funcMatch[2] (name) and funcMatch[3] (params); we leave [1] empty since a
+  // balanced match has no separate return-type group.
+  return [line, '', nm[1], line.slice(open + 1, close).trim()];
+}
+
+// True if the parentheses in `s` are balanced (every `(` has a matching `)`,
+// and they nest properly). Used to detect function signatures whose parameter
+// list contains nested parens (reference-to-array `const int (&arr)[]`,
+// function-pointer `int (*cmp)(int,int)`). A balanced-parameter-list regex
+// match like `foo(int x) {` has balanced parens; a truncated primary-regex
+// match like `foo(const int (&arr` does NOT (one open, zero close).
+function parensBalanced(s) {
+  let d = 0;
+  for (const c of s) {
+    if (c === '(') d++;
+    else if (c === ')') { d--; if (d < 0) return false; }
+  }
+  return d === 0;
+}
+
 function bracesBalanced(s) {
   let d = 0, inStr = false, inChar = false;
   for (let i = 0; i < s.length; i++) {
@@ -230,7 +284,28 @@ function parseDeclaration(line) {
       let bm = v.match(/^(\w+)\s*\{.*\}$/);
       if (bm && bracesBalanced(v)) nameMatch = bm;
     }
+    // Reference-to-array `(&arr)[]` and function-pointer `(*cmp)(int,int)`
+    // parameter forms: the variable name sits INSIDE the leading parentheses,
+    // so the `^\w+` patterns above never match and the parameter was silently
+    // dropped (never registered -> not visualized in the function frame, and for
+    // a reference-to-array the whole recursion lost that param). Extract the
+    // name from the leading (…) group, and flag it as a reference/pointer so
+    // genCaptures routes it to the generic pointer capture (a reference-to-array
+    // decays to `const T*` and a function pointer is a pointer, so `__opt_cap__`
+    // renders its address — the parameter now shows in the function frame).
+    let isRefOrPtrParam = false;
+    if (!nameMatch) {
+      let rm = v.match(/^\(\s*(&?)\s*(\*?)\s*(\w+)\s*\)\s*(?:\[[^\]]*\])?\s*(?:\([^)]*\))?$/);
+      if (rm) { nameMatch = { 1: rm[3] }; varPointerExtra += (rm[1] || rm[2] || ''); isRefOrPtrParam = true; }
+      else {
+        rm = v.match(/^\(\s*\*\s*(\w+)\s*\)\s*\([^)]*\)$/);
+        if (rm) { nameMatch = { 1: rm[1] }; varPointerExtra += '*'; isRefOrPtrParam = true; }
+      }
+    }
     if (!nameMatch) continue;
+    // nameMatch[1] must be the name (the code below reads nameMatch[1] as name).
+    let __nm = nameMatch[1];
+    if (typeof __nm !== 'string' || __nm.length === 0) continue;
 
     let name = nameMatch[1];
     let arrayPart = nameMatch[2];
@@ -265,6 +340,7 @@ function parseDeclaration(line) {
       arrayDims: arrayDims,
       isPointer: isPointer,
       isReference: isReference,
+      isRefOrPtrParam: isRefOrPtrParam || undefined,
       isStatic: isStatic,
       init: init || null,
     });
@@ -460,6 +536,16 @@ const KNOWN_SIMPLE_TYPES = new Set([
   'unsigned', 'unsigned int', 'unsigned short', 'unsigned long', 'unsigned long long',
   'double', 'float', 'bool', 'char', 'string', 'std::string'
 ]);
+
+// Names of the enclosing template's TYPE parameters (class/typename params,
+// e.g. `T` in `template <class T, size_t N>`), set by instrumentCode when a
+// `template <...>` header is seen and RESET at the start of each instrumentCode
+// call. A variable declared with a bare type-parameter type (`T s=a[0];`) is,
+// like `auto`, not statically knowable — but it IS a concrete type at runtime,
+// so genCaptures captures it via __opt_cap_auto__ (compiler-deduced) instead of
+// skipping it as an "unknown class". Without this, `T s=...` / `T c=...` locals
+// were silently not visualized (variable-type-capture-triage.md, Site 2).
+let templateTypeParams = new Set();
 
 // Generate capture calls for all known variables
 function genCaptures(knownVars, heapPointers, deletedPointers, structDefs, excludeVars) {
@@ -680,6 +766,22 @@ function genCaptures(knownVars, heapPointers, deletedPointers, structDefs, exclu
           captures.push(`__opt_cap_auto__("${name}", ${name});`);
         }
       }
+    } else if (info && info.isRefOrPtrParam) {
+      // Reference-to-array `const int (&arr)[]` or function-pointer
+      // `int (*cmp)(int,int)` parameter: at runtime `arr` decays to `const int*`
+      // and `cmp` is a pointer, so the generic `__opt_cap__` const-void* overload
+      // accepts it. Shows the parameter in the function frame (its address), which
+      // is what Python Tutor does for such params. Without this branch the param
+      // fell into the "unknown class — skip" case and never rendered.
+      captures.push(`__opt_cap__("${name}", (const void*)${name});`);
+    } else if (info && info.type && !info.isPointer && !info.isArray && !structDefs.has(info.type) &&
+               templateTypeParams.has(info.type)) {
+      // Declared with a TEMPLATE TYPE PARAMETER (`T s=a[0];` in
+      // `template <class T>`). Like `auto`, the concrete type isn't knowable
+      // statically, but it IS a real type at runtime — let the compiler deduce
+      // it via __opt_cap_auto__. Without this the bare `T` fell into the
+      // "unknown class" skip below and the local was never visualized.
+      captures.push(`__opt_cap_auto__(\"${name}\", ${name});`);
     } else if (info && info.type && !info.isPointer && !info.isArray && !structDefs.has(info.type) &&
                !KNOWN_SIMPLE_TYPES.has(info.type) && !info.type.endsWith('*')) {
       // Unknown class/struct type — skip (can't capture without templates)
@@ -767,12 +869,62 @@ function instrumentCode(sourceCode) {
   let currentFunc = 'main';
   let funcNameStack = ['main'];
 
+  // Reset per-call template type-parameter tracking (module-scope, shared with
+  // genCaptures). instrumentCode can be called repeatedly (re-runs), so start
+  // each run with a fresh set.
+  templateTypeParams = new Set();
+
+  // Reconstruct a MULTI-LINE function signature that this "{" line opens.
+  // e.g.
+  //   std::vector<int> merge_sorted(std::vector<int> vec1,
+  //                                 std::vector<int> vec2)
+  //   {
+  // The single-line detector needs "name(params) {" on ONE line, so it misses
+  // this; without a fix the body is treated as file scope and the function's
+  // locals leak into the next function's frame ("use of undeclared identifier").
+  // Join up to a few lines before the brace and test whether they form a
+  // balanced "... name(params)" ending in a top-level ')'. Returns
+  // { name, params } or null. `lines` is the full line array, `braceIdx` the
+  // index of the "{" line.
+  function reconstructMultiLineSig(lines, braceIdx) {
+    for (let k = 1; k <= 8 && k <= braceIdx; k++) {
+      const parts = lines.slice(braceIdx - k, braceIdx);
+      const text = stripCommentsAndStrings(parts.join('\n')).replace(/\s+/g, ' ').trim();
+      if (!text.endsWith(')')) continue;
+      let d = 0, bad = false;
+      for (const ch of text) {
+        if (ch === '(') d++;
+        else if (ch === ')') { d--; if (d < 0) { bad = true; break; } }
+      }
+      if (bad || d !== 0) continue;
+      let depth = 0, openIdx = -1;
+      for (let c = text.length - 1; c >= 0; c--) {
+        if (text[c] === ')') depth++;
+        else if (text[c] === '(') { depth--; if (depth === 0) { openIdx = c; break; } }
+      }
+      if (openIdx < 0) continue;
+      const before = text.substring(0, openIdx).trim();
+      const nm = before.match(/([A-Za-z_]\w*)\s*$/);
+      if (!nm) continue;
+      const name = nm[1];
+      if (['if','for','while','switch','else','do','catch','try','return','sizeof','new','delete'].includes(name)) continue;
+      if (before.replace(/\s*$/, '').endsWith('=')) continue;  // global init "int g = f(" is a call
+      const params = text.substring(openIdx + 1, text.length - 1).trim();
+      return { name, params };
+    }
+    return null;
+  }
+
   for (let i = 0; i < lines.length; i++) {
     let line = lines[i];
     let lineNum = i + 1;
 
     // Strip comments for analysis but keep original for output
     let stripped = stripCommentsAndStrings(line).trim();
+    // Set when a "} else {"-style line's CLOSING brace was already handled in the
+    // "{" branch below (close-before-open ordering), so the separate "}" handler
+    // must not pop the scope a second time.
+    let closedOnOpenLine = false;
 
     // Flush deferred block-opening declarations whose initializer block has now
     // closed. After a `};` popped its block scope, the owning scope is the
@@ -797,6 +949,22 @@ function instrumentCode(sourceCode) {
 
     // Skip empty lines and preprocessor directives
     if (stripped === '' || stripped.startsWith('#')) {
+      output.push(line);
+      continue;
+    }
+
+    // Detect a template header line (`template <class T, typename U, size_t N>`).
+    // Record the TYPE-parameter names (class/typename, not the non-type value
+    // params like `size_t N`) so a later `T s=...` declaration in the templated
+    // function is captured (compiler-deduced) instead of skipped as an unknown
+    // type. The header line itself has no statement, so just emit it and move
+    // on (it must NOT be fed to the multi-line-statement detector below).
+    if (stripped.match(/^template\s*</)) {
+      const tmatch = stripped.match(/^template\s*<([^>]*)>/);
+      if (tmatch) {
+        const tm = tmatch[1].matchAll(/\b(class|typename)\s+([A-Za-z_]\w*)/g);
+        for (const m of tm) templateTypeParams.add(m[2]);
+      }
       output.push(line);
       continue;
     }
@@ -1142,6 +1310,23 @@ function instrumentCode(sourceCode) {
     // function definitions like "int add(int a, int b) {" also match
     // parseDeclaration's skip pattern but need to be handled as functions
     if (stripped.includes('{')) {
+      // A line like "} else {" / "} catch (...) {" closes one block AND opens
+      // the next on the SAME line. The "{" is normally processed before the
+      // "}" (which lives further down), so the new scope would be pushed before
+      // the old one is popped — the just-closed block's locals then stay in
+      // knownVars and leak into the new block's captures ("use of undeclared
+      // identifier" in the else branch). Handle the close first when a "}"
+      // precedes the "{", and flag it so the "}" handler below doesn't pop again.
+      if (stripped.startsWith('}') && scopeStack.length > 1) {
+        let closed = scopeStack.pop();
+        for (let v of closed.vars) {
+          knownVars.delete(v); heapPointers.delete(v); deletedPointers.delete(v);
+        }
+        if (lambdaStack.length > 0 && lambdaStack[lambdaStack.length-1].scopeDepth === scopeStack.length) {
+          lambdaStack.pop();
+        }
+        closedOnOpenLine = true;
+      }
       // Check if this is a function body opening
       // e.g., "int main() {" or "void foo(int x) {"
       let funcMatch = stripped.match(/(\w[\w:]*)\s+(\w+)\s*\(([^)]*)\)\s*\{/);
@@ -1163,6 +1348,32 @@ function instrumentCode(sourceCode) {
         // so all downstream handling is unchanged; the keyword check below still
         // rejects if/for/while/switch/else/do/catch/try.
         funcMatch = stripped.match(/(.*)\s+(\w+)\s*\(([^)]*)\)\s*\{/);
+      }
+      if (funcMatch && !parensBalanced(funcMatch[3])) {
+        // Primary regex matched, but its parameter group has unbalanced
+        // parentheses — a signature whose parameter list contains nested
+        // parens (reference-to-array `const int (&arr)[]`, function-pointer
+        // `int (*cmp)(int,int)`). The `[^)]*` group truncated at the first `)`,
+        // so the captured params are wrong. Re-match with the balanced-paren
+        // detector to get the full parameter list.
+        const m = __optMatchFuncBalanced(line);
+        if (m) funcMatch = m;
+      } else if (!funcMatch) {
+        // Both regex attempts failed; try the balanced-paren detector as a
+        // last resort (e.g. a return type the greedy free-form regex mishandled).
+        const m = __optMatchFuncBalanced(line);
+        if (m) funcMatch = m;
+      }
+      // Multi-line signature: the "{" is on its OWN line and the parameter
+      // list closed on an earlier line ("name(params)" then "{"). None of the
+      // single-line detectors match a bare "{", so reconstruct the signature by
+      // scanning backward. Only at file scope (not in a function or struct body)
+      // and only for a lone "{". On success synthesize a funcMatch in the same
+      // 3-group layout (name=group2, params=group3) so the shared handler below
+      // runs unchanged.
+      if (!funcMatch && !inFunctionBody && !inStructBody && /^\{\s*$/.test(stripped)) {
+        const mml = reconstructMultiLineSig(lines, i);
+        if (mml) funcMatch = [null, null, mml.name, mml.params];
       }
       if (funcMatch && !['if','for','while','switch','else','do','catch','try'].includes(funcMatch[2])) {
         let funcName = funcMatch[2];
@@ -1342,7 +1553,7 @@ function instrumentCode(sourceCode) {
     }
 
     // Check for closing brace — leaving a scope
-    if (stripped.includes('}')) {
+    if (stripped.includes('}') && !closedOnOpenLine) {
       // Pop scope and remove its variables
       if (scopeStack.length > 1) {
         let popped = scopeStack.pop();
@@ -1535,17 +1746,28 @@ function instrumentCode(sourceCode) {
           initVars.add(d.name);
         }
       }
-      // Inject a trace call BEFORE the for header (captures pre-loop state)
-      // Exclude loop variables (they're not initialized yet)
+      // This for may be the single-statement BODY of a brace-less for/while/if
+      // on the PREVIOUS line (pendingBracelessBody). A pre-header trace here
+      // would land BETWEEN that header and its body, becoming the outer loop's
+      // own single-statement body and pushing this for OUT of the outer loop's
+      // scope — so the outer loop's variable (e.g. "i") would be "undeclared".
+      // Consume the flag and skip the pre-header trace so this for simply
+      // becomes the outer loop's body (where the outer var is in scope).
+      const isBracelessBody = pendingBracelessBody;
+      if (pendingBracelessBody) pendingBracelessBody = false;
       let fnArg = `"${currentFunc}", `;
-      let captures = genCaptures(varsForCaps(scopeStack, lambdaStack, knownVars), heapPointers, deletedPointers, structDefs, initVars);
-      if (captures.length > 0) {
-        output.push(`__opt_trace_fn__(${fnArg}${lineNum});`);
-          if (captures.length > 0) { output.push(captures.join(' ')); }
+      if (!isBracelessBody) {
+        // Inject a trace call BEFORE the for header (captures pre-loop state)
+        // Exclude loop variables (they're not initialized yet)
+        let captures = genCaptures(varsForCaps(scopeStack, lambdaStack, knownVars), heapPointers, deletedPointers, structDefs, initVars);
+        if (captures.length > 0) {
+          output.push(`__opt_trace_fn__(${fnArg}${lineNum});`);
+            if (captures.length > 0) { output.push(captures.join(' ')); }
+            output.push(`__opt_trace_end__();`);
+        } else {
+          output.push(`__opt_trace_fn__(${fnArg}${lineNum});`);
           output.push(`__opt_trace_end__();`);
-      } else {
-        output.push(`__opt_trace_fn__(${fnArg}${lineNum});`);
-        output.push(`__opt_trace_end__();`);
+        }
       }
       // Now add init vars to knownVars (they'll be visible after the for header executes)
       if (initPart) {
