@@ -494,7 +494,6 @@ self.onmessage = async (event) => {
         self.xserver.notify_listener(executeRequest);
       } catch (e) {
         execAborted = true;
-        await new Promise(r => setTimeout(r, 1000));
       }
 
       // Wait for execution to complete
@@ -502,6 +501,22 @@ self.onmessage = async (event) => {
 
       // If the WASM aborted, extract the real error from stderr.
       if (execAborted) {
+        // The WASM abort fires when compilation fails, but the FULL clang
+        // diagnostic is still streaming in over async iopub stderr chunks.
+        // Reading workerStderr immediately captures only the chunk(s) that had
+        // landed by the abort instant — truncating the diagnostic mid-line
+        // (e.g. "...pop_back' has" with the "'const std::vector<int>'; did you
+        // mean to remove 'const'?" tail dropped). Wait until stderr STABILIZES
+        // (stops growing for two consecutive polls) so the complete diagnostic
+        // has been delivered before we extract the error line. Bounded so a
+        // stream that never settles can't hang the error path.
+        let _prevLen = -1, _stablePolls = 0;
+        for (let _s = 0; _s < 25; _s++) {   // up to ~5s
+          await new Promise(r => setTimeout(r, 200));
+          const _curLen = workerStderr.length;
+          if (_curLen === _prevLen) { if (++_stablePolls >= 2) break; }
+          else { _stablePolls = 0; _prevLen = _curLen; }
+        }
         let errorMsg = '';
         const allStderr = workerStderr;
         if (allStderr && allStderr.includes('error:')) {
