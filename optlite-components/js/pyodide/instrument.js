@@ -537,6 +537,16 @@ const KNOWN_SIMPLE_TYPES = new Set([
   'double', 'float', 'bool', 'char', 'string', 'std::string'
 ]);
 
+// Names of the enclosing template's TYPE parameters (class/typename params,
+// e.g. `T` in `template <class T, size_t N>`), set by instrumentCode when a
+// `template <...>` header is seen and RESET at the start of each instrumentCode
+// call. A variable declared with a bare type-parameter type (`T s=a[0];`) is,
+// like `auto`, not statically knowable — but it IS a concrete type at runtime,
+// so genCaptures captures it via __opt_cap_auto__ (compiler-deduced) instead of
+// skipping it as an "unknown class". Without this, `T s=...` / `T c=...` locals
+// were silently not visualized (variable-type-capture-triage.md, Site 2).
+let templateTypeParams = new Set();
+
 // Generate capture calls for all known variables
 function genCaptures(knownVars, heapPointers, deletedPointers, structDefs, excludeVars) {
   let captures = [];
@@ -765,6 +775,14 @@ function genCaptures(knownVars, heapPointers, deletedPointers, structDefs, exclu
       // fell into the "unknown class — skip" case and never rendered.
       captures.push(`__opt_cap__("${name}", (const void*)${name});`);
     } else if (info && info.type && !info.isPointer && !info.isArray && !structDefs.has(info.type) &&
+               templateTypeParams.has(info.type)) {
+      // Declared with a TEMPLATE TYPE PARAMETER (`T s=a[0];` in
+      // `template <class T>`). Like `auto`, the concrete type isn't knowable
+      // statically, but it IS a real type at runtime — let the compiler deduce
+      // it via __opt_cap_auto__. Without this the bare `T` fell into the
+      // "unknown class" skip below and the local was never visualized.
+      captures.push(`__opt_cap_auto__(\"${name}\", ${name});`);
+    } else if (info && info.type && !info.isPointer && !info.isArray && !structDefs.has(info.type) &&
                !KNOWN_SIMPLE_TYPES.has(info.type) && !info.type.endsWith('*')) {
       // Unknown class/struct type — skip (can't capture without templates)
     } else {
@@ -851,6 +869,11 @@ function instrumentCode(sourceCode) {
   let currentFunc = 'main';
   let funcNameStack = ['main'];
 
+  // Reset per-call template type-parameter tracking (module-scope, shared with
+  // genCaptures). instrumentCode can be called repeatedly (re-runs), so start
+  // each run with a fresh set.
+  templateTypeParams = new Set();
+
   // Reconstruct a MULTI-LINE function signature that this "{" line opens.
   // e.g.
   //   std::vector<int> merge_sorted(std::vector<int> vec1,
@@ -926,6 +949,22 @@ function instrumentCode(sourceCode) {
 
     // Skip empty lines and preprocessor directives
     if (stripped === '' || stripped.startsWith('#')) {
+      output.push(line);
+      continue;
+    }
+
+    // Detect a template header line (`template <class T, typename U, size_t N>`).
+    // Record the TYPE-parameter names (class/typename, not the non-type value
+    // params like `size_t N`) so a later `T s=...` declaration in the templated
+    // function is captured (compiler-deduced) instead of skipped as an unknown
+    // type. The header line itself has no statement, so just emit it and move
+    // on (it must NOT be fed to the multi-line-statement detector below).
+    if (stripped.match(/^template\s*</)) {
+      const tmatch = stripped.match(/^template\s*<([^>]*)>/);
+      if (tmatch) {
+        const tm = tmatch[1].matchAll(/\b(class|typename)\s+([A-Za-z_]\w*)/g);
+        for (const m of tm) templateTypeParams.add(m[2]);
+      }
       output.push(line);
       continue;
     }
