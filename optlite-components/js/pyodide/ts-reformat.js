@@ -126,11 +126,19 @@
       let segStart = ls;
       for (const p of pts) {
         const seg = src.slice(segStart, p);
-        if (seg.trim() !== '') reformLines.push({ text: seg, origLine: li + 1 });
+        // PRESERVE every segment, including blank/whitespace-only ones. The user's
+        // source (blank lines between functions, indentation) must survive the
+        // reformat verbatim, and each original line must map 1:1 to its original
+        // line number so the "next line" cursor and call-stack entry point at the
+        // right place. Dropping blank lines (the old `seg.trim() !== ''` filter)
+        // shifted line numbers and forced a lossy remap that mis-pointed the
+        // recursion entry marker at a blank line. Blank original lines carry no
+        // split point, so preserving them never creates a spurious mid-split line.
+        reformLines.push({ text: seg, origLine: li + 1 });
         segStart = p;
       }
       const seg = src.slice(segStart, le);
-      if (seg.trim() !== '') reformLines.push({ text: seg, origLine: li + 1 });
+      reformLines.push({ text: seg, origLine: li + 1 });
     }
 
     const reformatted = reformLines.map(l => l.text).join('\n');
