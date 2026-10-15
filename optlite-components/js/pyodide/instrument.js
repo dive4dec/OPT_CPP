@@ -78,6 +78,60 @@ function stripCommentsAndStrings(code) {
 // detection: a valid `Name{...}` initializer has balanced braces, whereas a
 // struct/class/enum definition like `struct Foo {` or a function body `main() {`
 // has an unbalanced trailing `{`.
+// Given a `line` and the index of an opening `(`, return the index of the
+// MATCHING `)` (balanced, one level deep or more), or -1 if none on the line.
+// Needed because function parameter lists can contain nested parens — e.g.
+//   const int (&arr)[]      (reference-to-array)
+//   int (*cmp)(int, int)    (function pointer)
+// which a plain `([^)]*)` parameter group cannot span.
+function findMatchingParen(line, openIdx) {
+  let depth = 0;
+  for (let i = openIdx; i < line.length; i++) {
+    const c = line[i];
+    if (c === '(') depth++;
+    else if (c === ')') { depth--; if (depth === 0) return i; }
+  }
+  return -1;
+}
+
+// Balanced-paren function-signature detector. Returns {name, params} or null.
+// Only called as a last resort (both regex attempts already failed), so it is
+// safe to be slightly permissive: the caller still rejects keywords
+// (if/for/while/...) and a non-matching line simply yields null.
+function __optMatchFuncBalanced(line) {
+  const open = line.indexOf('(');
+  if (open < 0) return null;
+  const close = findMatchingParen(line, open);
+  if (close < 0) return null;
+  // After the closing paren: optional specifiers (const/noexcept/->type/&/&&),
+  // a virtual-inheritance list `: ...`, then the opening brace.
+  if (!/^\s*(?:(?:const|override|noexcept|final|volatile|\&|\&\&)\s+)*(?::\s*[^{]*?)?\s*\{/.test(line.slice(close + 1))) return null;
+  // The function name is the identifier immediately before `(`.
+  const nm = line.slice(0, open).match(/([A-Za-z_]\w*)\s*$/);
+  if (!nm) return null;
+  // Return a 4-element array matching RegExp.match's layout: [full, type, name,
+  // params]. The primary regex has groups [1]=type [2]=name [3]=params, so the
+  // full array is [0]=fullmatch [1]=type [2]=name [3]=params. Downstream reads
+  // funcMatch[2] (name) and funcMatch[3] (params); we leave [1] empty since a
+  // balanced match has no separate return-type group.
+  return [line, '', nm[1], line.slice(open + 1, close).trim()];
+}
+
+// True if the parentheses in `s` are balanced (every `(` has a matching `)`,
+// and they nest properly). Used to detect function signatures whose parameter
+// list contains nested parens (reference-to-array `const int (&arr)[]`,
+// function-pointer `int (*cmp)(int,int)`). A balanced-parameter-list regex
+// match like `foo(int x) {` has balanced parens; a truncated primary-regex
+// match like `foo(const int (&arr` does NOT (one open, zero close).
+function parensBalanced(s) {
+  let d = 0;
+  for (const c of s) {
+    if (c === '(') d++;
+    else if (c === ')') { d--; if (d < 0) return false; }
+  }
+  return d === 0;
+}
+
 function bracesBalanced(s) {
   let d = 0, inStr = false, inChar = false;
   for (let i = 0; i < s.length; i++) {
@@ -1163,6 +1217,21 @@ function instrumentCode(sourceCode) {
         // so all downstream handling is unchanged; the keyword check below still
         // rejects if/for/while/switch/else/do/catch/try.
         funcMatch = stripped.match(/(.*)\s+(\w+)\s*\(([^)]*)\)\s*\{/);
+      }
+      if (funcMatch && !parensBalanced(funcMatch[3])) {
+        // Primary regex matched, but its parameter group has unbalanced
+        // parentheses — a signature whose parameter list contains nested
+        // parens (reference-to-array `const int (&arr)[]`, function-pointer
+        // `int (*cmp)(int,int)`). The `[^)]*` group truncated at the first `)`,
+        // so the captured params are wrong. Re-match with the balanced-paren
+        // detector to get the full parameter list.
+        const m = __optMatchFuncBalanced(line);
+        if (m) funcMatch = m;
+      } else if (!funcMatch) {
+        // Both regex attempts failed; try the balanced-paren detector as a
+        // last resort (e.g. a return type the greedy free-form regex mishandled).
+        const m = __optMatchFuncBalanced(line);
+        if (m) funcMatch = m;
       }
       if (funcMatch && !['if','for','while','switch','else','do','catch','try'].includes(funcMatch[2])) {
         let funcName = funcMatch[2];
