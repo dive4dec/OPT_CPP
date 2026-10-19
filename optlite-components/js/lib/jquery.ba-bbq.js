@@ -469,7 +469,13 @@
     
     // Iterate over all name=value pairs.
     $.each( params.replace( /\+/g, ' ' ).split( '&' ), function(j,v){
-      var param = v.split( '=' ),
+      // Split on the FIRST '=' only (pgbovine modification). A value may
+      // legitimately contain a literal '=' (e.g. un-encoded code like
+      // "int x = 5"); the old v.split('=') produced 3 tokens and the
+      // `param.length === 2` check below silently dropped the whole param.
+      // param is now always length 1 (name-only) or 2 (key + full value).
+      var eq = v.indexOf( '=' ),
+        param = eq === -1 ? [ v ] : [ v.substring( 0, eq ), v.substring( eq + 1 ) ],
         key = decode( param[0] ),
         val,
         cur = obj,
