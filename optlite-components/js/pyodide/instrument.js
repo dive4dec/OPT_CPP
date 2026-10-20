@@ -527,6 +527,59 @@ function containerKind(type, isPointer) {
   return null;
 }
 
+// Build the capture call for a variable known to be a std container
+// (vector/array/list/deque). Returns the full `__opt_cap_...__(name, ...);`
+// string, or null if `type` is not a recognized container (caller handles the
+// non-container fallback). Mirrors the explicit-container branch in genCaptures
+// so an `auto` variable that DEDUCES a container type (e.g. `auto u = vec;`
+// where vec is std::vector<int>) renders identically to the explicit
+// `std::vector<int> u = vec;`.
+function containerCaptureExpr(name, type, isPointer) {
+  // list / deque are NON-contiguous (no .data()) → __opt_cap_seq__ (deduces T,
+  // copies into a contiguous vector). Must be checked before containerKind,
+  // which would otherwise route them to a .data() call that won't compile.
+  if (type && /^(std::)?(list|deque)\s*</.test(type)) {
+    return `__opt_cap_seq__("${name}", ${name});`;
+  }
+  const ck = containerKind(type, !!isPointer);
+  if (!ck) return null;
+  if (ck === 'vector_ptr') {
+    return `__opt_cap_vector_ptr__("${name}", (const void**)${name}.data(), (int)${name}.size());`;
+  }
+  if (ck === 'vector_int') {
+    return `__opt_cap_vector_int__("${name}", (const int*)${name}.data(), (int)${name}.size());`;
+  }
+  // vector/array with a non-scalar element type (struct, string, double, ...):
+  // no .data()-based overload → opaque (same as the explicit declaration).
+  const tname = type.replace(/^std::/, '');
+  return `__opt_cap_unknown__("${name}", "${tname}", (void*)&${name});`;
+}
+
+// For an `auto`-typed variable, deduce a CONTAINER type from a plain-variable
+// initializer (`auto u = vec;`, `auto& r = vec;`). Returns the container
+// capture expression for `name` (identical to how the explicit-typed source is
+// captured) or null when the initializer isn't a known container variable.
+// Follows a bounded chain of `auto` copies (`auto a = v; auto b = a;`) to the
+// underlying explicitly-typed container.
+function inferAutoContainerCapture(name, info, knownVars) {
+  if (!info || !info.init) return null;
+  const initStr = info.init.trim().replace(/^=\s*/, '').trim();
+  const mv = initStr.match(/^(\w+)$/);   // bare variable: `= vec`
+  if (!mv) return null;
+  const visited = new Set();
+  let src = knownVars.get(mv[1]);
+  let hops = 0;
+  while (src && src.type === 'auto' && src.init && hops < 4 && !visited.has(src.name)) {
+    visited.add(src.name);
+    const inner = src.init.trim().replace(/^=\s*/, '').trim().match(/^(\w+)$/);
+    if (!inner) break;
+    src = knownVars.get(inner[1]);
+    hops++;
+  }
+  if (!src || !src.type || src.isRefOrPtrParam) return null;
+  return containerCaptureExpr(name, src.type, !!src.isPointer);
+}
+
 // Scalar types that have a direct __opt_cap__ overload in opt_trace.h (so a
 // plain `__opt_cap__(name, var)` call will compile and report the right type
 // label). Anything NOT in this set is treated as an unknown class/struct type
@@ -705,12 +758,23 @@ function genCaptures(knownVars, heapPointers, deletedPointers, structDefs, exclu
           captures.push(`__opt_cap_struct__("${name}", "${inferredType}", (void*)&${name}, "");`);
         }
       } else if (info.isReference) {
-        // Unknown reference type — use __opt_cap_unknown__
-        captures.push(`__opt_cap_unknown__("${name}", "auto", (void*)&${name});`);
+        // Reference auto. `auto& r = vec;` DEDUCES vec's type, so when the
+        // initializer is a known container render r as that sequence (the
+        // reference aliases it, so the capture is identical to the copy).
+        // Otherwise fall back to the opaque "auto" reference capture.
+        const refContainerExpr = inferAutoContainerCapture(name, info, knownVars);
+        if (refContainerExpr) {
+          captures.push(refContainerExpr);
+        } else {
+          captures.push(`__opt_cap_unknown__("${name}", "auto", (void*)&${name});`);
+        }
       } else {
-        // Non-reference auto — try to infer simple type from initializer
-        // to pick the right __opt_cap__ overload. Fall back to __opt_cap_unknown__
-        // for complex types (std::function, lambdas, etc.) that have no overload.
+        // Non-reference auto. Container deduction FIRST: `auto u = vec;` where
+        // vec is a known std container must render as a SEQUENCE (captured
+        // below), not the opaque __opt_cap_auto__ template — this was the bug
+        // (an auto vector copy wasn't visualized like the explicit `vec`).
+        // Otherwise infer a literal type, else let the compiler deduce it.
+        const containerExpr = inferAutoContainerCapture(name, info, knownVars);
         let inferredSimpleType = null;
         if (info.init) {
           // Collapse whitespace right after the '=' so that literal inference
@@ -748,7 +812,10 @@ function genCaptures(knownVars, heapPointers, deletedPointers, structDefs, exclu
             inferredSimpleType = 'const char*';
           }
         }
-        if (inferredSimpleType) {
+        if (containerExpr) {
+          // Container copied from a known variable — emit the SEQUENCE capture.
+          captures.push(containerExpr);
+        } else if (inferredSimpleType) {
           // We know the simple type — cast and use the right overload
           if (inferredSimpleType === 'const char*') {
             captures.push(`__opt_cap__("${name}", ${name});`);
