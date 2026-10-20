@@ -504,10 +504,80 @@ void __opt_push_frame__(const char* func_name, int line) {
   st.call_stack.push_back(fi);
 }
 
-// Pop a frame from the call stack
+// Emit a "return" trace step after a frame has been popped (its function
+// returned). Without this, a frame only ever APPEARS (on entry) and the call
+// stack is frozen at its deepest point — a recursive run's final step would
+// still show every frame stacked, because nothing records the unwinding.
+//
+// Mirrors __opt_tracer__::finish() but renders every frame from its STORED
+// data (there is no active tracer at function exit — __opt_trace_end__ has
+// already freed it), highlighting the newly-resumed top frame at its current
+// line. Emits ONE __OPT_SENTINEL__ so the runner's per-step stdout chunking
+// (runner.ts splits stdout on the sentinel and aligns it 1:1 with
+// parsed.trace.length) stays in step with the extra entry appended below.
+void __opt_emit_return_step__() {
+  auto& st = __opt_get_state__();
+  if(st.cin_prompt) return;       // input exhausted — trace frozen
+  if(st.call_stack.empty()) return; // nothing left to resume to (defensive)
+  auto& top = st.call_stack.back();
+
+  // Build stack_to_render from stored frames; the top (resumed) frame is
+  // highlighted. Every frame uses its own stored locals/names/line.
+  std::string stack_json = "[";
+  for(size_t i=0;i<st.call_stack.size();i++){
+    if(i) stack_json+=",";
+    auto& f = st.call_stack[i];
+    bool is_last = (i == st.call_stack.size()-1);
+    std::string parent_ids = "[";
+    if(i > 0) parent_ids += "\""+st.call_stack[i-1].frame_id+"\"";
+    parent_ids += "]";
+    std::string hash = f.func_name + "_" + f.frame_id;
+    std::string frame_varnames = "[";
+    for(size_t j=0;j<f.names.size();j++){if(j)frame_varnames+=",";frame_varnames+="\""+__opt_esc__(f.names[j])+"\"";}
+    frame_varnames += "]";
+    stack_json += "{\"frame_id\":\""+f.frame_id+"\","
+      "\"func_name\":\""+f.func_name+"\","
+      "\"is_highlighted\":"+std::string(is_last?"true":"false")+","
+      "\"is_parent\":"+std::string(i < st.call_stack.size()-1 ? "true":"false")+","
+      "\"is_zombie\":false,"
+      "\"line\":"+std::to_string(f.line)+","
+      "\"ordered_varnames\":"+frame_varnames+","
+      "\"parent_frame_id_list\":"+parent_ids+","
+      "\"unique_hash\":\""+hash+"\","
+      "\"encoded_locals\":"+f.locals+
+      "}";
+  }
+  stack_json += "]";
+
+  std::string globals_varnames="[";
+  for(size_t j=0;j<st.globals_names.size();j++){if(j)globals_varnames+=",";globals_varnames+="\""+__opt_esc__(st.globals_names[j])+"\"";}
+  globals_varnames+="]";
+
+  std::string e = "{\"line\":"+std::to_string(top.line)+",\"event\":\"step_line\","
+    "\"func_name\":\""+top.func_name+"\","
+    "\"globals\":"+st.globals_json+",\"ordered_globals\":"+globals_varnames+","
+    "\"stack_to_render\":"+stack_json+","
+    "\"heap\":{},\"stdout\":\"\"}";
+
+  // Drain any C-stdio, then emit a step sentinel so this entry aligns with its
+  // own stdout chunk (matches the every-step-emits-one-sentinel invariant the
+  // runner relies on). A return step executes no user statement, so it does
+  // NOT emit a __OPT_STEP_LINE__ crash marker.
+  std::fflush(stdout);
+  std::cout << __OPT_SENTINEL__;
+  std::cout.flush();
+  __opt_trace_append__(e);
+}
+
+// Pop a frame from the call stack. After the pop, emit a "return" step so the
+// call stack visibly unwinds one frame at a time (the parent resumes
+// highlighted) — matching Python Tutor, whose final step has no frames left.
 void __opt_pop_frame__() {
   auto& st = __opt_get_state__();
-  if(!st.call_stack.empty()) st.call_stack.pop_back();
+  if(!st.call_stack.empty()) {
+    st.call_stack.pop_back();
+    __opt_emit_return_step__();
+  }
 }
 
 // RAII frame guard: popped when the function's scope exits (ANY return path).
