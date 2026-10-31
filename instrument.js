@@ -1032,6 +1032,20 @@ function instrumentCode(sourceCode) {
         const tm = tmatch[1].matchAll(/\b(class|typename)\s+([A-Za-z_]\w*)/g);
         for (const m of tm) templateTypeParams.add(m[2]);
       }
+      // Emit the main-frame marker BEFORE the template header. This branch
+      // `continue`s below, which SKIPS the mainFrameEnsured check further down
+      // (the "first non-preprocessor line" guard). Without this, that check
+      // fires on the NEXT line — wedging `__opt_ensure_frame__("main", 0);`
+      // between the `template<...>` header and the function it modifies. The
+      // compiler then reads the header as a template definition of that call,
+      // so the function's type parameter `T` is no longer a known type ->
+      // "error: a type specifier is required for all declarations". Placing the
+      // marker before the header keeps the header directly attached to its
+      // definition (the same top-level position the non-template path uses).
+      if (!inFunctionBody && !inStructBody && !mainFrameEnsured) {
+        output.push('__opt_ensure_frame__("main", 0);');
+        mainFrameEnsured = true;
+      }
       output.push(line);
       continue;
     }
