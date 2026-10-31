@@ -94,7 +94,7 @@ RUN npm run build:prod \
     && cp js/pyodide/tree-sitter.wasm build/ \
     && mkdir -p build/grammars \
     && cp js/pyodide/grammars/tree-sitter-cpp.wasm build/grammars/ \
-    && BV=$(ls build/*.bundle.*.js 2>/dev/null | sort | sha256sum | cut -c1-16) \
+    && BV=$(ls build/*.bundle.js 2>/dev/null | sort | sha256sum | cut -c1-16) \
     && sed "s/__BUILD_VERSION__/${BV:-none}/g" sw.js > build/sw.js \
     && cp manifest.webmanifest build/ \
     && cp -r pwa build/pwa \
