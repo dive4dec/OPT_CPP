@@ -60,7 +60,7 @@
 //   from the emitted bundle names), so the bytes differ on every real deploy.
 //   The page's registration handler (see *.html templates) reloads once when a
 //   newer sw.js activates. The placeholder below is replaced at build time.
-const BUILD_VERSION = "3aa7d688010a28ad";
+const BUILD_VERSION = "441fd0de5bcd1a9f";
 
 self.addEventListener('install', () => self.skipWaiting());
 self.addEventListener('activate', (event) =>
